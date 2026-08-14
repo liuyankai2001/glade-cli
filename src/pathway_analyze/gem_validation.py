@@ -14,38 +14,25 @@ import cobra
 import pandas as pd
 from cobra.flux_analysis import flux_variability_analysis, pfba
 from cobra.util.solver import linear_reaction_coefficients
+
 from src.pathway_analyze.target_id import validate_target_compound_id
-from src.config.pathway_config import GEM_VALIDATION_CONFIG
-from src.config.service_config import KEGG_HTTP_CONFIG, KEGG_REST_BASE_URL
-from src.runtime.monitor import monitor
-from src.tools.common.session_paths import (
-    cache_dir as resolve_cache_dir,
-    default_medium_file,
-    gem_model_file,
-    gem_validation_dir,
-    kegg_gap_dir as resolve_kegg_gap_dir,
-    outputs_dir as resolve_outputs_dir,
-)
-
-try:
-    from langchain.tools import tool
-except ModuleNotFoundError:
-    def tool(func):
-        func.name = func.__name__
-        func.invoke = lambda payload: func(**payload)
-        return func
 
 
-# 兼容现有函数默认值与测试 monkeypatch；唯一配置源位于 src.config。
-HTTP_TIMEOUT = KEGG_HTTP_CONFIG.timeout_seconds
-HTTP_RETRIES = KEGG_HTTP_CONFIG.retries
-REQUEST_SLEEP_SECONDS = KEGG_HTTP_CONFIG.sleep_seconds
-DEFAULT_GROWTH_FRACTION = GEM_VALIDATION_CONFIG.growth_fraction
-DEFAULT_FLUX_THRESHOLD = GEM_VALIDATION_CONFIG.flux_threshold
-DEFAULT_FVA_FRACTION = GEM_VALIDATION_CONFIG.fva_fraction
-DEFAULT_REACTION_UPPER_BOUND = GEM_VALIDATION_CONFIG.reaction_upper_bound
-DEFAULT_MODE = GEM_VALIDATION_CONFIG.mode
-DEFAULT_COFACTOR_MODE = GEM_VALIDATION_CONFIG.cofactor_mode
+KEGG_REST_BASE_URL = "https://rest.kegg.jp"
+HTTP_TIMEOUT = 30
+HTTP_RETRIES = 3
+REQUEST_SLEEP_SECONDS = 0.2
+
+DEFAULT_GROWTH_FRACTION = 0.1
+DEFAULT_FLUX_THRESHOLD = 1e-8
+DEFAULT_FVA_FRACTION = 0.99
+DEFAULT_PFBA_FRACTION = 1.0
+DEFAULT_PROCESSES = 1
+DEFAULT_COMPARTMENT = "c"
+DEFAULT_REACTION_UPPER_BOUND = 1000.0
+
+DEFAULT_MODE = "per-solution"
+DEFAULT_COFACTOR_MODE = "strict_l1"
 
 KEGG_ID_PATTERN = re.compile(r"^[CDG]\d{5}$")
 KEGG_METABOLITE_ANNOTATION_KEYS = ("kegg.compound", "kegg.drug", "kegg.glycan")
@@ -940,14 +927,25 @@ def validate_prepared_model(
     return ValidationResult(summary_row=summary_row, flux_rows=tuple(flux_rows))
 
 
-def parse_solution_ids(raw_value: str | None, available_solution_ids: Sequence[int]) -> Tuple[int, ...]:
-    if not raw_value:
+def parse_solution_ids(
+    raw_value: Any,
+    available_solution_ids: Sequence[int],
+) -> Tuple[int, ...]:
+    if raw_value is None or raw_value == "":
         return tuple(sorted(set(available_solution_ids)))
-    selected = []
-    for part in raw_value.split(","):
-        part = part.strip()
-        if part:
-            selected.append(int(part))
+
+    if isinstance(raw_value, str):
+        raw_parts: Iterable[Any] = re.split(r"[,;\s]+", raw_value.strip())
+    elif isinstance(raw_value, int):
+        raw_parts = (raw_value,)
+    else:
+        raw_parts = raw_value
+
+    selected = list(dict.fromkeys(
+        int(part)
+        for part in raw_parts
+        if str(part).strip()
+    ))
     available = set(available_solution_ids)
     missing = sorted(set(selected) - available)
     if missing:
@@ -974,10 +972,10 @@ def validate_gap_output(
     growth_fraction: float = DEFAULT_GROWTH_FRACTION,
     flux_threshold: float = DEFAULT_FLUX_THRESHOLD,
     fva_fraction: float = DEFAULT_FVA_FRACTION,
-    pfba_fraction: float = 1.0,
+    pfba_fraction: float = DEFAULT_PFBA_FRACTION,
     run_fva: bool = True,
-    processes: int = 1,
-    preferred_compartment: str = "c",
+    processes: int = DEFAULT_PROCESSES,
+    preferred_compartment: str = DEFAULT_COMPARTMENT,
     reaction_upper_bound: float = DEFAULT_REACTION_UPPER_BOUND,
     cofactor_mode: str = DEFAULT_COFACTOR_MODE,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -1061,98 +1059,116 @@ def validate_gap_output(
     return summary_df, flux_df
 
 
-@tool
-def gem_validate_relaxed_or_strict_l1(
-    target: str,
-    mode: str = DEFAULT_MODE,
-    solution_ids: str = "",
-    growth_fraction: float = DEFAULT_GROWTH_FRACTION,
-    flux_threshold: float = DEFAULT_FLUX_THRESHOLD,
-    fva_fraction: float = DEFAULT_FVA_FRACTION,
-    pfba_fraction: float = 1.0,
-    processes: int = 1,
-    preferred_compartment: str = "c",
-    reaction_upper_bound: float = DEFAULT_REACTION_UPPER_BOUND,
-    cofactor_mode: str = DEFAULT_COFACTOR_MODE,
-    skip_fva: bool = False,
-) -> dict[str, Any]:
-    """
-    验证候选 KEGG 路径在底盘 GEM 中的可行性，可按 strict 或 cofactor-relaxed 模式运行。
-    
-    调用时机：kegg_gap_analyze 生成候选路线后，需要做 GEM 可达性/缺口验证。
-    输入：target_compound_id、route 文件或 gap_dir，以及验证模式参数。
-    返回：ok、验证摘要、可行性结论、关键缺口和输出文件路径。
-    限制：只做计算验证，不改写设计清单，不声称湿实验可行。
-    """
+def gem_validate(config: Any) -> dict[str, Any]:
+    """使用 ``RunConfig`` 验证 gap 候选路径的 GEM 通量可行性。"""
 
-    tool_name = "gem_validate_relaxed_or_strict_l1"
-    monitor.report_start(tool_name, {"target": target, "mode": mode, "cofactor_mode": cofactor_mode})
-    try:
-        target_compound = validate_target_compound_id(target)
-        cache_dir_path = resolve_cache_dir()
-        client = KeggRestClient(cache_dir_path)
-        monitor.report_running(tool_name, "正在加载目标产物的候选路线...", progress=0.15)
-        output_root = resolve_outputs_dir()
-        gap_dir_path = resolve_kegg_gap_dir(target_compound, output_root)
+    target_compound = validate_target_compound_id(config.target_name)
+    model_path = Path(config.model_path).expanduser().resolve()
+    medium_path = Path(config.medium_path).expanduser().resolve()
+    gap_dir = Path(config.gap_output_path).expanduser().resolve()
+    cache_dir = Path(config.cache_dir).expanduser().resolve() / "kegg"
+    output_dir = Path(config.validation_output_path).expanduser().resolve()
 
-        steps_path = gap_dir_path / "all_solution_steps.csv"
-        if not steps_path.exists():
-            raise FileNotFoundError(f"Missing gap output: {steps_path}")
-        all_steps_df = pd.read_csv(steps_path)
-        available_solution_ids = tuple(sorted(int(value) for value in all_steps_df["solution_id"].unique()))
-        selected_solution_ids = parse_solution_ids(solution_ids, available_solution_ids)
+    requested_mode = str(
+        getattr(config, "validation_mode", DEFAULT_MODE)
+    ).strip().lower()
+    mode = "per-solution" if requested_mode == "per" else requested_mode
+    solution_ids = getattr(
+        config,
+        "solutions",
+        getattr(config, "validation_solution_ids", None),
+    )
+    cofactor_mode = str(
+        getattr(config, "validation_cofactor_mode", DEFAULT_COFACTOR_MODE)
+    ).strip().lower()
+    skip_fva = bool(getattr(config, "validation_skip_fva", False))
 
-        normalized_cofactor_mode = "strict_l1" if cofactor_mode == "strict" else cofactor_mode
-        output_dir_path = gem_validation_dir(gap_dir=gap_dir_path)
+    if mode not in {"per-solution", "pooled", "both"}:
+        raise ValueError("validation_mode must be per, pooled, or both")
+    if cofactor_mode == "strict":
+        cofactor_mode = "strict_l1"
+    if cofactor_mode not in {"strict_l1", "relaxed"}:
+        raise ValueError("validation_cofactor_mode must be strict_l1 or relaxed")
+    if not model_path.is_file():
+        raise FileNotFoundError(f"GEM model file not found: {model_path}")
+    if model_path.suffix.lower() != ".json":
+        raise ValueError(f"Only JSON GEM models are supported: {model_path}")
+    if not medium_path.is_file():
+        raise FileNotFoundError(f"Medium file not found: {medium_path}")
 
-        monitor.report_running(tool_name, "正在执行 GEM 路线通量验证...", progress=0.45)
-        summary_df, flux_df = validate_gap_output(
-            target_compound=target_compound,
-            gap_dir=gap_dir_path,
-            model_path=gem_model_file(),
-            medium_path=default_medium_file(),
-            cache_dir=cache_dir_path,
-            output_dir=output_dir_path,
-            mode=mode,
-            solution_ids=selected_solution_ids,
-            growth_fraction=growth_fraction,
-            flux_threshold=flux_threshold,
-            fva_fraction=fva_fraction,
-            pfba_fraction=pfba_fraction,
-            run_fva=not skip_fva,
-            processes=processes,
-            preferred_compartment=preferred_compartment,
-            reaction_upper_bound=reaction_upper_bound,
-            cofactor_mode=normalized_cofactor_mode,
+    steps_path = gap_dir / "all_solution_steps.csv"
+    if not steps_path.is_file():
+        raise FileNotFoundError(
+            "Gap analysis output not found. Run the gap command first: "
+            f"{steps_path}"
         )
+    try:
+        all_steps_df = pd.read_csv(steps_path)
+    except pd.errors.EmptyDataError as exc:
+        raise ValueError(f"Gap analysis produced no candidate solutions: {steps_path}") from exc
+    if all_steps_df.empty:
+        raise ValueError(f"Gap analysis produced no candidate solutions: {steps_path}")
+    if "solution_id" not in all_steps_df.columns:
+        raise ValueError(f"Missing solution_id column in gap output: {steps_path}")
 
-        summary_csv = output_dir_path / "gem_validation_summary.csv"
-        fluxes_csv = output_dir_path / "gem_validation_route_fluxes.csv"
-        statuses = []
-        if not summary_df.empty and "validation_status" in summary_df.columns:
-            statuses = [str(value) for value in summary_df["validation_status"].tolist()]
+    available_solution_ids = tuple(
+        sorted(int(value) for value in all_steps_df["solution_id"].unique())
+    )
+    selected_solution_ids = parse_solution_ids(
+        solution_ids,
+        available_solution_ids,
+    )
 
-        result = {
-            "target_compound": target_compound,
-            "cofactor_mode": normalized_cofactor_mode,
-            "validation_dir": str(output_dir_path.resolve()),
-            "validation_summary_csv": str(summary_csv.resolve()),
-            "validation_route_fluxes_csv": str(fluxes_csv.resolve()),
-            "validation_row_count": int(len(summary_df)),
-            "route_flux_row_count": int(len(flux_df)),
-            "validation_statuses": statuses,
-        }
-        monitor.report_end(tool_name, result)
-        return result
-    except Exception as exc:
-        monitor.report_error(tool_name, exc)
-        raise
+    print(
+        f"[INFO] validating {len(selected_solution_ids)} gap solution(s) "
+        f"for {target_compound}"
+    )
+    summary_df, flux_df = validate_gap_output(
+        target_compound=target_compound,
+        gap_dir=gap_dir,
+        model_path=model_path,
+        medium_path=medium_path,
+        cache_dir=cache_dir,
+        output_dir=output_dir,
+        mode=mode,
+        solution_ids=selected_solution_ids,
+        growth_fraction=DEFAULT_GROWTH_FRACTION,
+        flux_threshold=DEFAULT_FLUX_THRESHOLD,
+        fva_fraction=DEFAULT_FVA_FRACTION,
+        pfba_fraction=DEFAULT_PFBA_FRACTION,
+        run_fva=not skip_fva,
+        processes=DEFAULT_PROCESSES,
+        preferred_compartment=DEFAULT_COMPARTMENT,
+        reaction_upper_bound=DEFAULT_REACTION_UPPER_BOUND,
+        cofactor_mode=cofactor_mode,
+    )
+
+    summary_csv = output_dir / "gem_validation_summary.csv"
+    fluxes_csv = output_dir / "gem_validation_route_fluxes.csv"
+    statuses = (
+        [str(value) for value in summary_df["validation_status"].tolist()]
+        if not summary_df.empty and "validation_status" in summary_df.columns
+        else []
+    )
+    return {
+        "ok": True,
+        "target_compound": target_compound,
+        "validation_mode": mode,
+        "solution_ids": list(selected_solution_ids),
+        "cofactor_mode": cofactor_mode,
+        "fva_skipped": skip_fva,
+        "validation_dir": str(output_dir.resolve()),
+        "validation_summary_csv": str(summary_csv.resolve()),
+        "validation_route_fluxes_csv": str(fluxes_csv.resolve()),
+        "validation_row_count": int(len(summary_df)),
+        "route_flux_row_count": int(len(flux_df)),
+        "validation_statuses": statuses,
+    }
 
 
-if __name__ == "__main__":
-    target = 'C05432'
-    gem_validate_relaxed_or_strict_l1.invoke({
-        "target": target,
-        "solution_ids": "1",
-        "mode": "both",
-    })
+def run_validation(config: Any) -> dict[str, Any]:
+    """命令行入口；JSON 读取和 ``RunConfig`` 构造由 ``main.py`` 负责。"""
+
+    result = gem_validate(config)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result

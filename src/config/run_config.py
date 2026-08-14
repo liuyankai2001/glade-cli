@@ -26,7 +26,7 @@ class RunConfig:
         self.chassis_producible_csv: Path = self.chassis_output_path / 'producible_kegg_compounds.csv'
         self.chassis_metabolites_summary_csv: Path = self.chassis_output_path / 'analyze_chassis_metabolites_summary.csv'
 
-        # 底盘细胞代谢通路分析参数
+        # 底盘细胞代谢通路搜寻参数
         self.max_total_steps = 20
         self.max_new_enzymes = self.max_total_steps
         self.max_solutions = 10
@@ -38,3 +38,6 @@ class RunConfig:
         self.electron_avoidance_mode = 'strict_with_fallback' # off、prefer、strict 或 strict_with_fallback
         self.reaction_resolution_mode = 'strict' # strict 或 audit
         self.gap_output_path = self.project_output_path / f'kegg_gap_{self.target_name}'
+
+        # 通量分析参数
+        self.validation_output_path = self.gap_output_path / "gem_validation"
