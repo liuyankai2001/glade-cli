@@ -1,6 +1,6 @@
 from pathlib import Path
 
-ROOT = Path('__file__').parent.parent.parent
+ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = ROOT / 'data'
 GEM_DIR = DATA_DIR / 'gem_models'
 MEDIUM_DIR = DATA_DIR / 'mediums'

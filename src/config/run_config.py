@@ -4,20 +4,6 @@ from pathlib import Path
 from dataclasses import dataclass
 from src.config import config
 
-
-"""
-ROOT = Path('__file__').parent.parent.parent
-DATA_DIR = ROOT / 'data'
-GEM_DIR = DATA_DIR / 'gem_models'
-MEDIUM_DIR = DATA_DIR / 'mediums'
-
-INPUTS_DIR = ROOT / 'inputs'
-OUTPUTS_DIR = ROOT / 'outputs'
-CACHE_DIR = ROOT / 'cache'
-"""
-
-
-
 @dataclass
 class RunConfig:
     # 基础配置
