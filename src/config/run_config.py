@@ -41,3 +41,6 @@ class RunConfig:
 
         # 通量分析参数
         self.validation_output_path = self.gap_output_path / "gem_validation"
+
+        # manifest路径
+        self.manifest_output_path = self.project_output_path / 'design_manifest.json'

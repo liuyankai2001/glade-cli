@@ -4,6 +4,7 @@ from src.pathway_analyze.analyze_chassis_metabolites import run_chassis
 from src.pathway_analyze.kegg_gap_analyze import run_gap
 from src.pathway_analyze.gem_validation import run_validation
 from src.pathway_analyze.list_solution_steps import run_solution_steps
+from src.pathway_analyze.write_solution_to_manifest import run_select_solution
 from src.config.run_config import RunConfig
 from src.config.config import INPUTS_DIR
 
@@ -62,6 +63,12 @@ solution_parser.add_argument(
 )
 solution_parser.set_defaults(func=run_solution_steps)
 
+# 选择写入
+select_parser = sub_parser.add_parser('select')
+select_parser.add_argument('-i','--input',required=True)
+select_parser.add_argument('-s','--solution',type=int,required=True,help="需要保存的solution ID")
+select_parser.set_defaults(func=run_select_solution)
+
 def main():
     args = parser.parse_args()
     config_path = INPUTS_DIR / args.input
@@ -71,8 +78,8 @@ def main():
         config.solutions = args.solutions
         config.validation_mode = args.validation_mode
         config.validation_cofactor_mode = args.validation_cofactor_mode
-    if args.command == "solution":
-        config.solution_id = args.solution
+    if args.command in ("solution", "select"):
+      config.solution_id = args.solution
 
     args.func(config)
 
