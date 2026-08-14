@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from src.pathway_analyze.analyze_chassis_metabolites import run_chassis
 from src.pathway_analyze.kegg_gap_analyze import run_gap
 from src.pathway_analyze.gem_validation import run_validation
+from src.pathway_analyze.list_solution_steps import run_solution_steps
 from src.config.run_config import RunConfig
 from src.config.config import INPUTS_DIR
 
@@ -28,7 +29,7 @@ gap_parser.add_argument('-i','--input',type=str,help='输入配置文件')
 gap_parser.set_defaults(func=run_gap)
 
 # gem通量验证
-validation_parser = sub_parser.add_parser('validate')
+validation_parser = sub_parser.add_parser('validate',help='通路通量分析')
 validation_parser.add_argument('-i','--input',type=str,help='输入配置文件')
 validation_parser.add_argument('-s','--solutions',type=int,nargs='+',help='指定需要验证的solution ID')
 validation_parser.add_argument(
@@ -50,6 +51,16 @@ validation_parser.add_argument(
 )
 validation_parser.set_defaults(func=run_validation)
 
+# 查看具体solution
+solution_parser = sub_parser.add_parser('solution',help='查看某个具体路线详情')
+solution_parser.add_argument('-s','--solution',type=int,help="需要查看的solution ID",required=True)
+solution_parser.add_argument(
+    "-i",
+    "--input",
+    required=True,
+    help="输入配置文件",
+)
+solution_parser.set_defaults(func=run_solution_steps)
 
 def main():
     args = parser.parse_args()
@@ -60,6 +71,8 @@ def main():
         config.solutions = args.solutions
         config.validation_mode = args.validation_mode
         config.validation_cofactor_mode = args.validation_cofactor_mode
+    if args.command == "solution":
+        config.solution_id = args.solution
 
     args.func(config)
 

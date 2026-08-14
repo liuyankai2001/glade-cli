@@ -1,14 +1,57 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
-from langchain.tools import tool
-
 from src.pathway_analyze.target_id import validate_target_compound_id
-from src.runtime.monitor import monitor
-from src.tools.common.session_paths import kegg_gap_dir, outputs_dir
+
+
+STEP_FIELD_NAMES = {
+    "solution_id": "路径编号",
+    "step_index": "步骤编号",
+    "status": "反应类型",
+    "produced_compound_id": "生成化合物ID",
+    "produced_compound_name": "生成化合物名称",
+    "reaction_id": "反应ID",
+    "reaction_name": "反应名称",
+    "equation": "反应方程",
+    "direction": "反应方向",
+    "oxygen_required": "是否需要氧气",
+    "thermo_direction": "热力学倾向",
+    "screening_rule_hits": "筛选规则",
+    "precursor_compound_ids": "前体化合物ID",
+    "precursor_compound_labels": "前体化合物",
+    "ko_ids": "KO编号",
+    "enzyme_ecs": "酶EC编号",
+    "source_reaction_ids": "原始反应ID",
+    "resolution_action": "反应解析操作",
+    "resolution_evidence": "反应解析证据",
+    "module_ids": "KEGG模块ID",
+    "rhea_ids": "Rhea反应ID",
+}
+
+FIELD_VALUE_NAMES = {
+    "status": {
+        "heterologous": "异源反应",
+        "endogenous": "内源反应",
+    },
+    "direction": {
+        "left_to_right": "从左到右",
+        "right_to_left": "从右到左",
+    },
+    "thermo_direction": {
+        "favored": "有利",
+        "neutral": "中性",
+        "disfavored": "不利",
+    },
+    "resolution_action": {
+        "none": "无",
+        "explicit_multistep_component": "多步反应的已解析组分",
+        "merged_complete_reaction": "已合并为完整反应",
+    },
+}
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -38,24 +81,14 @@ def _normalize_row(row: dict[str, str]) -> dict[str, Any]:
     return {key: _optional_number(value) for key, value in row.items()}
 
 
-def _resolve_gap_dir(
-    gap_dir: str | None,
-    target_compound_id: str | None,
-    output_dir: str | None,
-) -> Path:
-    if gap_dir:
-        path = Path(gap_dir)
-        if path.is_absolute():
-            return path.resolve()
-        if path.exists():
-            return path.resolve()
-        return (outputs_dir(output_dir) / path).resolve()
+def _translate_row(row: dict[str, Any]) -> dict[str, Any]:
+    """翻译用户可见字段和枚举值，保留 KEGG/Rhea 原始数据。"""
 
-    if not target_compound_id:
-        raise ValueError("Provide gap_dir or target_compound_id.")
-
-    target_compound_id = validate_target_compound_id(target_compound_id)
-    return kegg_gap_dir(target_compound_id, output_dir).resolve()
+    translated: dict[str, Any] = {}
+    for field, value in row.items():
+        output_field = STEP_FIELD_NAMES.get(field, field)
+        translated[output_field] = FIELD_VALUE_NAMES.get(field, {}).get(value, value)
+    return translated
 
 
 def _to_int(value: Any, field_name: str) -> int:
@@ -65,54 +98,67 @@ def _to_int(value: Any, field_name: str) -> int:
         raise ValueError(f"{field_name} must be an integer-compatible value: {value}") from exc
 
 
-@tool
-def list_solution_steps(
-    solution_id: int,
-    step_index: int | None = None,
-    target_compound_id: str | None = None,
-) -> dict[str, Any]:
-    """
-    读取某个候选通路方案的步骤明细。
-    
-    调用时机：kegg_gap_analyze 后，用户想查看 solution 的反应、化合物和酶信息。
-    输入：target_compound_id、solution_id。
-    返回：ok、步骤列表、EC/KO、化合物摘要和证据文件路径。
-    限制：只读；不写 manifest，不做蛋白选择。
-    """
-    tool_name = "list_solution_steps"
-    monitor.report_start(tool_name, {"solution_id": solution_id, "step_index": step_index, "target_compound_id": target_compound_id})
-    try:
-        selected_solution_id = int(solution_id)
-        selected_step_index = int(step_index) if step_index is not None else None
-        gap_dir_path = _resolve_gap_dir(None, target_compound_id, None)
-        steps_path = gap_dir_path / "all_solution_steps.csv"
+def list_solution_steps(config: Any) -> dict[str, Any]:
+    """读取 ``config.solution_id`` 对应的候选路径步骤。"""
 
-        rows = []
-        for row in _read_csv_rows(steps_path):
-            if _to_int(row.get("solution_id"), "solution_id") != selected_solution_id:
-                continue
-            if selected_step_index is not None and _to_int(row.get("step_index"), "step_index") != selected_step_index:
-                continue
-            rows.append(_normalize_row(row))
+    target_compound = validate_target_compound_id(config.target_name)
+    selected_solution_id = int(config.solution_id)
+    raw_step_index = getattr(config, "step_index", None)
+    selected_step_index = int(raw_step_index) if raw_step_index is not None else None
+    gap_dir = Path(config.gap_output_path).expanduser().resolve()
+    steps_path = gap_dir / "all_solution_steps.csv"
 
-        rows.sort(key=lambda item: int(item.get("step_index") or 0))
-        if not rows:
-            target = f"solution_id={selected_solution_id}"
-            if selected_step_index is not None:
-                target += f", step_index={selected_step_index}"
-            raise ValueError(f"No matching solution steps found in {steps_path}: {target}")
+    all_rows = _read_csv_rows(steps_path)
+    if not all_rows:
+        raise ValueError(f"Gap analysis produced no solution steps: {steps_path}")
+    required_columns = {"solution_id", "step_index"}
+    missing_columns = required_columns.difference(all_rows[0])
+    if missing_columns:
+        raise ValueError(
+            f"Missing columns in {steps_path}: {sorted(missing_columns)}"
+        )
 
-        result = {
-            "ok": True,
-            "gap_dir": str(gap_dir_path.resolve()),
-            "all_solution_steps_csv": str(steps_path.resolve()),
-            "solution_id": selected_solution_id,
-            "step_index": selected_step_index,
-            "step_count": len(rows),
-            "steps": rows,
-        }
-        monitor.report_end(tool_name, {"step_count": len(rows)})
-        return result
-    except Exception as exc:
-        monitor.report_error(tool_name, exc)
-        raise
+    rows = []
+    available_solution_ids: set[int] = set()
+    for row in all_rows:
+        row_solution_id = _to_int(row.get("solution_id"), "solution_id")
+        available_solution_ids.add(row_solution_id)
+        if row_solution_id != selected_solution_id:
+            continue
+        if (
+            selected_step_index is not None
+            and _to_int(row.get("step_index"), "step_index")
+            != selected_step_index
+        ):
+            continue
+        rows.append(_normalize_row(row))
+
+    rows.sort(key=lambda item: int(item.get("step_index") or 0))
+    if not rows:
+        if selected_solution_id not in available_solution_ids:
+            raise ValueError(
+                f"solution {selected_solution_id} not found; available solutions: "
+                f"{sorted(available_solution_ids)}"
+            )
+        raise ValueError(
+            f"step {selected_step_index} not found in solution {selected_solution_id}"
+        )
+
+    return {
+        "运行成功": True,
+        "目标化合物": target_compound,
+        "通路分析目录": str(gap_dir),
+        "全部路径步骤文件": str(steps_path),
+        "路径编号": selected_solution_id,
+        "指定步骤编号": selected_step_index,
+        "步骤数量": len(rows),
+        "反应步骤": [_translate_row(row) for row in rows],
+    }
+
+
+def run_solution_steps(config: Any) -> dict[str, Any]:
+    """命令行入口；输入 JSON 和 argparse 参数由 ``main.py`` 负责。"""
+
+    result = list_solution_steps(config)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
