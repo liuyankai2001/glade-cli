@@ -3068,7 +3068,7 @@ def write_outputs(
     target_compound: str,
     result: SearchExecutionResult,
     client: KeggRestClient,
-    output_root: Path,
+    output_dir: Path,
     run_args: Dict[str, Any],
 ) -> Path:
     """清理本目标的旧派生结果，并写出本轮搜索的 CSV/JSON 文件。
@@ -3077,7 +3077,7 @@ def write_outputs(
     验证结果与本轮结果混用；KEGG 缓存和其他目标目录不受影响。
     """
 
-    target_dir = safe_mkdir(output_root / f"kegg_gap_{target_compound}")
+    target_dir = safe_mkdir(output_dir)
     # 同时清除旧版逐 solution 文件，避免它们与新的聚合表并存造成歧义。
     for pattern in (
         "solution_*_steps.csv",
@@ -3202,7 +3202,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     target_compound = validate_target_compound_id(config.target_name)
     model_path = Path(config.model_path).expanduser().resolve()
     reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
-    output_root = Path(config.project_output_path).expanduser().resolve()
+    gap_dir = Path(config.gap_output_path).expanduser().resolve()
     cache_dir = (Path(config.cache_dir).expanduser().resolve() / "kegg")
 
     max_total_steps = _integer_config(
@@ -3320,7 +3320,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         target_compound=target_compound,
         result=result,
         client=client,
-        output_root=output_root,
+        output_dir=gap_dir,
         run_args=run_args,
     )
     return {

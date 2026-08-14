@@ -37,3 +37,4 @@ class RunConfig:
         self.module_filter_mode = 'prefer' # prefer、strict 或 off
         self.electron_avoidance_mode = 'strict_with_fallback' # off、prefer、strict 或 strict_with_fallback
         self.reaction_resolution_mode = 'strict' # strict 或 audit
+        self.gap_output_path = self.project_output_path / f'kegg_gap_{self.target_name}'
