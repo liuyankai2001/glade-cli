@@ -26,35 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from langchain.tools import tool
-from src.config.pathway_config import (
-    DEFAULT_GAP_SEARCH_CONFIG,
-    MAX_HETEROLOGOUS_ENZYMES,
-    PATHWAY_RUNTIME_CONFIG,
-)
-from src.config.service_config import KEGG_HTTP_CONFIG, KEGG_REST_BASE_URL
-from src.runtime.monitor import monitor
-from src.tools.common.endogenous_directionality import (
-    EndogenousDirectionIndex,
-    direction_capable_reaction_count,
-    is_directionally_endogenous,
-    load_endogenous_direction_index,
-)
-from src.tools.common.session_paths import cache_dir as resolve_cache_dir
-from src.tools.common.electron_transfer import (
-    DEFAULT_ELECTRON_FALLBACK_MAX_NEW_ENZYMES,
-    DEFAULT_ELECTRON_FALLBACK_MAX_REACTIONS_PER_COMPOUND,
-    DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE,
-    DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS,
-    ELECTRON_AVOIDANCE_MODES,
-    ElectronRequirement,
-    HIGH_ELECTRON_RISK_SCORE,
-    infer_electron_requirement,
-    summarize_solution_electron_requirements,
-)
-from src.tools.common.session_paths import gem_model_file
-from src.tools.common.session_paths import outputs_dir as resolve_outputs_dir
-from src.tools.common.session_paths import producible_kegg_compounds_file
+
 import cobra
 import pandas as pd
 
@@ -65,20 +37,31 @@ from src.pathway_analyze.target_id import validate_target_compound_id
 # 运行路径、网络请求和搜索默认值
 # ---------------------------------------------------------------------------
 
-CHASSIS_ANALYSIS_RUNNING_MARKER = ".analyze_chassis_metabolites.running"
-REACHABLE_FILE_WAIT_SECONDS = PATHWAY_RUNTIME_CONFIG.reachable_file_wait_seconds
-REACHABLE_FILE_POLL_SECONDS = PATHWAY_RUNTIME_CONFIG.reachable_file_poll_seconds
-REACHABLE_FILE_STARTUP_GRACE_SECONDS = PATHWAY_RUNTIME_CONFIG.reachable_file_startup_grace_seconds
-REACHABLE_MARKER_POLL_SECONDS = PATHWAY_RUNTIME_CONFIG.reachable_marker_poll_seconds
+KEGG_REST_BASE_URL = "https://rest.kegg.jp"
+HTTP_TIMEOUT = 30
+HTTP_RETRIES = 3
+REQUEST_SLEEP_SECONDS = 0.2
 
-HTTP_TIMEOUT = KEGG_HTTP_CONFIG.timeout_seconds
-HTTP_RETRIES = KEGG_HTTP_CONFIG.retries
-REQUEST_SLEEP_SECONDS = KEGG_HTTP_CONFIG.sleep_seconds
+DEFAULT_MAX_TOTAL_STEPS = 10
+DEFAULT_MAX_NEW_ENZYMES = 10
+DEFAULT_MAX_SOLUTIONS = 5
+DEFAULT_MAX_REACTIONS_PER_COMPOUND = 10
+DEFAULT_MAX_MAJOR_PRECURSORS = 4
+DEFAULT_MAX_ROUTES_PER_STATE = 3
+DEFAULT_MAX_MODULE_CHAIN_DEPTH = 5
+DEFAULT_MODULE_FILTER_MODE = "prefer"
+DEFAULT_ELECTRON_AVOIDANCE_MODE = "prefer"
 
-DEFAULT_MAX_ROUTES_PER_STATE = DEFAULT_GAP_SEARCH_CONFIG.max_routes_per_state
-DEFAULT_MAX_MODULE_CHAIN_DEPTH = DEFAULT_GAP_SEARCH_CONFIG.max_module_chain_depth
-DEFAULT_MODULE_FILTER_MODE = DEFAULT_GAP_SEARCH_CONFIG.module_filter_mode
-DEFAULT_ELECTRON_AVOIDANCE_MODE = DEFAULT_GAP_SEARCH_CONFIG.electron_avoidance_mode
+ELECTRON_AVOIDANCE_MODES = frozenset(
+    {"off", "prefer", "strict", "strict_with_fallback"}
+)
+HIGH_ELECTRON_RISK_SCORE = 2
+DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS = 20
+DEFAULT_ELECTRON_FALLBACK_MAX_NEW_ENZYMES = 20
+DEFAULT_ELECTRON_FALLBACK_MAX_REACTIONS_PER_COMPOUND = 15
+DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE = 5
+
+EndogenousDirectionIndex = Dict[str, frozenset[str]]
 SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
 REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
@@ -219,6 +202,19 @@ class ReactionScreening:
     coa_burden: float
     thermo_direction: str
     rule_hits: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ElectronRequirement:
+    """一个定向反应的电子载体需求及其工程风险。"""
+
+    carrier_ids: Tuple[str, ...]
+    requirement_classes: Tuple[str, ...]
+    risk_level: str
+    risk_score: int
+    evidence: Tuple[str, ...]
+    avoid_if_alternative_exists: bool
+    requires_downstream_electron_design: bool
 
 
 @dataclass(frozen=True)
@@ -418,6 +414,183 @@ def dedupe_keep_order(values: Iterable[str]) -> Tuple[str, ...]:
         seen.add(value)
         ordered.append(value)
     return tuple(ordered)
+
+
+def infer_electron_requirement(
+    *,
+    consumed_stoichiometry: Sequence[Tuple[str, float]],
+    produced_stoichiometry: Sequence[Tuple[str, float]],
+    reaction_name: str,
+    reaction_comment: str,
+    equation: str,
+    enzyme_ecs: Sequence[str],
+) -> ElectronRequirement:
+    """根据显式电子载体和酶注释标记电子系统工程风险。"""
+
+    consumed_ids = {compound_id for compound_id, _ in consumed_stoichiometry}
+    produced_ids = {compound_id for compound_id, _ in produced_stoichiometry}
+    involved_ids = consumed_ids | produced_ids
+    carrier_classes = {
+        "C00004": "nadh",
+        "C00005": "nadph",
+        "C00138": "ferredoxin",
+        "C00139": "ferredoxin",
+        "C00342": "thioredoxin",
+        "C00343": "thioredoxin",
+        "C00028": "generic_electron_acceptor",
+        "C00030": "generic_electron_acceptor",
+        "C03024": "hemoprotein_reductase",
+        "C03161": "hemoprotein_reductase",
+        "C14818": "ferredoxin",
+    }
+    carrier_ids = dedupe_keep_order(
+        compound_id for compound_id in carrier_classes if compound_id in involved_ids
+    )
+    requirement_classes = list(
+        dedupe_keep_order(carrier_classes[compound_id] for compound_id in carrier_ids)
+    )
+    evidence: List[str] = [
+        f"explicit_carrier:{compound_id}" for compound_id in carrier_ids
+    ]
+
+    searchable_text = " ".join(
+        (reaction_name, reaction_comment, equation, " ".join(enzyme_ecs))
+    ).lower()
+    if "ferredoxin" in searchable_text and "ferredoxin" not in requirement_classes:
+        requirement_classes.append("ferredoxin")
+        evidence.append("annotation:ferredoxin")
+    if "thioredoxin" in searchable_text and "thioredoxin" not in requirement_classes:
+        requirement_classes.append("thioredoxin")
+        evidence.append("annotation:thioredoxin")
+    if (
+        "cytochrome p450" in searchable_text
+        or "p450" in searchable_text
+        or any(str(ec).startswith("1.14.") for ec in enzyme_ecs)
+    ):
+        requirement_classes.append("oxygenase_electron_partner")
+        evidence.append("annotation:oxygenase_or_p450")
+
+    requirement_classes = list(dedupe_keep_order(requirement_classes))
+    high_risk_classes = {
+        "ferredoxin",
+        "thioredoxin",
+        "generic_electron_acceptor",
+        "hemoprotein_reductase",
+        "oxygenase_electron_partner",
+    }
+    if high_risk_classes.intersection(requirement_classes):
+        risk_score = 2
+    elif requirement_classes:
+        risk_score = 1
+    else:
+        risk_score = 0
+    risk_level = {0: "none", 1: "low", 2: "high"}[risk_score]
+
+    return ElectronRequirement(
+        carrier_ids=carrier_ids,
+        requirement_classes=tuple(requirement_classes),
+        risk_level=risk_level,
+        risk_score=risk_score,
+        evidence=tuple(evidence),
+        avoid_if_alternative_exists=risk_score >= HIGH_ELECTRON_RISK_SCORE,
+        requires_downstream_electron_design=risk_score >= HIGH_ELECTRON_RISK_SCORE,
+    )
+
+
+def summarize_solution_electron_requirements(
+    step_fields: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """汇总路线内各步的电子系统风险，供 CSV 和结果摘要复用。"""
+
+    rows = list(step_fields)
+    max_score = max((int(row.get("electron_risk_score", 0)) for row in rows), default=0)
+    risk_level = {0: "none", 1: "low", 2: "high"}.get(max_score, "high")
+    requires_design = any(
+        bool(row.get("requires_downstream_electron_design", False)) for row in rows
+    )
+    carrier_ids = dedupe_keep_order(
+        carrier_id
+        for row in rows
+        for carrier_id in str(row.get("electron_carrier_ids", "")).split(";")
+        if carrier_id
+    )
+    requirement_classes = dedupe_keep_order(
+        class_name
+        for row in rows
+        for class_name in str(row.get("electron_requirement_classes", "")).split(";")
+        if class_name
+    )
+    return {
+        "max_electron_risk_level": risk_level,
+        "max_electron_risk_score": max_score,
+        "electron_system_status": "design_required" if requires_design else (
+            "low_risk" if max_score else "not_required"
+        ),
+        "requires_downstream_electron_design": requires_design,
+        "electron_carrier_ids": ";".join(carrier_ids),
+        "electron_requirement_classes": ";".join(requirement_classes),
+    }
+
+
+def load_endogenous_direction_index(
+    model_path: str | Path,
+    allowed_compartments: set[str] | frozenset[str] | None = None,
+) -> EndogenousDirectionIndex:
+    """从 GEM 注释和反应上下界建立“KEGG 反应可生成化合物”索引。"""
+
+    model = cobra.io.load_json_model(str(model_path))
+    allowed = set(allowed_compartments) if allowed_compartments is not None else None
+    mutable_index: Dict[str, set[str]] = {}
+
+    for reaction in model.reactions:
+        reaction_ids = dedupe_keep_order(
+            normalize_kegg_id(value)
+            for value in normalize_annotation_value(
+                (getattr(reaction, "annotation", {}) or {}).get("kegg.reaction")
+            )
+            if REACTION_ID_PATTERN.fullmatch(normalize_kegg_id(value))
+        )
+        if not reaction_ids:
+            continue
+
+        producible_ids: set[str] = set()
+        for metabolite, coefficient in reaction.metabolites.items():
+            if allowed is not None and metabolite.compartment not in allowed:
+                continue
+            direction_allowed = (
+                coefficient > 0 and reaction.upper_bound > 0
+            ) or (
+                coefficient < 0 and reaction.lower_bound < 0
+            )
+            if not direction_allowed:
+                continue
+            annotation = getattr(metabolite, "annotation", {}) or {}
+            for key in ("kegg.compound", "kegg.drug", "kegg.glycan"):
+                for raw_id in normalize_annotation_value(annotation.get(key)):
+                    compound_id = normalize_kegg_id(raw_id)
+                    if KEGG_ID_PATTERN.fullmatch(compound_id):
+                        producible_ids.add(compound_id)
+
+        for reaction_id in reaction_ids:
+            mutable_index.setdefault(reaction_id, set()).update(producible_ids)
+
+    return {
+        reaction_id: frozenset(compound_ids)
+        for reaction_id, compound_ids in mutable_index.items()
+        if compound_ids
+    }
+
+
+def is_directionally_endogenous(
+    reaction_id: str,
+    produced_compound: str,
+    index: EndogenousDirectionIndex,
+) -> bool:
+    return produced_compound in index.get(reaction_id, frozenset())
+
+
+def direction_capable_reaction_count(index: EndogenousDirectionIndex) -> int:
+    return len(index)
 
 
 def parse_kegg_flatfile(text: str) -> Dict[str, List[str]]:
@@ -1489,41 +1662,6 @@ def load_reachable_compounds(path: Path) -> Tuple[set[str], pd.DataFrame]:
     df["kegg_id"] = df["kegg_id"].astype(str).map(normalize_kegg_id)
     reachable = {kid for kid in df["kegg_id"] if KEGG_ID_PATTERN.match(kid)}
     return reachable, df
-
-
-def wait_for_reachable_compounds_file(path: Path, timeout_seconds: int = REACHABLE_FILE_WAIT_SECONDS) -> None:
-    """在底盘分析仍运行时等待其原子地产生可达化合物文件。
-
-    running marker 不存在意味着上游没有运行或已经失败，此时立即报错；marker
-    存在时才轮询等待，从而避免通路搜索读到尚未写完的中间文件。
-    """
-
-    if path.exists():
-        return
-
-    marker_path = path.parent / CHASSIS_ANALYSIS_RUNNING_MARKER
-    startup_deadline = time.monotonic() + REACHABLE_FILE_STARTUP_GRACE_SECONDS
-    while not marker_path.exists() and time.monotonic() < startup_deadline:
-        if path.exists():
-            return
-        time.sleep(REACHABLE_MARKER_POLL_SECONDS)
-
-    if not marker_path.exists():
-        raise FileNotFoundError(f"Reachable KEGG file not found: {path}")
-
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if path.exists():
-            return
-        if not marker_path.exists():
-            break
-        time.sleep(REACHABLE_FILE_POLL_SECONDS)
-
-    if path.exists():
-        return
-    raise FileNotFoundError(
-        f"Reachable KEGG file not found after waiting for chassis analysis: {path}"
-    )
 
 
 def option_is_endogenous(
@@ -3045,142 +3183,170 @@ def write_outputs(
     return target_dir
 
 
-@tool
-def kegg_gap_analyze(
-    target: str,
-    max_total_steps: int = 10,
-    max_new_enzymes: int = MAX_HETEROLOGOUS_ENZYMES,
-    max_solutions: int = 5,
-    max_reactions_per_compound: int = 10,
-    max_major_precursors: int = 4,
-    max_routes_per_state: int = 3,
-    max_module_chain_depth: int = 5,
-    module_filter_mode: str = "prefer",
-    electron_avoidance_mode: str = DEFAULT_ELECTRON_AVOIDANCE_MODE,
-    reaction_resolution_mode: str = "strict",
-):
-    """
-    分析目标 KEGG 化合物到宿主可产物的候选异源路径缺口。
-    
-    调用时机：用户给定目标化合物并要求通路/gap 分析。
-    输入：target_compound_id、底盘/培养基/搜索参数。
-    返回：ok、候选 solution 摘要、输出目录和后续蛋白选择所需文件。
-    限制：长耗时计算；不写 manifest，用户确认方案后再调用 write_solution_to_manifest。
-    """
+def _integer_config(
+    config: Any,
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+) -> int:
+    value = int(getattr(config, name, default))
+    if value < minimum:
+        raise ValueError(f"{name} must be greater than or equal to {minimum}")
+    return value
 
-    tool_name = "kegg_gap_analyze"
-    monitor.report_start(tool_name, {"target": target})
-    try:
-        # 1. 参数校验
-        if module_filter_mode not in {"prefer", "strict", "off"}:
-            raise ValueError(
-                f"module_filter_mode must be one of: prefer, strict, off. "
-                f"Got: {module_filter_mode}"
-            )
-        electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
-        reaction_resolution_mode = validate_reaction_resolution_mode(
-            reaction_resolution_mode
+
+def kegg_gap_analyze(config: Any) -> dict[str, Any]:
+    """使用 ``RunConfig`` 执行底盘感知的 KEGG gap 搜索。"""
+
+    target_compound = validate_target_compound_id(config.target_name)
+    model_path = Path(config.model_path).expanduser().resolve()
+    reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
+    output_root = Path(config.project_output_path).expanduser().resolve()
+    cache_dir = (Path(config.cache_dir).expanduser().resolve() / "kegg")
+
+    max_total_steps = _integer_config(
+        config, "max_total_steps", DEFAULT_MAX_TOTAL_STEPS, minimum=1
+    )
+    max_new_enzymes = _integer_config(
+        config, "max_new_enzymes", DEFAULT_MAX_NEW_ENZYMES, minimum=0
+    )
+    max_solutions = _integer_config(
+        config, "max_solutions", DEFAULT_MAX_SOLUTIONS, minimum=1
+    )
+    max_reactions_per_compound = _integer_config(
+        config,
+        "max_reactions_per_compound",
+        DEFAULT_MAX_REACTIONS_PER_COMPOUND,
+        minimum=1,
+    )
+    max_major_precursors = _integer_config(
+        config,
+        "max_major_precursors",
+        DEFAULT_MAX_MAJOR_PRECURSORS,
+        minimum=1,
+    )
+    max_routes_per_state = _integer_config(
+        config,
+        "max_routes_per_state",
+        DEFAULT_MAX_ROUTES_PER_STATE,
+        minimum=1,
+    )
+    max_module_chain_depth = _integer_config(
+        config,
+        "max_module_chain_depth",
+        DEFAULT_MAX_MODULE_CHAIN_DEPTH,
+        minimum=0,
+    )
+    module_filter_mode = str(
+        getattr(config, "module_filter_mode", DEFAULT_MODULE_FILTER_MODE)
+    ).strip().lower()
+    electron_avoidance_mode = validate_electron_avoidance_mode(
+        getattr(config, "electron_avoidance_mode", DEFAULT_ELECTRON_AVOIDANCE_MODE)
+    )
+    reaction_resolution_mode = validate_reaction_resolution_mode(
+        getattr(config, "reaction_resolution_mode", "strict")
+    )
+
+    if module_filter_mode not in {"prefer", "strict", "off"}:
+        raise ValueError(
+            "module_filter_mode must be one of: prefer, strict, off. "
+            f"Got: {module_filter_mode}"
+        )
+    if not model_path.is_file():
+        raise FileNotFoundError(f"GEM model file not found: {model_path}")
+    if model_path.suffix.lower() != ".json":
+        raise ValueError(f"Only JSON GEM models are supported: {model_path}")
+    if not reachable_path.is_file():
+        raise FileNotFoundError(
+            "Chassis analysis output not found. Run the chassis command first: "
+            f"{reachable_path}"
         )
 
-        target_compound = validate_target_compound_id(target)
+    print("[INFO] loading chassis reachable compounds and GEM directions")
+    reachable_compounds, _ = load_reachable_compounds(reachable_path)
+    endogenous_direction_index = load_endogenous_direction_index(
+        model_path,
+        allowed_compartments=ENDOGENOUS_DIRECTION_COMPARTMENTS,
+    )
+    endogenous_reactions = set(endogenous_direction_index)
+    client = KeggRestClient(cache_dir)
 
-        # 2. 统一转 Path
-        model_path_obj = gem_model_file()
-        output_root_obj = resolve_outputs_dir()
-        reachable_path_obj = producible_kegg_compounds_file()
-        cache_dir_obj = resolve_cache_dir()
+    print(f"[INFO] searching KEGG gap routes for {target_compound}")
+    result = run_search_gap_analysis(
+        target_compound=target_compound,
+        reachable_compounds=reachable_compounds,
+        endogenous_reactions=endogenous_reactions,
+        client=client,
+        max_total_steps=max_total_steps,
+        max_new_enzymes=max_new_enzymes,
+        max_solutions=max_solutions,
+        max_reactions_per_compound=max_reactions_per_compound,
+        max_major_precursors=max_major_precursors,
+        ignored_common_compounds=set(IGNORED_COMMON_COMPOUNDS),
+        module_filter_mode=module_filter_mode,
+        max_routes_per_state=max_routes_per_state,
+        max_module_chain_depth=max_module_chain_depth,
+        electron_avoidance_mode=electron_avoidance_mode,
+        reaction_resolution_mode=reaction_resolution_mode,
+        endogenous_direction_index=endogenous_direction_index,
+    )
 
-        # 3. 加载输入
-        monitor.report_running(tool_name, "正在加载可达化合物和内源 KEGG 反应...", progress=0.15)
-        if not reachable_path_obj.exists() and (reachable_path_obj.parent / CHASSIS_ANALYSIS_RUNNING_MARKER).exists():
-            monitor.report_running(
-                tool_name,
-                "正在等待底盘可达性分析完成...",
-                progress=0.12,
-            )
-        wait_for_reachable_compounds_file(reachable_path_obj)
-        reachable_compounds, _ = load_reachable_compounds(reachable_path_obj)
-        endogenous_direction_index = load_endogenous_direction_index(
-            model_path_obj,
-            allowed_compartments=ENDOGENOUS_DIRECTION_COMPARTMENTS,
-        )
-        endogenous_reactions = set(endogenous_direction_index)
+    run_args: dict[str, Any] = {
+        "target": target_compound,
+        "model_path": str(model_path),
+        "reachable_file": str(reachable_path),
+        "max_total_steps": max_total_steps,
+        "max_new_enzymes": max_new_enzymes,
+        "max_solutions": max_solutions,
+        "max_reactions_per_compound": max_reactions_per_compound,
+        "max_major_precursors": max_major_precursors,
+        "max_routes_per_state": max_routes_per_state,
+        "max_module_chain_depth": max_module_chain_depth,
+        "module_filter_mode": module_filter_mode,
+        "electron_avoidance_mode": electron_avoidance_mode,
+        "reaction_resolution_mode": reaction_resolution_mode,
+        "endogenous_direction_mode": ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS,
+        "endogenous_direction_compartments": sorted(
+            ENDOGENOUS_DIRECTION_COMPARTMENTS
+        ),
+        "endogenous_direction_capable_reactions": direction_capable_reaction_count(
+            endogenous_direction_index
+        ),
+    }
 
-        # 4. 初始化 KEGG client
-        client = KeggRestClient(cache_dir_obj)
+    print("[INFO] writing gap analysis outputs")
+    output_dir = write_outputs(
+        target_compound=target_compound,
+        result=result,
+        client=client,
+        output_root=output_root,
+        run_args=run_args,
+    )
+    return {
+        "ok": True,
+        "target_compound": target_compound,
+        "output_dir": str(output_dir.resolve()),
+        "solutions_file": str((output_dir / "solutions.csv").resolve()),
+        "all_solution_steps_file": str(
+            (output_dir / "all_solution_steps.csv").resolve()
+        ),
+        "rejected_reaction_routes_file": str(
+            (output_dir / "rejected_reaction_routes.csv").resolve()
+        ),
+        "solution_count": len(result.solutions),
+        "search_mode_used": result.search_mode_used,
+        "did_fallback": result.did_fallback,
+        "electron_avoidance_mode": result.electron_avoidance_mode,
+        "electron_avoidance_fallback": result.electron_avoidance_fallback,
+        "reaction_resolution_mode": result.reaction_resolution_mode,
+        "rejected_reaction_route_count": len(result.rejected_solutions),
+    }
 
-        # 5. 搜索 KEGG gap solutions
-        monitor.report_running(tool_name, "正在搜索候选异源合成路径...", progress=0.45)
-        result = run_search_gap_analysis(
-            target_compound=target_compound,
-            reachable_compounds=reachable_compounds,
-            endogenous_reactions=endogenous_reactions,
-            client=client,
-            max_total_steps=max_total_steps,
-            max_new_enzymes=max_new_enzymes,
-            max_solutions=max_solutions,
-            max_reactions_per_compound=max_reactions_per_compound,
-            max_major_precursors=max_major_precursors,
-            ignored_common_compounds=set(IGNORED_COMMON_COMPOUNDS),
-            module_filter_mode=module_filter_mode,
-            max_routes_per_state=max_routes_per_state,
-            max_module_chain_depth=max_module_chain_depth,
-            electron_avoidance_mode=electron_avoidance_mode,
-            reaction_resolution_mode=reaction_resolution_mode,
-            endogenous_direction_index=endogenous_direction_index,
-        )
 
-        # 6. 手动构造 run_args，代替 vars(args)
-        run_args: dict[str, Any] = {
-            "target": target_compound,
-            "model_path": str(model_path_obj),
-            "reachable_file": str(reachable_path_obj),
-            "max_total_steps": max_total_steps,
-            "max_new_enzymes": max_new_enzymes,
-            "max_solutions": max_solutions,
-            "max_reactions_per_compound": max_reactions_per_compound,
-            "max_major_precursors": max_major_precursors,
-            "max_routes_per_state": max_routes_per_state,
-            "max_module_chain_depth": max_module_chain_depth,
-            "module_filter_mode": module_filter_mode,
-            "electron_avoidance_mode": electron_avoidance_mode,
-            "reaction_resolution_mode": reaction_resolution_mode,
-            "endogenous_direction_mode": ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS,
-            "endogenous_direction_compartments": sorted(
-                ENDOGENOUS_DIRECTION_COMPARTMENTS
-            ),
-            "endogenous_direction_capable_reactions": direction_capable_reaction_count(
-                endogenous_direction_index
-            ),
-        }
+def run_gap(config: Any) -> dict[str, Any]:
+    """命令行运行入口；JSON 读取和 ``RunConfig`` 构造由 ``main.py`` 负责。"""
 
-        # 7. 写输出文件
-        monitor.report_running(tool_name, "正在写入 gap analysis 输出文件...", progress=0.9)
-        output_dir = write_outputs(
-            target_compound=target_compound,
-            result=result,
-            client=client,
-            output_root=output_root_obj,
-            run_args=run_args,
-        )
-        result_payload = {
-            "target_compound": target_compound,
-            "output_dir": str(output_dir.resolve()),
-            "solutions_file": str((output_dir / "solutions.csv").resolve()),
-            "all_solution_steps_file": str((output_dir / "all_solution_steps.csv").resolve()),
-            "rejected_reaction_routes_file": str(
-                (output_dir / "rejected_reaction_routes.csv").resolve()
-            ),
-            "solution_count": len(result.solutions),
-            "search_mode_used": result.search_mode_used,
-            "did_fallback": result.did_fallback,
-            "electron_avoidance_mode": result.electron_avoidance_mode,
-            "electron_avoidance_fallback": result.electron_avoidance_fallback,
-            "reaction_resolution_mode": result.reaction_resolution_mode,
-            "rejected_reaction_route_count": len(result.rejected_solutions),
-        }
-        monitor.report_end(tool_name, result_payload)
-        return result_payload
-    except Exception as exc:
-        monitor.report_error(tool_name, exc)
-        raise
+    result = kegg_gap_analyze(config)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
