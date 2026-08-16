@@ -41,6 +41,7 @@ KEGG_REST_BASE_URL = "https://rest.kegg.jp"
 HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3
 REQUEST_SLEEP_SECONDS = 0.2
+GAP_DEPTH_DIR_TEMPLATE = "depth{depth}"
 
 DEFAULT_MAX_TOTAL_STEPS = 10
 DEFAULT_MAX_NEW_ENZYMES = 10
@@ -372,6 +373,17 @@ def safe_mkdir(path: str | Path) -> Path:
     out = Path(path)
     out.mkdir(parents=True, exist_ok=True)
     return out
+
+
+def gap_depth_output_dir(base_output_dir: str | Path, depth: int) -> Path:
+    """返回某个底盘扩展深度专属的 gap 结果目录。"""
+
+    normalized_depth = int(depth)
+    if normalized_depth < 0:
+        raise ValueError("depth must be greater than or equal to 0")
+    return Path(base_output_dir) / GAP_DEPTH_DIR_TEMPLATE.format(
+        depth=normalized_depth
+    )
 
 
 def normalize_annotation_value(value: Any) -> List[str]:
@@ -3646,11 +3658,12 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     model_path = Path(config.model_path).expanduser().resolve()
     base_reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
     chassis_output_dir = Path(config.chassis_output_path).expanduser().resolve()
-    gap_dir = Path(config.gap_output_path).expanduser().resolve()
+    gap_root_dir = Path(config.gap_output_path).expanduser().resolve()
     cache_dir = (Path(config.cache_dir).expanduser().resolve() / "kegg")
     expansion_depth = int(getattr(config, "depth", 0))
     if expansion_depth < 0:
         raise ValueError("depth must be greater than or equal to 0")
+    gap_dir = gap_depth_output_dir(gap_root_dir, expansion_depth)
 
     max_total_steps = _integer_config(
         config, "max_total_steps", DEFAULT_MAX_TOTAL_STEPS, minimum=1
@@ -3765,6 +3778,8 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     run_args: dict[str, Any] = {
         "target": target_compound,
         "model_path": str(model_path),
+        "gap_output_root": str(gap_root_dir),
+        "gap_depth_output_dir": str(gap_dir),
         "base_reachable_file": str(base_reachable_path),
         "reachable_file": str(reachable_path),
         "expansion_depth": expansion_depth,
@@ -3789,7 +3804,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         ),
     }
 
-    print("[INFO] writing gap analysis outputs")
+    print(f"[INFO] writing gap analysis outputs to depth directory: {gap_dir}")
     output_dir = write_outputs(
         target_compound=target_compound,
         result=result,

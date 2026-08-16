@@ -13,10 +13,12 @@ from src.pathway_analyze.expand_chassis_metabolites import (
     ensure_expansion_depth,
     load_expansion_bundle,
 )
+from src.pathway_analyze.gem_validation import validation_depth_output_dir
 from src.pathway_analyze.kegg_gap_analyze import (
     KeggRestClient,
     ReactionRecord,
     build_frontier_bridge_plans,
+    gap_depth_output_dir,
     materialize_frontier_solution,
     search_gap_solutions_once,
     Solution,
@@ -210,6 +212,17 @@ class ExpansionAlgorithmTests(unittest.TestCase):
         index = client.get_compound_reaction_index()
         self.assertEqual(("R10000", "R10003"), index["C10000"])
         self.assertEqual(("R10001",), index["C10001"])
+
+    def test_gap_output_directory_is_partitioned_by_depth(self) -> None:
+        gap_root = self.root / "kegg_gap_C10000"
+        self.assertEqual(gap_root / "depth0", gap_depth_output_dir(gap_root, 0))
+        self.assertEqual(gap_root / "depth2", gap_depth_output_dir(gap_root, 2))
+        self.assertEqual(
+            gap_root / "depth2" / "gem_validation",
+            validation_depth_output_dir(gap_root, 2),
+        )
+        with self.assertRaisesRegex(ValueError, "greater than or equal to 0"):
+            gap_depth_output_dir(gap_root, -1)
 
     def test_prefetch_reuses_individual_reaction_files_across_batches(self) -> None:
         cache_dir = self.root / "kegg_cache"

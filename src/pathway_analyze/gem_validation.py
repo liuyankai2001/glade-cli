@@ -15,6 +15,7 @@ import pandas as pd
 from cobra.flux_analysis import flux_variability_analysis, pfba
 from cobra.util.solver import linear_reaction_coefficients
 
+from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
@@ -53,6 +54,12 @@ GENERIC_COFACTOR_IDS = {
     "C03161",  # Oxidized NADPH---hemoprotein reductase
     "C14818",  # Reduced ferredoxin [iron-sulfur cluster]
 }
+
+
+def validation_depth_output_dir(base_gap_dir: str | Path, depth: int) -> Path:
+    """返回指定 gap depth 对应的 GEM 验证输出目录。"""
+
+    return gap_depth_output_dir(base_gap_dir, depth) / "gem_validation"
 
 
 @dataclass(frozen=True)
@@ -1065,9 +1072,11 @@ def gem_validate(config: Any) -> dict[str, Any]:
     target_compound = validate_target_compound_id(config.target_name)
     model_path = Path(config.model_path).expanduser().resolve()
     medium_path = Path(config.medium_path).expanduser().resolve()
-    gap_dir = Path(config.gap_output_path).expanduser().resolve()
+    gap_root_dir = Path(config.gap_output_path).expanduser().resolve()
+    expansion_depth = int(getattr(config, "depth", 0))
+    gap_dir = gap_depth_output_dir(gap_root_dir, expansion_depth)
     cache_dir = Path(config.cache_dir).expanduser().resolve() / "kegg"
-    output_dir = Path(config.validation_output_path).expanduser().resolve()
+    output_dir = validation_depth_output_dir(gap_root_dir, expansion_depth)
 
     requested_mode = str(
         getattr(config, "validation_mode", DEFAULT_MODE)
@@ -1121,8 +1130,10 @@ def gem_validate(config: Any) -> dict[str, Any]:
 
     print(
         f"[INFO] validating {len(selected_solution_ids)} gap solution(s) "
-        f"for {target_compound}"
+        f"for {target_compound} at depth {expansion_depth}"
     )
+    print(f"[INFO] gap solution directory: {gap_dir}")
+    print(f"[INFO] validation output directory: {output_dir}")
     summary_df, flux_df = validate_gap_output(
         target_compound=target_compound,
         gap_dir=gap_dir,
@@ -1153,6 +1164,8 @@ def gem_validate(config: Any) -> dict[str, Any]:
     return {
         "ok": True,
         "target_compound": target_compound,
+        "expansion_depth": expansion_depth,
+        "gap_dir": str(gap_dir.resolve()),
         "validation_mode": mode,
         "solution_ids": list(selected_solution_ids),
         "cofactor_mode": cofactor_mode,

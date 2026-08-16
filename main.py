@@ -28,6 +28,7 @@ chassis_parser.set_defaults(func=run_chassis)
 # 扩展底盘可提供代谢物集合
 expand_parser = sub_parser.add_parser("expand", help="根据 KEGG 反应分层扩展底盘可提供代谢物集合")
 expand_parser.add_argument(
+    '-d',
     "--depth",
     type=int,
     help="扩展深度，必须大于等于 1",
@@ -45,6 +46,7 @@ expand_parser.set_defaults(func=run_expand)
 gap_parser = sub_parser.add_parser('gap',help='底盘细胞通路分析')
 gap_parser.add_argument('-i','--input',type=str,help='输入配置文件')
 gap_parser.add_argument(
+    '-d',
     "--depth",
     type=int,
     default=0,
@@ -72,6 +74,13 @@ validation_parser.add_argument(
     choices=("strict", "relaxed"),
     default="strict",
     help="辅因子模式",
+)
+validation_parser.add_argument(
+    '-d',
+    "--depth",
+    type=int,
+    default=0,
+    help="需要验证的 gap 结果深度，默认 0",
 )
 validation_parser.set_defaults(func=run_validation)
 
