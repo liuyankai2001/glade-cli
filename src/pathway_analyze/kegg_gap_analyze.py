@@ -247,6 +247,9 @@ class PlanStep:
     source_reaction_ids: Tuple[str, ...] = tuple()
     resolution_action: str = "none"
     resolution_evidence: Tuple[str, ...] = tuple()
+    step_source: str = "target_reverse_search"
+    expansion_depth: int = 0
+    expansion_anchor_compounds: Tuple[str, ...] = tuple()
 
 
 @dataclass(frozen=True)
@@ -755,6 +758,37 @@ class KeggRestClient:
         ordered = dedupe_keep_order(reaction_ids)
         self._compound_reactions_cache[compound_id] = ordered
         return ordered
+
+    def get_compound_reaction_index(self) -> Dict[str, Tuple[str, ...]]:
+        """一次读取 KEGG compound→reaction 全量关联并建立内存索引。
+
+        分层底盘扩展需要从数百个 A0 化合物同时向前展开。使用数据库到数据库
+        的 link 接口可避免逐化合物发起数百次网络请求；响应仍由 ``_fetch_text``
+        写入既有磁盘缓存。
+        """
+
+        text = self._fetch_text(
+            f"{KEGG_REST_BASE_URL}/link/reaction/compound",
+            "compound_to_reaction:all",
+        )
+        mutable: Dict[str, List[str]] = {}
+        for line in text.splitlines():
+            if "\t" not in line:
+                continue
+            raw_compound_id, raw_reaction_id = line.split("\t", 1)
+            compound_id = normalize_kegg_id(raw_compound_id)
+            reaction_id = normalize_kegg_id(raw_reaction_id)
+            if not KEGG_ID_PATTERN.fullmatch(compound_id):
+                continue
+            if not REACTION_ID_PATTERN.fullmatch(reaction_id):
+                continue
+            mutable.setdefault(compound_id, []).append(reaction_id)
+        index = {
+            compound_id: dedupe_keep_order(reaction_ids)
+            for compound_id, reaction_ids in mutable.items()
+        }
+        self._compound_reactions_cache.update(index)
+        return index
 
     def get_reaction(self, reaction_id: str) -> ReactionRecord:
         """获取并解析一个 KEGG reaction；已缓存条目不会再次请求网络。"""
@@ -2176,6 +2210,235 @@ def make_plan_step(
     )
 
 
+def _merge_unique_plan_steps(steps: Sequence[PlanStep]) -> Tuple[PlanStep, ...]:
+    """按反应方向合并重复步骤，同时保留扩展锚点审计信息。"""
+
+    merged: List[PlanStep] = []
+    index_by_reaction: Dict[Tuple[str, str], int] = {}
+    for step in steps:
+        key = (step.option.reaction.reaction_id, step.option.direction)
+        if key not in index_by_reaction:
+            index_by_reaction[key] = len(merged)
+            merged.append(step)
+            continue
+        index = index_by_reaction[key]
+        existing = merged[index]
+        source_values = dedupe_keep_order((
+            *existing.source_reaction_ids,
+            *step.source_reaction_ids,
+        ))
+        evidence = dedupe_keep_order((
+            *existing.resolution_evidence,
+            *step.resolution_evidence,
+        ))
+        anchors = dedupe_keep_order((
+            *existing.expansion_anchor_compounds,
+            *step.expansion_anchor_compounds,
+        ))
+        if existing.step_source == step.step_source:
+            step_source = existing.step_source
+        else:
+            step_source = "target_and_chassis_expansion"
+        merged[index] = replace(
+            existing,
+            source_reaction_ids=source_values,
+            resolution_evidence=evidence,
+            step_source=step_source,
+            expansion_depth=max(existing.expansion_depth, step.expansion_depth),
+            expansion_anchor_compounds=anchors,
+        )
+    return tuple(merged)
+
+
+def _bridge_plan_sort_key(
+    steps: Sequence[PlanStep],
+) -> Tuple[Any, ...]:
+    return (
+        sum(not step.is_endogenous for step in steps),
+        len(steps),
+        max(
+            (
+                step.option.electron_requirement.risk_score
+                for step in steps
+            ),
+            default=0,
+        ),
+        sum(step.option.screening.sam_burden for step in steps),
+        sum(step.option.screening.nadph_burden for step in steps),
+        sum(step.option.screening.coa_burden for step in steps),
+        plan_route_signature(steps),
+    )
+
+
+def build_frontier_bridge_plans(
+    *,
+    compound_id: str,
+    expansion_bundle: Any,
+    client: KeggRestClient,
+    ignored_common_compounds: set[str],
+    max_plans: int,
+    memo: Dict[str, Tuple[Tuple[PlanStep, ...], ...]] | None = None,
+) -> Tuple[Tuple[PlanStep, ...], ...]:
+    """递归恢复一个扩展锚点到 A0 的前向反应树，并保留最佳 Top-K。"""
+
+    plan_limit = max(1, int(max_plans))
+    if compound_id in expansion_bundle.base_compounds:
+        return (tuple(),)
+    if memo is None:
+        memo = {}
+    if compound_id in memo:
+        return memo[compound_id]
+
+    compound_depth = int(expansion_bundle.depth_by_compound.get(compound_id, -1))
+    if compound_depth <= 0:
+        memo[compound_id] = tuple()
+        return tuple()
+
+    candidates: List[Tuple[PlanStep, ...]] = []
+    witnesses = expansion_bundle.witnesses_by_product.get(compound_id, tuple())
+    for witness in witnesses:
+        if int(witness.depth) != compound_depth:
+            continue
+        substrate_plan_groups: List[Tuple[Tuple[PlanStep, ...], ...]] = []
+        valid_witness = True
+        for substrate_id in witness.substrate_compounds:
+            if substrate_id in expansion_bundle.base_compounds:
+                substrate_plan_groups.append((tuple(),))
+                continue
+            substrate_depth = int(
+                expansion_bundle.depth_by_compound.get(substrate_id, -1)
+            )
+            if substrate_depth < 0 or substrate_depth >= compound_depth:
+                valid_witness = False
+                break
+            substrate_plans = build_frontier_bridge_plans(
+                compound_id=substrate_id,
+                expansion_bundle=expansion_bundle,
+                client=client,
+                ignored_common_compounds=ignored_common_compounds,
+                max_plans=plan_limit,
+                memo=memo,
+            )
+            if not substrate_plans:
+                valid_witness = False
+                break
+            substrate_plan_groups.append(substrate_plans)
+        if not valid_witness:
+            continue
+
+        reaction = client.try_get_reaction(witness.reaction_id)
+        if reaction is None:
+            continue
+        option = make_reaction_option(
+            compound_id=compound_id,
+            reaction=reaction,
+            direction=witness.direction,
+            ignored_common_compounds=ignored_common_compounds,
+        )
+        bridge_step = PlanStep(
+            option=option,
+            reachable_precursors=tuple(
+                precursor_id
+                for precursor_id in option.precursor_compounds
+                if precursor_id in expansion_bundle.base_compounds
+            ),
+            is_endogenous=bool(witness.is_endogenous),
+            source_reaction_ids=(witness.reaction_id,),
+            resolution_action="chassis_forward_expansion",
+            resolution_evidence=(
+                f"expansion_depth:{compound_depth}",
+                f"frontier_anchor:{compound_id}",
+            ),
+            step_source="chassis_forward_expansion",
+            expansion_depth=compound_depth,
+            expansion_anchor_compounds=(compound_id,),
+        )
+        combinations = (
+            itertools.product(*substrate_plan_groups)
+            if substrate_plan_groups
+            else (tuple(),)
+        )
+        for combination in combinations:
+            flattened: List[PlanStep] = [bridge_step]
+            for substrate_steps in combination:
+                flattened.extend(substrate_steps)
+            candidates.append(_merge_unique_plan_steps(flattened))
+
+    unique_candidates = {
+        plan_route_signature(steps): steps
+        for steps in candidates
+    }
+    ordered = sorted(unique_candidates.values(), key=_bridge_plan_sort_key)
+    memo[compound_id] = tuple(ordered[:plan_limit])
+    return memo[compound_id]
+
+
+def materialize_frontier_solution(
+    *,
+    solution: Solution,
+    explicit_frontier_anchors: Sequence[str],
+    expansion_bundle: Any | None,
+    client: KeggRestClient,
+    ignored_common_compounds: set[str],
+    max_plans: int,
+    max_total_steps: int,
+    max_new_enzymes: int,
+) -> Tuple[Solution, ...]:
+    """把搜索终点中的扩展锚点替换为完整 A0→锚点反应树。"""
+
+    if expansion_bundle is None or int(expansion_bundle.depth) <= 0:
+        return (solution,)
+    anchors = dedupe_keep_order((
+        *explicit_frontier_anchors,
+        *(
+            compound_id
+            for step in solution.steps
+            for compound_id in step.reachable_precursors
+            if int(expansion_bundle.depth_by_compound.get(compound_id, 0)) > 0
+        ),
+    ))
+    if not anchors:
+        return (solution,)
+
+    memo: Dict[str, Tuple[Tuple[PlanStep, ...], ...]] = {}
+    anchor_plan_groups: List[Tuple[Tuple[PlanStep, ...], ...]] = []
+    for compound_id in anchors:
+        plans = build_frontier_bridge_plans(
+            compound_id=compound_id,
+            expansion_bundle=expansion_bundle,
+            client=client,
+            ignored_common_compounds=ignored_common_compounds,
+            max_plans=max_plans,
+            memo=memo,
+        )
+        if not plans:
+            return tuple()
+        anchor_plan_groups.append(plans)
+
+    candidates: List[Solution] = []
+    for combination in itertools.product(*anchor_plan_groups):
+        combined_steps: List[PlanStep] = list(solution.steps)
+        for bridge_steps in combination:
+            combined_steps.extend(bridge_steps)
+        merged_steps = _merge_unique_plan_steps(combined_steps)
+        candidate = Solution(steps=merged_steps)
+        if candidate.total_steps > max_total_steps:
+            continue
+        if candidate.heterologous_steps > max_new_enzymes:
+            continue
+        candidates.append(candidate)
+
+    unique_candidates = {
+        plan_route_signature(candidate.steps): candidate
+        for candidate in candidates
+    }
+    ordered = sorted(
+        unique_candidates.values(),
+        key=lambda candidate: _bridge_plan_sort_key(candidate.steps),
+    )
+    return tuple(ordered[: max(1, max_plans)])
+
+
 def validate_reaction_resolution_mode(mode: str) -> str:
     normalized = str(mode or "strict").strip().lower()
     if normalized not in REACTION_RESOLUTION_MODES:
@@ -2400,6 +2663,8 @@ def search_gap_solutions_once(
     electron_avoidance_mode: str,
     reaction_resolution_mode: str = "strict",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
+    base_reachable_compounds: set[str] | None = None,
+    expansion_bundle: Any | None = None,
 ) -> SearchRoundResult:
     """在固定 module 白名单、电子策略和资源上限下执行一次反向最佳优先搜索。
 
@@ -2412,14 +2677,44 @@ def search_gap_solutions_once(
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
     )
+    base_reachable = set(base_reachable_compounds or reachable_compounds)
     target_entry_pathways = set(client.get_compound_record(target_compound).pathway_ids)
 
-    # 目标已经可达时返回零步路线，使调用方仍能得到结构一致的成功结果。
-    if target_compound in reachable_compounds:
-        return (
-            Solution(
-                steps=tuple(),
-            ),
+    # 只有 A0 中的目标才是真正零步可达；扩展层目标必须恢复 A0→目标反应树。
+    if target_compound in base_reachable:
+        return SearchRoundResult(
+            solutions=(Solution(steps=tuple()),),
+            rejected_solutions=tuple(),
+        )
+    if target_compound in reachable_compounds and expansion_bundle is not None:
+        direct_candidates = materialize_frontier_solution(
+            solution=Solution(steps=tuple()),
+            explicit_frontier_anchors=(target_compound,),
+            expansion_bundle=expansion_bundle,
+            client=client,
+            ignored_common_compounds=ignored_common_compounds,
+            max_plans=max_routes_per_state,
+            max_total_steps=max_total_steps,
+            max_new_enzymes=max_new_enzymes,
+        )
+        direct_solutions: List[Solution] = []
+        direct_rejected: List[Solution] = []
+        for candidate in direct_candidates:
+            normalized = normalize_solution_reactions(
+                solution=candidate,
+                client=client,
+                reachable_compounds=reachable_compounds,
+                endogenous_reactions=endogenous_reactions,
+                ignored_common_compounds=ignored_common_compounds,
+                endogenous_direction_index=endogenous_direction_index,
+            )
+            if normalized.reaction_ready:
+                direct_solutions.append(normalized)
+            else:
+                direct_rejected.append(normalized)
+        return SearchRoundResult(
+            solutions=tuple(direct_solutions[:max_solutions]),
+            rejected_solutions=tuple(direct_rejected),
         )
 
     # 优先队列保存待扩展路线；计数器确保所有成本相同时仍能稳定排序。
@@ -2446,6 +2741,7 @@ def search_gap_solutions_once(
     solutions: List[Solution] = []
     rejected_solutions: List[Solution] = []
     rejected_signatures: set[StateRouteSignature] = set()
+    solution_signatures: set[StateRouteSignature] = set()
 
     while heap and len(solutions) < max_solutions:
         item = heapq.heappop(heap)
@@ -2487,25 +2783,43 @@ def search_gap_solutions_once(
 
         # 所有主要前体均已落入可达集合，当前路线即为一个完整解。
         if not unresolved:
-            normalized_solution = normalize_solution_reactions(
+            materialized_candidates = materialize_frontier_solution(
                 solution=Solution(steps=plan_steps),
+                explicit_frontier_anchors=tuple(),
+                expansion_bundle=expansion_bundle,
                 client=client,
-                reachable_compounds=reachable_compounds,
-                endogenous_reactions=endogenous_reactions,
                 ignored_common_compounds=ignored_common_compounds,
-                endogenous_direction_index=endogenous_direction_index,
+                max_plans=max_routes_per_state,
+                max_total_steps=max_total_steps,
+                max_new_enzymes=max_new_enzymes,
             )
-            if not normalized_solution.reaction_ready:
-                if (
-                    route_signature not in rejected_signatures
-                    and len(rejected_solutions) < max(10, max_solutions * 5)
-                ):
-                    rejected_signatures.add(route_signature)
-                    rejected_solutions.append(normalized_solution)
-                # strict 和 audit 都不把硬阻断路线交给推荐/GEM；audit 的区别是
-                # 输出保留更完整的拒绝证据，避免问题路线占满 max_solutions。
-                continue
-            solutions.append(normalized_solution)
+            for candidate in materialized_candidates:
+                normalized_solution = normalize_solution_reactions(
+                    solution=candidate,
+                    client=client,
+                    reachable_compounds=reachable_compounds,
+                    endogenous_reactions=endogenous_reactions,
+                    ignored_common_compounds=ignored_common_compounds,
+                    endogenous_direction_index=endogenous_direction_index,
+                )
+                normalized_signature = plan_route_signature(
+                    normalized_solution.steps
+                )
+                if not normalized_solution.reaction_ready:
+                    if (
+                        normalized_signature not in rejected_signatures
+                        and len(rejected_solutions) < max(10, max_solutions * 5)
+                    ):
+                        rejected_signatures.add(normalized_signature)
+                        rejected_solutions.append(normalized_solution)
+                    # strict 和 audit 都不把硬阻断路线交给推荐/GEM。
+                    continue
+                if normalized_signature in solution_signatures:
+                    continue
+                solution_signatures.add(normalized_signature)
+                solutions.append(normalized_solution)
+                if len(solutions) >= max_solutions:
+                    break
             continue
 
         if total_steps >= max_total_steps:
@@ -2661,6 +2975,8 @@ def run_search_gap_analysis(
     electron_avoidance_mode: str = DEFAULT_ELECTRON_AVOIDANCE_MODE,
     reaction_resolution_mode: str = "strict",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
+    base_reachable_compounds: set[str] | None = None,
+    expansion_bundle: Any | None = None,
 ) -> SearchExecutionResult:
     """构建 module 上下文并调度 module 与电子风险两层搜索兜底。
 
@@ -2726,6 +3042,7 @@ def run_search_gap_analysis(
         return search_gap_solutions_once(
             target_compound=target_compound,
             reachable_compounds=reachable_compounds,
+            base_reachable_compounds=base_reachable_compounds,
             endogenous_reactions=endogenous_reactions,
             client=client,
             max_total_steps=search_limits["max_total_steps"],
@@ -2739,6 +3056,7 @@ def run_search_gap_analysis(
             electron_avoidance_mode=active_electron_mode,
             reaction_resolution_mode=reaction_resolution_mode,
             endogenous_direction_index=endogenous_direction_index,
+            expansion_bundle=expansion_bundle,
         )
 
     def run_module_pipeline(
@@ -2901,6 +3219,18 @@ def build_solution_summary_rows(
             for step in solution.steps
             for compound_id in step.reachable_precursors
         )
+        frontier_anchor_compounds = dedupe_keep_order(
+            compound_id
+            for step in solution.steps
+            for compound_id in step.expansion_anchor_compounds
+        )
+        expansion_bridge_steps = sum(
+            step.step_source in {
+                "chassis_forward_expansion",
+                "target_and_chassis_expansion",
+            }
+            for step in solution.steps
+        )
         burden_totals = solution_burden_totals(solution)
         electron_summary = solution_electron_summary(solution)
 
@@ -2922,6 +3252,12 @@ def build_solution_summary_rows(
                 "eligible_for_recommendation": solution.reaction_ready,
                 "reachable_anchor_compounds": ";".join(anchor_compounds),
                 "reachable_anchor_labels": "; ".join(compound_label(kid, client) for kid in anchor_compounds),
+                "frontier_anchor_compounds": ";".join(frontier_anchor_compounds),
+                "expansion_bridge_steps": expansion_bridge_steps,
+                "max_expansion_depth": max(
+                    (step.expansion_depth for step in solution.steps),
+                    default=0,
+                ),
                 **burden_totals,
                 "max_electron_risk_level": electron_summary["max_electron_risk_level"],
                 "max_electron_risk_score": electron_summary["max_electron_risk_score"],
@@ -2972,6 +3308,11 @@ def build_solution_step_rows(
             ),
             "resolution_action": step.resolution_action,
             "resolution_evidence": ";".join(step.resolution_evidence),
+            "step_source": step.step_source,
+            "expansion_depth": step.expansion_depth,
+            "expansion_anchor_compounds": ";".join(
+                step.expansion_anchor_compounds
+            ),
         }
         # These source annotations are optional in KEGG.  Keep them when they
         # exist instead of manufacturing empty evidence in every exported row.
@@ -3201,9 +3542,13 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
 
     target_compound = validate_target_compound_id(config.target_name)
     model_path = Path(config.model_path).expanduser().resolve()
-    reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
+    base_reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
+    chassis_output_dir = Path(config.chassis_output_path).expanduser().resolve()
     gap_dir = Path(config.gap_output_path).expanduser().resolve()
     cache_dir = (Path(config.cache_dir).expanduser().resolve() / "kegg")
+    expansion_depth = int(getattr(config, "depth", 0))
+    if expansion_depth < 0:
+        raise ValueError("depth must be greater than or equal to 0")
 
     max_total_steps = _integer_config(
         config, "max_total_steps", DEFAULT_MAX_TOTAL_STEPS, minimum=1
@@ -3257,14 +3602,35 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         raise FileNotFoundError(f"GEM model file not found: {model_path}")
     if model_path.suffix.lower() != ".json":
         raise ValueError(f"Only JSON GEM models are supported: {model_path}")
-    if not reachable_path.is_file():
+    if not base_reachable_path.is_file():
         raise FileNotFoundError(
             "Chassis analysis output not found. Run the chassis command first: "
-            f"{reachable_path}"
+            f"{base_reachable_path}"
         )
 
     print("[INFO] loading chassis reachable compounds and GEM directions")
-    reachable_compounds, _ = load_reachable_compounds(reachable_path)
+    base_reachable_compounds, _ = load_reachable_compounds(base_reachable_path)
+    expansion_bundle: Any | None = None
+    if expansion_depth > 0:
+        # 函数内导入避免扩展模块复用本模块 KEGG 类型时形成顶层循环导入。
+        from src.pathway_analyze.expand_chassis_metabolites import (
+            load_expansion_bundle,
+        )
+
+        expansion_bundle = load_expansion_bundle(
+            base_path=base_reachable_path,
+            output_dir=chassis_output_dir,
+            depth=expansion_depth,
+        )
+        reachable_compounds = set(expansion_bundle.reachable_compounds)
+        reachable_path = expansion_bundle.expanded_file
+        print(
+            f"[INFO] using chassis expansion depth {expansion_depth}: "
+            f"{len(reachable_compounds)} cumulative compounds"
+        )
+    else:
+        reachable_compounds = set(base_reachable_compounds)
+        reachable_path = base_reachable_path
     endogenous_direction_index = load_endogenous_direction_index(
         model_path,
         allowed_compartments=ENDOGENOUS_DIRECTION_COMPARTMENTS,
@@ -3276,6 +3642,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     result = run_search_gap_analysis(
         target_compound=target_compound,
         reachable_compounds=reachable_compounds,
+        base_reachable_compounds=set(base_reachable_compounds),
         endogenous_reactions=endogenous_reactions,
         client=client,
         max_total_steps=max_total_steps,
@@ -3290,12 +3657,17 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         electron_avoidance_mode=electron_avoidance_mode,
         reaction_resolution_mode=reaction_resolution_mode,
         endogenous_direction_index=endogenous_direction_index,
+        expansion_bundle=expansion_bundle,
     )
 
     run_args: dict[str, Any] = {
         "target": target_compound,
         "model_path": str(model_path),
+        "base_reachable_file": str(base_reachable_path),
         "reachable_file": str(reachable_path),
+        "expansion_depth": expansion_depth,
+        "base_reachable_compound_count": len(base_reachable_compounds),
+        "reachable_compound_count": len(reachable_compounds),
         "max_total_steps": max_total_steps,
         "max_new_enzymes": max_new_enzymes,
         "max_solutions": max_solutions,
@@ -3326,6 +3698,9 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     return {
         "ok": True,
         "target_compound": target_compound,
+        "expansion_depth": expansion_depth,
+        "base_reachable_file": str(base_reachable_path.resolve()),
+        "reachable_file": str(reachable_path.resolve()),
         "output_dir": str(output_dir.resolve()),
         "solutions_file": str((output_dir / "solutions.csv").resolve()),
         "all_solution_steps_file": str(

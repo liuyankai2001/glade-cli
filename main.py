@@ -1,6 +1,7 @@
 import json
 from argparse import ArgumentParser
 from src.pathway_analyze.analyze_chassis_metabolites import run_chassis
+from src.pathway_analyze.expand_chassis_metabolites import run_expand
 from src.pathway_analyze.kegg_gap_analyze import run_gap
 from src.pathway_analyze.gem_validation import run_validation
 from src.pathway_analyze.list_solution_steps import run_solution_steps
@@ -24,9 +25,31 @@ chassis_parser = sub_parser.add_parser('chassis',help='底盘细胞可提供代�
 chassis_parser.add_argument('-i','--input',type=str,help='输入配置文件')
 chassis_parser.set_defaults(func=run_chassis)
 
+# 扩展底盘可提供代谢物集合
+expand_parser = sub_parser.add_parser("expand", help="根据 KEGG 反应分层扩展底盘可提供代谢物集合")
+expand_parser.add_argument(
+    "--depth",
+    type=int,
+    help="扩展深度，必须大于等于 1",
+    )
+expand_parser.add_argument(
+    "-i",
+    "--input",
+    required=True,
+    help="inputs 目录下的输入配置文件名",
+)
+expand_parser.set_defaults(func=run_expand)
+
+
 # gap分析
 gap_parser = sub_parser.add_parser('gap',help='底盘细胞通路分析')
 gap_parser.add_argument('-i','--input',type=str,help='输入配置文件')
+gap_parser.add_argument(
+    "--depth",
+    type=int,
+    default=0,
+    help="使用的底盘扩展深度；0 表示原始 A0",
+)
 gap_parser.set_defaults(func=run_gap)
 
 # gem通量验证
@@ -73,6 +96,9 @@ def main():
     args = parser.parse_args()
     config_path = INPUTS_DIR / args.input
     config = load_input(config_path)
+
+    if args.command in ("expand", "gap"):
+          config.depth = args.depth
 
     if args.command == "validate":
         config.solutions = args.solutions
