@@ -665,6 +665,7 @@ class KeggRestClient:
             self._compound_record_cache = {}
             self._module_cache = {}
             self._compound_reactions_cache = {}
+        self._disk_reaction_ids: set[str] | None = None
 
     def _cache_path(self, namespace: str, key: str, suffix: str) -> Path | None:
         """构造单个缓存文件路径；未启用磁盘缓存时返回 ``None``。"""
@@ -673,14 +674,24 @@ class KeggRestClient:
             return None
         return safe_mkdir(self.cache_dir / namespace) / f"{key}{suffix}"
 
-    def _fetch_text(self, url: str, cache_key: str) -> str:
+    def _fetch_text(
+        self,
+        url: str,
+        cache_key: str,
+        *,
+        use_disk_cache: bool = True,
+    ) -> str:
         """按“内存 → 磁盘 → KEGG 网络”的顺序读取文本，并在网络失败时重试。"""
 
         if cache_key in self._text_cache:
             return self._text_cache[cache_key]
 
         namespace, raw_key = cache_key.split(":", 1)
-        cache_path = self._cache_path(namespace, raw_key, ".txt")
+        cache_path = (
+            self._cache_path(namespace, raw_key, ".txt")
+            if use_disk_cache
+            else None
+        )
         if cache_path is not None and cache_path.exists():
             text = cache_path.read_text(encoding="utf-8")
             self._text_cache[cache_key] = text
@@ -813,13 +824,109 @@ class KeggRestClient:
         except RuntimeError:
             return None
 
-    def prefetch_reactions(self, reaction_ids: Sequence[str], batch_size: int = 10) -> None:
-        """批量预取反应，批量请求失败时退回逐条请求，避免整批数据丢失。"""
+    def _load_reaction_from_disk_cache(self, reaction_id: str) -> bool:
+        """把单反应磁盘缓存载入内存；文件不存在或不匹配时返回 ``False``。"""
 
+        reaction_cache_path = self._cache_path("reaction", reaction_id, ".txt")
+        if reaction_cache_path is None or not reaction_cache_path.is_file():
+            return False
+        try:
+            entry_text = reaction_cache_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        entry_fields = parse_kegg_flatfile(entry_text)
+        entry_id = first_or_empty(entry_fields.get("ENTRY", [])).split()[0]
+        if not entry_id or normalize_kegg_id(entry_id) != reaction_id:
+            return False
+
+        self._text_cache[f"reaction:{reaction_id}"] = entry_text
+        self._reaction_cache[reaction_id] = self._parse_reaction_text(
+            reaction_id,
+            entry_text,
+        )
+        return True
+
+    def _cached_reaction_ids(self) -> set[str]:
+        """一次扫描 ``reaction/``，返回可跨 target 复用的反应 ID 集合。"""
+
+        if self._disk_reaction_ids is not None:
+            return self._disk_reaction_ids
+        if self.cache_dir is None:
+            self._disk_reaction_ids = set()
+            return self._disk_reaction_ids
+
+        reaction_dir = self.cache_dir / "reaction"
+        if not reaction_dir.is_dir():
+            self._disk_reaction_ids = set()
+            return self._disk_reaction_ids
+        self._disk_reaction_ids = {
+            path.stem
+            for path in reaction_dir.glob("R*.txt")
+            if REACTION_ID_PATTERN.fullmatch(path.stem)
+        }
+        return self._disk_reaction_ids
+
+    def _store_individual_reaction(
+        self,
+        entry_text: str,
+        *,
+        load_into_memory: bool,
+        overwrite: bool,
+    ) -> str | None:
+        """把批量响应中的一个条目保存为共享的 ``reaction/Rxxxxx.txt``。"""
+
+        entry_fields = parse_kegg_flatfile(entry_text)
+        entry_id = first_or_empty(entry_fields.get("ENTRY", [])).split()[0]
+        if not entry_id:
+            return None
+        reaction_id = normalize_kegg_id(entry_id)
+        if not REACTION_ID_PATTERN.fullmatch(reaction_id):
+            return None
+
+        reaction_cache_path = self._cache_path("reaction", reaction_id, ".txt")
+        if reaction_cache_path is not None and (
+            overwrite or not reaction_cache_path.exists()
+        ):
+            reaction_cache_path.write_text(entry_text, encoding="utf-8")
+            if self._disk_reaction_ids is not None:
+                self._disk_reaction_ids.add(reaction_id)
+
+        if load_into_memory:
+            self._text_cache[f"reaction:{reaction_id}"] = entry_text
+            self._reaction_cache[reaction_id] = self._parse_reaction_text(
+                reaction_id,
+                entry_text,
+            )
+        return reaction_id
+
+    def prefetch_reactions(self, reaction_ids: Sequence[str], batch_size: int = 10) -> None:
+        """优先复用单反应缓存，再批量下载并按 ``Rxxxxx.txt`` 分拆保存。"""
+
+        if batch_size < 1:
+            raise ValueError("batch_size must be a positive integer")
+
+        normalized_ids = dedupe_keep_order(
+            normalize_kegg_id(reaction_id) for reaction_id in reaction_ids
+        )
+        required_ids = set(normalized_ids)
+        memory_ids = required_ids.intersection(self._reaction_cache)
+        disk_ids = required_ids.intersection(self._cached_reaction_ids())
+        missing_ids = required_ids - memory_ids - disk_ids
+
+        # R1 ∩ R2 从单反应文件载入内存；损坏或 ID 不匹配的文件重新下载。
+        for reaction_id in normalized_ids:
+            if reaction_id in memory_ids or reaction_id not in disk_ids:
+                continue
+            if self._load_reaction_from_disk_cache(reaction_id):
+                continue
+            missing_ids.add(reaction_id)
+
+        # 保留 R1 的稳定顺序，确保网络批次和输出可复现。
         missing = [
-            normalize_kegg_id(reaction_id)
-            for reaction_id in reaction_ids
-            if normalize_kegg_id(reaction_id) not in self._reaction_cache
+            reaction_id
+            for reaction_id in normalized_ids
+            if reaction_id in missing_ids
         ]
         if not missing:
             return
@@ -827,29 +934,24 @@ class KeggRestClient:
         for start in range(0, len(missing), batch_size):
             batch = missing[start : start + batch_size]
             url_ids = "+".join(f"rn:{reaction_id}" for reaction_id in batch)
+            batch_cache_key = f"reaction_batch:{'_'.join(batch)}"
             try:
                 batch_text = self._fetch_text(
                     f"{KEGG_REST_BASE_URL}/get/{url_ids}",
-                    f"reaction_batch:{'_'.join(batch)}",
+                    batch_cache_key,
+                    use_disk_cache=False,
                 )
             except RuntimeError:
                 for reaction_id in batch:
                     self.try_get_reaction(reaction_id)
                 continue
             for entry_text in split_kegg_entries(batch_text):
-                entry_fields = parse_kegg_flatfile(entry_text)
-                entry_id = first_or_empty(entry_fields.get("ENTRY", [])).split()[0]
-                if not entry_id:
-                    continue
-                normalized_entry_id = normalize_kegg_id(entry_id)
-                self._text_cache[f"reaction:{normalized_entry_id}"] = entry_text
-                reaction_cache_path = self._cache_path("reaction", normalized_entry_id, ".txt")
-                if reaction_cache_path is not None and not reaction_cache_path.exists():
-                    reaction_cache_path.write_text(entry_text, encoding="utf-8")
-                self._reaction_cache[normalized_entry_id] = self._parse_reaction_text(
-                    normalized_entry_id,
+                self._store_individual_reaction(
                     entry_text,
+                    load_into_memory=True,
+                    overwrite=True,
                 )
+            self._text_cache.pop(batch_cache_key, None)
 
             for reaction_id in batch:
                 if reaction_id in self._reaction_cache:

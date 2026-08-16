@@ -211,6 +211,115 @@ class ExpansionAlgorithmTests(unittest.TestCase):
         self.assertEqual(("R10000", "R10003"), index["C10000"])
         self.assertEqual(("R10001",), index["C10001"])
 
+    def test_prefetch_reuses_individual_reaction_files_across_batches(self) -> None:
+        cache_dir = self.root / "kegg_cache"
+
+        def reaction_entry(reaction_id: str) -> str:
+            return (
+                f"ENTRY       {reaction_id}                      Reaction\n"
+                f"NAME        {reaction_id}\n"
+                "EQUATION     C10000 <=> C10001\n"
+                "///\n"
+            )
+
+        first_client = KeggRestClient(
+            cache_dir=cache_dir,
+            use_shared_cache=False,
+        )
+        fetch_disk_cache_flags: list[bool] = []
+
+        def fake_batch_fetch(
+            url: str,
+            cache_key: str,
+            *,
+            use_disk_cache: bool = True,
+        ) -> str:
+            fetch_disk_cache_flags.append(use_disk_cache)
+            return reaction_entry("R10000") + reaction_entry("R10001")
+
+        first_client._fetch_text = fake_batch_fetch
+        first_client.prefetch_reactions(
+            ["R10000", "R10001"],
+            batch_size=2,
+        )
+
+        self.assertEqual([False], fetch_disk_cache_flags)
+        self.assertTrue((cache_dir / "reaction" / "R10000.txt").is_file())
+        self.assertTrue((cache_dir / "reaction" / "R10001.txt").is_file())
+        self.assertFalse((cache_dir / "reaction_batch").exists())
+
+        second_client = KeggRestClient(
+            cache_dir=cache_dir,
+            use_shared_cache=False,
+        )
+
+        def unexpected_fetch(url: str, cache_key: str) -> str:
+            raise AssertionError(
+                f"disk-cached reactions must not be fetched again: {cache_key}"
+            )
+
+        second_client._fetch_text = unexpected_fetch
+        second_client.prefetch_reactions(
+            ["R10001", "R10000"],
+            batch_size=1,
+        )
+
+        self.assertEqual(
+            {"R10000", "R10001"},
+            set(second_client._reaction_cache),
+        )
+
+    def test_prefetch_downloads_only_r1_minus_r2(self) -> None:
+        cache_dir = self.root / "set_difference_kegg_cache"
+        reaction_dir = cache_dir / "reaction"
+        reaction_dir.mkdir(parents=True)
+
+        def reaction_entry(reaction_id: str) -> str:
+            return (
+                f"ENTRY       {reaction_id}                      Reaction\n"
+                "EQUATION     C10000 <=> C10001\n"
+                "///\n"
+            )
+
+        for reaction_id in ("R10000", "R10001"):
+            (reaction_dir / f"{reaction_id}.txt").write_text(
+                reaction_entry(reaction_id),
+                encoding="utf-8",
+            )
+
+        client = KeggRestClient(cache_dir=cache_dir, use_shared_cache=False)
+        requested_batches: list[str] = []
+
+        def fetch_missing(
+            url: str,
+            cache_key: str,
+            *,
+            use_disk_cache: bool = True,
+        ) -> str:
+            requested_batches.append(url)
+            self.assertFalse(use_disk_cache)
+            return reaction_entry("R10002") + reaction_entry("R10003")
+
+        client._fetch_text = fetch_missing
+        client.prefetch_reactions(
+            ["R10000", "R10001", "R10002", "R10003"],
+            batch_size=10,
+        )
+
+        self.assertEqual(1, len(requested_batches))
+        self.assertNotIn("R10000", requested_batches[0])
+        self.assertNotIn("R10001", requested_batches[0])
+        self.assertIn("R10002", requested_batches[0])
+        self.assertIn("R10003", requested_batches[0])
+        self.assertEqual(
+            {"R10000", "R10001", "R10002", "R10003"},
+            set(client._reaction_cache),
+        )
+        self.assertFalse(
+            any(key.startswith("reaction_batch:") for key in client._text_cache)
+        )
+        self.assertFalse((cache_dir / "reaction_batch").exists())
+
     def test_gap_depth_zero_and_frontier_target_completion(self) -> None:
         depth_zero = search_gap_solutions_once(
             target_compound="C10000",
