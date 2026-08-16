@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import math
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from cobra.util.solver import fix_objective_as_constraint
 DEFAULT_GROWTH_FRACTION = 0.1
 DEFAULT_FLUX_THRESHOLD = 1e-8
 DEFAULT_TEST_COMPARTMENTS = ("c",)
+DEFAULT_PROGRESS_INTERVAL = 250
 
 
 def _test_compartments(config: Any) -> set[str] | None:
@@ -53,12 +56,17 @@ def _analyze_producibility(
     growth_fraction: float,
     flux_threshold: float,
     compartments: set[str] | None,
-) -> tuple[list[dict[str, str]], float, int]:
+    progress_interval: int = DEFAULT_PROGRESS_INTERVAL,
+) -> tuple[list[dict[str, str]], float, dict[str, Any]]:
     """在维持最低生长率时，逐个检测胞内代谢物的最大 demand flux。"""
 
     baseline_growth = model.slim_optimize()
-    if baseline_growth is None or baseline_growth <= flux_threshold:
+    if baseline_growth is None or not math.isfinite(float(baseline_growth)):
+        raise ValueError("当前培养基下模型求解失败，请检查模型和培养基设置")
+    baseline_growth = float(baseline_growth)
+    if baseline_growth <= flux_threshold:
         raise ValueError("当前培养基下模型几乎不生长，请检查培养基设置")
+    required_growth = baseline_growth * growth_fraction
 
     external_counts = Counter()
     for reaction in model.exchanges:
@@ -76,6 +84,25 @@ def _analyze_producibility(
     ]
     kegg_rows: list[dict[str, str]] = []
     producible_count = 0
+    producible_with_kegg_count = 0
+    producible_without_kegg_count = 0
+    optimization_failed_count = 0
+    below_threshold_count = 0
+    loop_started = time.perf_counter()
+    total_metabolites = len(metabolites)
+
+    print(f"[INFO] detected external compartment(s): {','.join(sorted(external))}")
+    print(
+        "[INFO] chassis screening scope: "
+        f"{total_metabolites} metabolite(s), "
+        "compartments="
+        f"{','.join(sorted(compartments)) if compartments else 'all non-external'}"
+    )
+    print(f"[INFO] baseline growth: {baseline_growth:.6g}")
+    print(
+        f"[INFO] required minimum growth: {required_growth:.6g} "
+        f"({growth_fraction:.1%} of baseline)"
+    )
 
     for index, metabolite in enumerate(metabolites, start=1):
         with model:
@@ -85,9 +112,15 @@ def _analyze_producibility(
             model.objective_direction = "max"
             flux = model.slim_optimize()
 
-        if flux is not None and flux > flux_threshold:
+        flux_is_valid = flux is not None and math.isfinite(float(flux))
+        if flux_is_valid and float(flux) > flux_threshold:
             producible_count += 1
-            for kegg_id in _kegg_ids(metabolite):
+            kegg_ids = _kegg_ids(metabolite)
+            if kegg_ids:
+                producible_with_kegg_count += 1
+            else:
+                producible_without_kegg_count += 1
+            for kegg_id in kegg_ids:
                 kegg_rows.append(
                     {
                         "source": "producible",
@@ -97,12 +130,41 @@ def _analyze_producibility(
                         "kegg_id": kegg_id,
                     }
                 )
+        elif not flux_is_valid:
+            optimization_failed_count += 1
+        else:
+            below_threshold_count += 1
 
-        if index % 500 == 0:
-            print(f"[INFO] tested {index}/{len(metabolites)} metabolites")
+        if index % progress_interval == 0 or index == total_metabolites:
+            elapsed = time.perf_counter() - loop_started
+            rate = index / elapsed if elapsed > 0 else 0.0
+            remaining = total_metabolites - index
+            eta = remaining / rate if rate > 0 else 0.0
+            percentage = 100.0 * index / total_metabolites if total_metabolites else 100.0
+            print(
+                f"[INFO] chassis progress: {index}/{total_metabolites} "
+                f"({percentage:.1f}%), producible={producible_count}, "
+                f"with_kegg={producible_with_kegg_count}, "
+                f"elapsed={elapsed:.1f}s, rate={rate:.1f} metabolites/s, "
+                f"ETA={eta:.1f}s"
+            )
 
     kegg_rows.sort(key=lambda row: (row["kegg_id"], row["met_id"]))
-    return kegg_rows, float(baseline_growth), producible_count
+    unique_kegg_count = len({row["kegg_id"] for row in kegg_rows})
+    stats: dict[str, Any] = {
+        "required_growth": required_growth,
+        "external_compartments": sorted(external),
+        "tested_metabolites": total_metabolites,
+        "producible_metabolites": producible_count,
+        "producible_with_kegg": producible_with_kegg_count,
+        "producible_without_kegg": producible_without_kegg_count,
+        "optimization_failed": optimization_failed_count,
+        "below_flux_threshold": below_threshold_count,
+        "kegg_mapping_rows": len(kegg_rows),
+        "unique_kegg_compounds": unique_kegg_count,
+        "screening_elapsed_seconds": time.perf_counter() - loop_started,
+    }
+    return kegg_rows, baseline_growth, stats
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
@@ -113,6 +175,7 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) ->
 
 
 def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
+    analysis_started = time.perf_counter()
     model_path = Path(config.model_path).expanduser().resolve()
     medium_path = Path(config.medium_path).expanduser().resolve()
     output_dir = Path(config.chassis_output_path).expanduser().resolve()
@@ -123,6 +186,9 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
     )
     flux_threshold = float(getattr(config, "flux_threshold", DEFAULT_FLUX_THRESHOLD))
     compartments = _test_compartments(config)
+    progress_interval = int(
+        getattr(config, "chassis_progress_interval", DEFAULT_PROGRESS_INTERVAL)
+    )
 
     if not model_path.is_file():
         raise FileNotFoundError(f"GEM model file not found: {model_path}")
@@ -134,15 +200,36 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         raise ValueError("growth_fraction must be in the interval (0, 1]")
     if flux_threshold <= 0:
         raise ValueError("flux_threshold must be greater than 0")
+    if progress_interval < 1:
+        raise ValueError("chassis_progress_interval must be greater than or equal to 1")
 
+    print("[INFO] starting chassis metabolite analysis")
+    print(f"[INFO] GEM model: {model_path}")
+    print(f"[INFO] medium file: {medium_path}")
+    print(
+        f"[INFO] parameters: growth_fraction={growth_fraction}, "
+        f"flux_threshold={flux_threshold:g}, "
+        "test_compartments="
+        f"{','.join(sorted(compartments)) if compartments else 'all non-external'}, "
+        f"progress_interval={progress_interval}"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     model = cobra.io.load_json_model(str(model_path))
-    model.medium = _load_medium(medium_path)
-    kegg_rows, baseline_growth, producible_count = _analyze_producibility(
+    medium = _load_medium(medium_path)
+    model.medium = medium
+    print(
+        "[INFO] model loaded: "
+        f"metabolites={len(model.metabolites)}, "
+        f"reactions={len(model.reactions)}, genes={len(model.genes)}, "
+        f"exchanges={len(model.exchanges)}"
+    )
+    print(f"[INFO] active medium reactions: {len(medium)}")
+    kegg_rows, baseline_growth, stats = _analyze_producibility(
         model,
         growth_fraction,
         flux_threshold,
         compartments,
+        progress_interval,
     )
     _write_csv(
         producible_csv,
@@ -152,17 +239,78 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
 
     summary_rows = [
         {"item": "baseline_growth", "value": baseline_growth},
+        {"item": "required_growth", "value": stats["required_growth"]},
         {"item": "growth_fraction", "value": growth_fraction},
         {"item": "flux_threshold", "value": flux_threshold},
         {
             "item": "test_compartments",
             "value": ";".join(sorted(compartments or ())) or "non_external",
         },
-        {"item": "producible_metabolites", "value": producible_count},
+        {
+            "item": "detected_external_compartments",
+            "value": ";".join(stats["external_compartments"]),
+        },
+        {"item": "progress_interval", "value": progress_interval},
+        {"item": "tested_metabolites", "value": stats["tested_metabolites"]},
+        {
+            "item": "producible_metabolites",
+            "value": stats["producible_metabolites"],
+        },
+        {
+            "item": "producible_with_kegg",
+            "value": stats["producible_with_kegg"],
+        },
+        {
+            "item": "producible_without_kegg",
+            "value": stats["producible_without_kegg"],
+        },
+        {
+            "item": "optimization_failed",
+            "value": stats["optimization_failed"],
+        },
+        {
+            "item": "below_flux_threshold",
+            "value": stats["below_flux_threshold"],
+        },
+        {"item": "kegg_mapping_rows", "value": stats["kegg_mapping_rows"]},
         {"item": "producible_kegg_compounds", "value": len(kegg_rows)},
+        {
+            "item": "unique_producible_kegg_compounds",
+            "value": stats["unique_kegg_compounds"],
+        },
         {"item": "reachable_kegg_compounds", "value": len(kegg_rows)},
+        {
+            "item": "screening_elapsed_seconds",
+            "value": round(stats["screening_elapsed_seconds"], 3),
+        },
     ]
     _write_csv(summary_csv, ["item", "value"], summary_rows)
+
+    total_elapsed = time.perf_counter() - analysis_started
+    print(
+        "[INFO] chassis analysis completed: "
+        f"tested={stats['tested_metabolites']}, "
+        f"producible={stats['producible_metabolites']}, "
+        f"with_kegg={stats['producible_with_kegg']}, "
+        f"without_kegg={stats['producible_without_kegg']}, "
+        f"below_threshold={stats['below_flux_threshold']}, "
+        f"optimization_failed={stats['optimization_failed']}, "
+        f"kegg_rows={stats['kegg_mapping_rows']}, "
+        f"unique_kegg={stats['unique_kegg_compounds']}, "
+        f"elapsed={total_elapsed:.1f}s"
+    )
+    if stats["optimization_failed"]:
+        print(
+            "[WARNING] metabolite optimization failed for "
+            f"{stats['optimization_failed']} candidate(s); inspect the model solver status"
+        )
+    if stats["producible_without_kegg"]:
+        print(
+            "[WARNING] producible metabolites without KEGG annotation: "
+            f"{stats['producible_without_kegg']} (not written as KEGG compounds)"
+        )
+    print(f"[INFO] producible compounds written to: {producible_csv}")
+    print(f"[INFO] chassis summary written to: {summary_csv}")
 
     return {
         "ok": True,
@@ -170,8 +318,19 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         "growth_fraction": growth_fraction,
         "flux_threshold": flux_threshold,
         "test_compartments": sorted(compartments or ()),
-        "producible_metabolites": producible_count,
+        "detected_external_compartments": stats["external_compartments"],
+        "progress_interval": progress_interval,
+        "required_growth": stats["required_growth"],
+        "tested_metabolites": stats["tested_metabolites"],
+        "producible_metabolites": stats["producible_metabolites"],
+        "producible_with_kegg": stats["producible_with_kegg"],
+        "producible_without_kegg": stats["producible_without_kegg"],
+        "optimization_failed": stats["optimization_failed"],
+        "below_flux_threshold": stats["below_flux_threshold"],
+        "kegg_mapping_rows": stats["kegg_mapping_rows"],
         "producible_kegg_compounds": len(kegg_rows),
+        "unique_producible_kegg_compounds": stats["unique_kegg_compounds"],
+        "elapsed_seconds": total_elapsed,
         "reachable_kegg_file": str(producible_csv),
         "summary_file": str(summary_csv),
     }
