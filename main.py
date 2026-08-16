@@ -106,7 +106,7 @@ def main():
     config_path = INPUTS_DIR / args.input
     config = load_input(config_path)
 
-    if args.command in ("expand", "gap"):
+    if args.command in ("expand", "gap", "validate"):
           config.depth = args.depth
 
     if args.command == "validate":
