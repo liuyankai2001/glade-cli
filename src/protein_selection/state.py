@@ -132,8 +132,10 @@ class ProteinSupplyState(ValidationState, total=False):
     """Application state extended with auxiliary-requirement fields."""
 
     research_unit: MainEnzymeResearchUnit
+    reaction_records: dict[str, ReactionRecord]
     uniprot_annotation: dict[str, Any]
-    research_context: dict[str, Any]
+    research_context: dict[str, Any] | None
+    main_enzyme_research_context: dict[str, Any] | None
     preliminary_reaction_match: Literal["matched", "mismatched", "uncertain"]
     preliminary_reaction_match_reason: str
     requirement_status: RequirementStatus
