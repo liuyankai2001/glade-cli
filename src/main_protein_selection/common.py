@@ -599,7 +599,8 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             **{
                 field: first.get(field, "")
                 for field in (
-                    "gene_names", "catalytic_activities", "cofactors", "subunit",
+                    "gene_names", "catalytic_activities",
+                    "catalytic_activity_records_json", "cofactors", "subunit",
                     "function_comments", "ptm_comments", "feature_annotations",
                     "domain_ids", "keywords", "protein_existence", "sequence_version",
                     "sequence_sha256", "subcellular_locations", "rhea_ids", "sequence",

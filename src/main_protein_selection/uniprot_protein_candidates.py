@@ -156,6 +156,7 @@ STEP_CANDIDATE_COLUMNS = [
     "gene_names",
     "ec_numbers",
     "catalytic_activities",
+    "catalytic_activity_records_json",
     "cofactors",
     "subunit",
     "function_comments",
@@ -222,6 +223,7 @@ PROTEIN_CANDIDATE_COLUMNS = [
     "selenzyme_risk_evidence_json",
     "gene_names",
     "catalytic_activities",
+    "catalytic_activity_records_json",
     "cofactors",
     "subunit",
     "function_comments",
@@ -253,6 +255,7 @@ class ProteinCandidate:
     sequence: str = ""
     gene_names: list[str] = field(default_factory=list)
     catalytic_activities: list[str] = field(default_factory=list)
+    catalytic_activity_records: list[dict[str, Any]] = field(default_factory=list)
     cofactors: list[str] = field(default_factory=list)
     subunit: list[str] = field(default_factory=list)
     function_comments: list[str] = field(default_factory=list)
@@ -717,6 +720,83 @@ def extract_catalytic_activities(entry: dict[str, Any]) -> list[str]:
     return _unique(activities)
 
 
+def _reaction_cross_references(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    records: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        database = str(item.get("database") or "").strip()
+        identifier = str(item.get("id") or "").strip()
+        if database and identifier:
+            records.append({"database": database, "id": identifier})
+    return records
+
+
+def _evidence_records(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    records: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        record = {
+            key: str(item.get(key) or "").strip()
+            for key in ("evidenceCode", "source", "id")
+            if str(item.get(key) or "").strip()
+        }
+        if record:
+            records.append(record)
+    return records
+
+
+def extract_catalytic_activity_records(
+    entry: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Preserve catalytic reactions and physiological directions from UniProt."""
+
+    records: list[dict[str, Any]] = []
+    for comment in entry.get("comments", []):
+        if (
+            not isinstance(comment, dict)
+            or _comment_type(comment) != "CATALYTIC ACTIVITY"
+        ):
+            continue
+        reaction = comment.get("reaction")
+        reaction = reaction if isinstance(reaction, dict) else {}
+        physiological_records: list[dict[str, Any]] = []
+        physiological_values = (
+            comment.get("physiologicalReactions")
+            or reaction.get("physiologicalReactions")
+            or []
+        )
+        for physiological in physiological_values:
+            if not isinstance(physiological, dict):
+                continue
+            physiological_records.append({
+                "direction": str(
+                    physiological.get("direction") or ""
+                ).strip(),
+                "reaction_cross_references": _reaction_cross_references(
+                    physiological.get("reactionCrossReferences")
+                ),
+                "evidences": _evidence_records(
+                    physiological.get("evidences")
+                ),
+            })
+        records.append({
+            "equation": str(reaction.get("name") or "").strip(),
+            "ec_number": str(reaction.get("ecNumber") or "").strip(),
+            "reaction_cross_references": _reaction_cross_references(
+                reaction.get("reactionCrossReferences")
+            ),
+            "evidences": _evidence_records(reaction.get("evidences")),
+            "physiological_reactions": physiological_records,
+        })
+    return records
+
+
 def extract_rhea_ids(entry: dict[str, Any]) -> list[str]:
     rhea_ids = []
     for comment in entry.get("comments", []):
@@ -726,6 +806,20 @@ def extract_rhea_ids(entry: dict[str, Any]) -> list[str]:
         for xref in reaction.get("reactionCrossReferences", []):
             if str(xref.get("database", "")).lower() == "rhea" and xref.get("id"):
                 rhea_ids.append(str(xref["id"]))
+        physiological_values = (
+            comment.get("physiologicalReactions")
+            or reaction.get("physiologicalReactions")
+            or []
+        )
+        for physiological in physiological_values:
+            if not isinstance(physiological, dict):
+                continue
+            for xref in physiological.get("reactionCrossReferences", []):
+                if (
+                    str(xref.get("database", "")).lower() == "rhea"
+                    and xref.get("id")
+                ):
+                    rhea_ids.append(str(xref["id"]))
     for xref in entry.get("uniProtKBCrossReferences", []):
         if str(xref.get("database", "")).lower() == "rhea" and xref.get("id"):
             rhea_ids.append(str(xref["id"]))
@@ -1855,6 +1949,7 @@ def _candidate_from_entry(
         sequence=get_sequence_value(entry),
         gene_names=extract_gene_names(entry),
         catalytic_activities=extract_catalytic_activities(entry),
+        catalytic_activity_records=extract_catalytic_activity_records(entry),
         cofactors=extract_cofactors(entry),
         subunit=extract_subunit_comments(entry),
         function_comments=extract_comment_texts(entry, "FUNCTION"),
@@ -2084,6 +2179,9 @@ def _step_candidate_row(
         "gene_names": _join(candidate.gene_names),
         "ec_numbers": _join(candidate.ec_numbers),
         "catalytic_activities": " | ".join(candidate.catalytic_activities),
+        "catalytic_activity_records_json": _json(
+            candidate.catalytic_activity_records
+        ),
         "cofactors": " | ".join(candidate.cofactors),
         "subunit": " | ".join(candidate.subunit),
         "function_comments": " | ".join(candidate.function_comments),

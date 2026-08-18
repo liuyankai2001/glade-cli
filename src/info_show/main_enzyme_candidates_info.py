@@ -245,6 +245,19 @@ def _json_object(value: Any) -> dict[str, Any]:
     return parsed
 
 
+def _json_list(value: Any) -> list[Any]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"候选详情中的 JSON 字段无效：{text!r}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"候选详情中的 JSON 字段必须是数组：{text!r}")
+    return parsed
+
+
 def _read_candidate_detail_row(
     path: Path,
     *,
@@ -420,6 +433,9 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
                 detail.get("ec_numbers") or detail.get("ec_number")
             ),
             "催化活性": detail.get("catalytic_activities"),
+            "结构化催化记录": _json_list(
+                detail.get("catalytic_activity_records_json")
+            ),
             "辅因子": _split_values(detail.get("cofactors")),
             "Rhea编号": _split_values(detail.get("rhea_ids")),
             "匹配Rhea编号": _split_values(detail.get("matched_rhea_ids")),

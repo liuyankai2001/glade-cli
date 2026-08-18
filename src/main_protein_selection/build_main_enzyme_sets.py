@@ -504,6 +504,9 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "matched_rhea_ids": _split_values(row.get("matched_rhea_ids")),
         "matched_ko_ids": _split_values(row.get("matched_ko_ids")),
         "catalytic_activities": _text(row.get("catalytic_activities")),
+        "catalytic_activity_records_json": _text(
+            row.get("catalytic_activity_records_json")
+        ),
         "function_comments": _text(row.get("function_comments")),
         "cofactors": _split_values(row.get("cofactors")),
         "warnings": _split_values(row.get("warnings")),

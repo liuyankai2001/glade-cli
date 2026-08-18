@@ -25,8 +25,8 @@ from src.main_protein_selection.settings import KEGG_HTTP_CONFIG, RHEA_HTTP_CONF
 DIRECTION_SUPPORTED = "supported"
 DIRECTION_CONTRADICTED = "contradicted"
 DIRECTION_UNKNOWN = "unknown"
-DIRECTION_EVIDENCE_SCHEMA_VERSION = "direction_evidence.v1"
-DIRECTION_ANALYZER_VERSION = "official_reaction_direction.v1"
+DIRECTION_EVIDENCE_SCHEMA_VERSION = "direction_evidence.v2"
+DIRECTION_ANALYZER_VERSION = "official_reaction_direction.v2"
 DIRECTION_PROMPT_VERSION = "disabled_deterministic"
 
 RHEA_DIRECTIONS_URL = (
@@ -201,6 +201,28 @@ class DirectionEvidenceClient:
             return []
         return _unique(re.findall(r"\d+", line.group(1)))
 
+    def kegg_compound_names(self, compound_id: str) -> list[str]:
+        normalized = str(compound_id or "").strip().upper()
+        text = self._cached_text(
+            key=f"kegg-{normalized}",
+            url=KEGG_GET_URL.format(compound_id=normalized),
+            timeout=KEGG_HTTP_CONFIG.timeout_seconds,
+            retries=KEGG_HTTP_CONFIG.retries,
+        )
+        block = re.search(
+            r"^NAME\s+(.+?)(?=^[A-Z][A-Z0-9_ -]*\s{2,}|\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if not block:
+            return []
+        values: list[str] = []
+        for line in block.group(1).splitlines():
+            value = line.strip().rstrip(";").strip()
+            if value:
+                values.append(value)
+        return _unique(values)
+
     def rhea_sides(self, master_id: str) -> dict[str, list[str]]:
         normalized = normalize_rhea_ids([master_id])[0]
         query = f"""
@@ -246,6 +268,109 @@ def _mapped_kegg_side(
             continue
         mapped.extend(ph_mapping.get(value, value) for value in raw_ids)
     return sorted(set(mapped) - _IGNORED_CHEBI_IDS), missing
+
+
+def _split_named_equation(equation: str) -> tuple[list[str], list[str]]:
+    parts = re.split(r"\s*(?:<=>|=>|<=|=)\s*", str(equation or ""), maxsplit=1)
+    if len(parts) != 2:
+        return [], []
+
+    def terms(side: str) -> list[str]:
+        return [
+            re.sub(r"^\s*\d+(?:\.\d+)?\s+", "", item).strip()
+            for item in re.split(r"\s+\+\s+", side)
+            if item.strip()
+        ]
+
+    return terms(parts[0]), terms(parts[1])
+
+
+def _named_side_matches(
+    compound_ids: list[str],
+    reaction_terms: list[str],
+    client: DirectionEvidenceClient,
+) -> bool:
+    if not compound_ids or len(compound_ids) != len(reaction_terms):
+        return False
+    unmatched = list(reaction_terms)
+    for compound_id in compound_ids:
+        names = client.kegg_compound_names(compound_id)
+        matched_index: int | None = None
+        for index, term in enumerate(unmatched):
+            normalized_term = _normalized_text(term)
+            if any(_name_span(normalized_term, name) for name in names):
+                matched_index = index
+                break
+        if matched_index is None:
+            return False
+        unmatched.pop(matched_index)
+    return not unmatched
+
+
+def _named_equation_alignment(
+    substrates: list[str],
+    products: list[str],
+    equations: Any,
+    client: DirectionEvidenceClient,
+) -> str:
+    for equation in _values(equations):
+        left, right = _split_named_equation(equation)
+        if (
+            _named_side_matches(substrates, left, client)
+            and _named_side_matches(products, right, client)
+        ):
+            return "rhea_left_to_right"
+        if (
+            _named_side_matches(substrates, right, client)
+            and _named_side_matches(products, left, client)
+        ):
+            return "rhea_right_to_left"
+    return ""
+
+
+def _named_compounds_match_subset(
+    compound_ids: list[str],
+    reaction_terms: list[str],
+    client: DirectionEvidenceClient,
+) -> bool:
+    if not compound_ids or not reaction_terms:
+        return False
+    for compound_id in compound_ids:
+        names = client.kegg_compound_names(compound_id)
+        if not any(
+            any(_name_span(_normalized_text(term), name) for name in names)
+            for term in reaction_terms
+        ):
+            return False
+    return True
+
+
+def _named_backbone_alignment(
+    requirement: dict[str, Any],
+    equations: Any,
+    client: DirectionEvidenceClient,
+) -> str:
+    precursors = [
+        value.upper()
+        for value in _values(requirement.get("precursor_compound_ids"))
+        if _KEGG_ID_RE.fullmatch(value.upper())
+    ]
+    product = str(requirement.get("produced_compound_id") or "").upper()
+    if not precursors or not _KEGG_ID_RE.fullmatch(product):
+        return ""
+    for equation in _values(equations):
+        left, right = _split_named_equation(equation)
+        if (
+            _named_compounds_match_subset(precursors, left, client)
+            and _named_compounds_match_subset([product], right, client)
+        ):
+            return "rhea_left_to_right_backbone"
+        if (
+            _named_compounds_match_subset(precursors, right, client)
+            and _named_compounds_match_subset([product], left, client)
+        ):
+            return "rhea_right_to_left_backbone"
+    return ""
 
 
 def enrich_requirements_with_direction_context(
@@ -317,19 +442,49 @@ def enrich_requirements_with_direction_context(
             comparable = bool(required_left and required_right and rhea_left and rhea_right)
             forward = comparable and required_left == rhea_left and required_right == rhea_right
             reverse = comparable and required_left == rhea_right and required_right == rhea_left
+            named_alignment = ""
+            if not forward and not reverse:
+                named_alignment = _named_equation_alignment(
+                    substrates,
+                    products,
+                    requirement.get("rhea_master_equations"),
+                    evidence_client,
+                )
+                if not named_alignment:
+                    named_alignment = _named_backbone_alignment(
+                        requirement,
+                        requirement.get("rhea_master_equations"),
+                        evidence_client,
+                    )
+                forward = named_alignment in {
+                    "rhea_left_to_right",
+                    "rhea_left_to_right_backbone",
+                }
+                reverse = named_alignment in {
+                    "rhea_right_to_left",
+                    "rhea_right_to_left_backbone",
+                }
             if forward:
                 required_id = quartet["left_to_right"]
                 opposite_id = quartet["right_to_left"]
-                alignment = "rhea_left_to_right"
+                alignment = named_alignment or "rhea_left_to_right"
             elif reverse:
                 required_id = quartet["right_to_left"]
                 opposite_id = quartet["left_to_right"]
-                alignment = "rhea_right_to_left"
+                alignment = named_alignment or "rhea_right_to_left"
             else:
                 required_id = ""
                 opposite_id = ""
                 alignment = "unresolved"
-            status = "resolved" if required_id else "unknown_side_mismatch"
+            status = (
+                "resolved_backbone_names"
+                if required_id and named_alignment.endswith("_backbone")
+                else "resolved_carrier_aware_names"
+                if required_id and named_alignment
+                else "resolved"
+                if required_id
+                else "unknown_side_mismatch"
+            )
             requirement.update({
                 "direction_evidence_status": status,
                 "rhea_master_ids": [master],
@@ -379,6 +534,261 @@ def _candidate_value(candidate: Any, name: str) -> Any:
     return candidate.get(name) if isinstance(candidate, dict) else getattr(candidate, name, None)
 
 
+def _candidate_activity_records(candidate: Any) -> list[dict[str, Any]]:
+    value = _candidate_value(candidate, "catalytic_activity_records_json")
+    if not value:
+        value = _candidate_value(candidate, "catalytic_activity_records")
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _physiological_rhea_ids(candidate: Any) -> list[str]:
+    values: list[str] = []
+    for activity in _candidate_activity_records(candidate):
+        physiological = activity.get("physiological_reactions")
+        if not isinstance(physiological, list):
+            continue
+        for record in physiological:
+            if not isinstance(record, dict):
+                continue
+            cross_references = record.get("reaction_cross_references")
+            if not isinstance(cross_references, list):
+                continue
+            for cross_reference in cross_references:
+                if not isinstance(cross_reference, dict):
+                    continue
+                if str(cross_reference.get("database") or "").lower() != "rhea":
+                    continue
+                values.append(str(cross_reference.get("id") or ""))
+    return normalize_rhea_ids(values)
+
+
+def _normalized_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = text.replace("α", "alpha").replace("β", "beta")
+    text = re.sub(r"[-‐‑‒–—,;:/()\[\]{}]", " ", text)
+    return " ".join(re.findall(r"[a-z0-9]+", text))
+
+
+def _compound_names_from_labels(value: Any) -> list[str]:
+    names: list[str] = []
+    for item in _values(value):
+        match = re.search(r"\((.+)\)\s*$", item)
+        name = match.group(1) if match else item
+        normalized = _normalized_text(name)
+        if normalized and not re.fullmatch(r"c\d{5}", normalized):
+            names.append(normalized)
+    return _unique(names)
+
+
+def _compound_name_variants(name: str) -> list[str]:
+    normalized = _normalized_text(name)
+    variants = [normalized]
+    relaxed = re.sub(r"^(?:trans\s+){2}", "", normalized).strip()
+    if relaxed and relaxed != normalized:
+        variants.append(relaxed)
+    return _unique(variants)
+
+
+def _name_span(text: str, name: str) -> tuple[int, int] | None:
+    for variant in sorted(_compound_name_variants(name), key=len, reverse=True):
+        if not variant:
+            continue
+        match = re.search(
+            rf"(?<![a-z0-9]){re.escape(variant)}(?![a-z0-9])",
+            text,
+        )
+        if match:
+            return match.span()
+    return None
+
+
+def _candidate_has_reviewed_literature(candidate: Any) -> bool:
+    reviewed = _candidate_value(candidate, "reviewed")
+    if isinstance(reviewed, bool):
+        is_reviewed = reviewed
+    else:
+        is_reviewed = str(reviewed or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+    return is_reviewed and bool(_values(_candidate_value(candidate, "publication_ids")))
+
+
+def _route_compound_names(
+    requirement: dict[str, Any],
+) -> tuple[list[str], str]:
+    substrates = _compound_names_from_labels(
+        requirement.get("precursor_compound_labels")
+    )
+    product = _normalized_text(requirement.get("produced_compound_name"))
+    return substrates, product
+
+
+def _via_chain_orientation(
+    text: str,
+    substrates: list[str],
+    product: str,
+) -> str:
+    patterns = (
+        re.compile(
+            r"converts? (?P<source>.+?) into (?P<target>.+?) via "
+            r"(?:the )?(?:intermediary|intermediates?) of (?P<via>.+?)"
+            r"(?: by | through |$)"
+        ),
+        re.compile(
+            r"converts? (?P<source>.+?) to (?P<target>.+?) via "
+            r"(?:the )?(?:intermediary|intermediates?) of (?P<via>.+?)"
+            r"(?: by | through |$)"
+        ),
+    )
+    for pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        source = match.group("source")
+        target = match.group("target")
+        via = match.group("via")
+
+        def logical_position(name: str) -> int | None:
+            if _name_span(source, name):
+                return 0
+            via_span = _name_span(via, name)
+            if via_span:
+                return 1 + via_span[0]
+            if _name_span(target, name):
+                return 1_000_000
+            return None
+
+        substrate_positions = [logical_position(name) for name in substrates]
+        product_position = logical_position(product)
+        if product_position is None or any(
+            position is None for position in substrate_positions
+        ):
+            continue
+        known_substrates = [
+            int(position) for position in substrate_positions if position is not None
+        ]
+        if max(known_substrates) < product_position:
+            return "forward"
+        if product_position < min(known_substrates):
+            return "reverse"
+    return ""
+
+
+def _direct_text_orientation(
+    text: str,
+    substrates: list[str],
+    product: str,
+) -> str:
+    substrate_spans = [_name_span(text, name) for name in substrates]
+    product_span = _name_span(text, product)
+    if not product_span or any(span is None for span in substrate_spans):
+        return ""
+    known_substrates = [span for span in substrate_spans if span is not None]
+    forward_markers = [
+        match.span()
+        for pattern in (r"\binto\b", r"\bto yield\b", r"\bto give\b")
+        for match in re.finditer(pattern, text)
+    ]
+    for marker_start, marker_end in forward_markers:
+        if (
+            all(span[1] <= marker_start for span in known_substrates)
+            and product_span[0] >= marker_end
+        ):
+            return "forward"
+        if (
+            product_span[1] <= marker_start
+            and all(span[0] >= marker_end for span in known_substrates)
+        ):
+            return "reverse"
+
+    for verb in ("produces", "produce", "forms", "form"):
+        for marker in re.finditer(rf"\b{verb}\b", text):
+            from_marker = re.search(r"\bfrom\b", text[marker.end():])
+            if not from_marker:
+                continue
+            from_start = marker.end() + from_marker.start()
+            if (
+                product_span[0] >= marker.end()
+                and product_span[1] <= from_start
+                and all(span[0] >= from_start for span in known_substrates)
+            ):
+                return "forward"
+    return ""
+
+
+def _text_direction_decision(
+    requirement: dict[str, Any],
+    candidate: Any,
+) -> dict[str, Any] | None:
+    if not _candidate_has_reviewed_literature(candidate):
+        return None
+    substrates, product = _route_compound_names(requirement)
+    if not substrates or not product:
+        return None
+    texts = _values(_candidate_value(candidate, "function_comments"))
+    orientations: set[str] = set()
+    multistep = False
+    for raw_text in texts:
+        text = _normalized_text(raw_text)
+        if re.search(
+            r"\b(?:does not|do not|cannot|unable to|may|might|possibly|"
+            r"probably|probable)\b",
+            text,
+        ):
+            continue
+        orientation = _via_chain_orientation(text, substrates, product)
+        if orientation:
+            multistep = True
+            orientations.add(orientation)
+            continue
+        orientation = _direct_text_orientation(text, substrates, product)
+        if orientation:
+            orientations.add(orientation)
+    if not orientations or len(orientations) > 1:
+        return None
+    orientation = next(iter(orientations))
+    verdict = (
+        DIRECTION_SUPPORTED
+        if orientation == "forward"
+        else DIRECTION_CONTRADICTED
+    )
+    evidence_level = (
+        "reviewed_uniprot_multistep_chain"
+        if multistep
+        else "reviewed_uniprot_direction_text"
+    )
+    source_ids = [
+        f"UniProt:{str(_candidate_value(candidate, 'accession') or '').upper()}"
+    ]
+    source_ids.extend(_values(_candidate_value(candidate, "publication_ids")))
+    return {
+        "verdict": verdict,
+        "confidence": "medium",
+        "evidence_level": evidence_level,
+        "source_ids": _unique(source_ids),
+        "evidence": [
+            "Reviewed UniProt function text explicitly supports the route "
+            f"{orientation} direction"
+        ],
+        "required_rhea_direction_ids": normalize_rhea_ids(
+            requirement.get("required_rhea_direction_ids")
+        ),
+    }
+
+
 def direction_decision_for_candidate(
     requirement: dict[str, Any],
     candidate: Any,
@@ -402,9 +812,27 @@ def direction_decision_for_candidate(
     # A retrieval query is not an annotation. Prefer UniProt's actual
     # catalytic-activity cross-reference whenever it is present.
     candidate_rhea = set(annotated_rhea or retrieval_rhea)
+    candidate_rhea.update(_physiological_rhea_ids(candidate))
     sources = [f"RHEA:{value}" for value in sorted(candidate_rhea)]
-    if candidate_rhea & (required | bidirectional):
-        matched = sorted(candidate_rhea & (required | bidirectional))
+    required_hits = candidate_rhea & (required | bidirectional)
+    opposite_hits = candidate_rhea & opposite
+    if required_hits and opposite_hits:
+        return {
+            "verdict": DIRECTION_UNKNOWN,
+            "confidence": "low",
+            "evidence_level": "conflicting_directional_rhea",
+            "source_ids": [
+                f"RHEA:{value}"
+                for value in sorted(required_hits | opposite_hits)
+            ],
+            "evidence": [
+                "Candidate contains both required and opposite directional "
+                "Rhea annotations"
+            ],
+            "required_rhea_direction_ids": sorted(required),
+        }
+    if required_hits:
+        matched = sorted(required_hits)
         return {
             "verdict": DIRECTION_SUPPORTED,
             "confidence": "high",
@@ -413,8 +841,8 @@ def direction_decision_for_candidate(
             "evidence": ["Candidate is annotated to the required or bidirectional Rhea member"],
             "required_rhea_direction_ids": sorted(required),
         }
-    if candidate_rhea & opposite:
-        matched = sorted(candidate_rhea & opposite)
+    if opposite_hits:
+        matched = sorted(opposite_hits)
         return {
             "verdict": DIRECTION_CONTRADICTED,
             "confidence": "high",
@@ -423,6 +851,10 @@ def direction_decision_for_candidate(
             "evidence": ["Candidate is annotated to the opposite member of the Rhea direction quartet"],
             "required_rhea_direction_ids": sorted(required),
         }
+
+    text_decision = _text_direction_decision(requirement, candidate)
+    if text_decision is not None:
+        return text_decision
 
     substrates, products = _split_equation(
         str(requirement.get("equation") or ""),
@@ -518,7 +950,21 @@ def direction_evidence_artifact(
             "contradicted": "rejected",
             "unknown": "verified_with_risk",
             "clean_route_preference": True,
-            "allowed_sources": ["KEGG", "Rhea", "UniProt", "linked PubMed abstracts"],
+            "allowed_sources": [
+                "KEGG compound names and mappings",
+                "Rhea direction quartets and reaction sides",
+                "UniProt physiological reactions",
+                "reviewed UniProt function text with linked publications",
+            ],
+            "confidence_policy": {
+                "directional_rhea": "high",
+                "reviewed_explicit_function_text": "medium",
+                "ec_ko_or_master_rhea_only": "low_unknown",
+            },
+            "free_text_policy": (
+                "controlled directional templates only; ambiguous or "
+                "negated text remains unknown"
+            ),
         },
         "sources": client.source_records,
         "context": context_records,

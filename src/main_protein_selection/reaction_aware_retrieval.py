@@ -209,6 +209,11 @@ def reaction_evidence_for_requirements(
         ]
         requirement["kegg_rhea_ids"] = kegg_rhea_ids
         requirement["rhea_master_ids"] = rhea_master_ids
+        requirement["rhea_master_equations"] = [
+            str(record.get("equation") or "")
+            for record in source.get("records", [])
+            if str(record.get("equation") or "").strip()
+        ]
         requirement["reaction_evidence_query_id"] = source.get("query_id", "")
         evidence.append({
             "step_index": int(requirement.get("step_index") or 0),
