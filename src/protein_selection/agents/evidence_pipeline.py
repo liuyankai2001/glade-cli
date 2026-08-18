@@ -17,7 +17,11 @@ from src.protein_selection.agents.bio_database_researcher import (
     BioDatabaseResearchResult,
 )
 from src.protein_selection.agents.research_policy import ResearchMode, ResearchPolicy
-from src.protein_selection.research_context import ResearchContext
+from src.protein_selection.research_context import (
+    MainEnzymeResearchContext,
+    ResearchContext,
+)
+from src.protein_selection.reaction_scope import context_reactions
 from src.protein_selection.services.cache import (
     PersistentTTLCache,
     RetrievalStats,
@@ -32,6 +36,7 @@ EvidenceStage = Literal[
     "web",
     "host_compatibility",
 ]
+ResearchContextLike = ResearchContext | MainEnzymeResearchContext
 RetrievalStatus = Literal["success", "error", "timeout", "skipped"]
 
 _PMID_PATTERNS = (
@@ -534,18 +539,22 @@ class ResearchToolRunner:
 
 
 def build_database_call_plan(
-    context: ResearchContext,
+    context: ResearchContextLike,
     mode: ResearchMode,
 ) -> list[PlannedToolCall]:
     """Build exact database calls from official identifiers and annotations."""
 
     calls: list[PlannedToolCall] = []
     protein = context.protein
-    reaction = context.reaction
+    reactions = context_reactions(context)
     complex_limit = 2 if mode == "balanced" else 5
 
     if context.preliminary_reaction_match != "matched":
-        for rhea_id in reaction.rhea_ids[:1 if mode == "balanced" else 2]:
+        for rhea_id in (
+            rhea_id
+            for reaction in reactions
+            for rhea_id in reaction.rhea_ids[:1 if mode == "balanced" else 2]
+        ):
             calls.append(
                 PlannedToolCall(
                     stage="database",
@@ -554,7 +563,11 @@ def build_database_call_plan(
                     rationale="Resolve the exact KEGG reaction in Rhea.",
                 )
             )
-        for ec_number in reaction.ec_numbers[:1]:
+        for ec_number in (
+            ec_number
+            for reaction in reactions
+            for ec_number in reaction.ec_numbers[:1]
+        ):
             calls.append(
                 PlannedToolCall(
                     stage="database",
@@ -618,7 +631,7 @@ def build_database_call_plan(
 
 
 def extract_candidate_seeds(
-    context: ResearchContext,
+    context: ResearchContextLike,
     records: Sequence[RawResearchEvidence],
 ) -> list[CandidateSeed]:
     """Extract only curated partner clues, retaining their exact provenance.
@@ -630,7 +643,7 @@ def extract_candidate_seeds(
     """
 
     protein = context.protein
-    reaction = context.reaction
+    reactions = context_reactions(context)
     taxon_id = getattr(protein, "taxon_id", None)
     kegg_organism_code = _context_kegg_organism_code(context)
     input_accession = str(protein.primary_accession).upper()
@@ -724,11 +737,15 @@ def extract_candidate_seeds(
             ("candidate_ko_ids", "candidate_kos", "partner_ko_ids"),
         ),
     )
-    for owner_name, owner in (
+    owners = [
         ("context", context),
         ("context.protein", protein),
-        ("context.reaction", reaction),
-    ):
+        *(
+            (f"context.reactions[{index}]", reaction)
+            for index, reaction in enumerate(reactions)
+        ),
+    ]
+    for owner_name, owner in owners:
         for kind, field_names in explicit_fields:
             for field_name in field_names:
                 for value in _iter_candidate_values(
@@ -741,20 +758,24 @@ def extract_candidate_seeds(
                         f"{owner_name}.{field_name}: {value}",
                     )
 
-    for item in getattr(reaction, "orthology", ()):
-        orthology_id = getattr(item, "orthology_id", None)
-        if orthology_id is None and isinstance(item, Mapping):
-            orthology_id = item.get("orthology_id") or item.get("id")
-        description = getattr(item, "description", None)
-        if description is None and isinstance(item, Mapping):
-            description = item.get("description")
-        add_seed(
-            "ko",
-            orthology_id,
-            "CONTEXT-REACTION",
-            f"reaction.orthology: {orthology_id} {description or ''}".strip(),
-            str(description) if description else None,
-        )
+    for reaction in reactions:
+        for item in getattr(reaction, "orthology", ()):
+            orthology_id = getattr(item, "orthology_id", None)
+            if orthology_id is None and isinstance(item, Mapping):
+                orthology_id = item.get("orthology_id") or item.get("id")
+            description = getattr(item, "description", None)
+            if description is None and isinstance(item, Mapping):
+                description = item.get("description")
+            add_seed(
+                "ko",
+                orthology_id,
+                "CONTEXT-REACTION",
+                (
+                    f"{reaction.reaction_id}.orthology: "
+                    f"{orthology_id} {description or ''}"
+                ).strip(),
+                str(description) if description else None,
+            )
 
     for annotation in getattr(protein, "subunit_annotations", ()):
         if not isinstance(annotation, str):
@@ -1153,7 +1174,7 @@ def resolve_candidate_identities(
 
 
 def build_literature_query_plan(
-    context: ResearchContext,
+    context: ResearchContextLike,
     database_report: BioDatabaseResearchResult | None,
     mode: ResearchMode,
     candidate_hints: Sequence[VerifiedCandidateHint] = (),
@@ -1190,6 +1211,9 @@ def build_literature_query_plan(
         _quote_term(primary_name),
     ]
     identity = " OR ".join(term for term in identity_terms if term)
+    reaction_id_query = " ".join(
+        reaction.reaction_id for reaction in context_reactions(context)
+    )
 
     report_candidates = (
         getattr(database_report, "candidate_protein_dependencies", ())
@@ -1348,7 +1372,7 @@ def build_literature_query_plan(
                     PlannedLiteratureQuery(
                         "Semantic Scholar",
                         f"{input_anchor} {candidate_terms[0]} "
-                        f"{context.reaction.reaction_id} biochemical complex",
+                        f"{reaction_id_query} biochemical complex",
                     ),
                     PlannedLiteratureQuery(
                         "Europe PMC",
@@ -1416,7 +1440,7 @@ def build_literature_query_plan(
 
 
 def linked_article_detail_calls(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hints: Sequence[VerifiedCandidateHint],
     mode: ResearchMode,
 ) -> list[PlannedToolCall]:
@@ -1657,7 +1681,7 @@ def literature_tool_calls(
 def article_detail_calls(
     search_records: Sequence[RawResearchEvidence],
     mode: ResearchMode,
-    context: ResearchContext | None = None,
+    context: ResearchContextLike | None = None,
     candidate_hints: Sequence[VerifiedCandidateHint] = (),
 ) -> list[PlannedToolCall]:
     """Rank individual papers and reserve coverage for verified candidates."""
@@ -1727,7 +1751,7 @@ def article_detail_calls(
 
 def fulltext_metadata_calls(
     literature_records: Sequence[RawResearchEvidence],
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidate_hints: Sequence[VerifiedCandidateHint],
     mode: ResearchMode,
 ) -> list[PlannedToolCall]:
@@ -1813,7 +1837,7 @@ def fulltext_metadata_calls(
 
 def fulltext_snippet_calls(
     literature_records: Sequence[RawResearchEvidence],
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidate_hints: Sequence[VerifiedCandidateHint],
     mode: ResearchMode,
 ) -> list[PlannedToolCall]:
@@ -1916,7 +1940,7 @@ def _normalize_pmcid(value: Any) -> str | None:
 
 def _fulltext_article_matches_pair(
     text: str,
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
 ) -> bool:
     normalized = text.casefold()
@@ -1939,7 +1963,7 @@ def _fulltext_article_matches_pair(
 
 def _abstract_needs_fulltext_escalation(
     text: str,
-    context: ResearchContext,
+    context: ResearchContextLike,
 ) -> bool:
     normalized = text.casefold()
     exact_organisms = _unique_strings(
@@ -1981,7 +2005,7 @@ def _abstract_needs_fulltext_escalation(
 
 
 def _fulltext_query_terms(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     article_text: str,
 ) -> tuple[str, ...]:
@@ -2065,7 +2089,7 @@ def _article_mappings(content: str) -> list[Mapping[str, Any]]:
 def _article_priority(
     article: Mapping[str, Any],
     record: RawResearchEvidence,
-    context: ResearchContext | None,
+    context: ResearchContextLike | None,
     candidate_hints: Sequence[VerifiedCandidateHint],
 ) -> tuple[int, set[str]]:
     title = str(article.get("title") or "")
@@ -2147,7 +2171,7 @@ def _literature_detail_priority(record: RawResearchEvidence) -> int:
 
 
 def build_web_call_plan(
-    context: ResearchContext,
+    context: ResearchContextLike,
     database_report: BioDatabaseResearchResult | None,
     mode: ResearchMode,
     literature_report: Any | None = None,
@@ -2195,7 +2219,7 @@ def build_web_call_plan(
 
 
 def build_host_call_plan(
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidate_roles: Sequence[Mapping[str, Any]],
     mode: ResearchMode,
 ) -> list[PlannedToolCall]:
@@ -2206,11 +2230,12 @@ def build_host_call_plan(
             stage="host_compatibility",
             tool_name="find_iml1515_reactions",
             arguments={
-                "kegg_reaction_id": context.reaction.reaction_id,
+                "kegg_reaction_id": reaction.reaction_id,
                 "max_results": 10,
             },
             rationale="Read exact iML1515 reaction and raw GPR context.",
         )
+        for reaction in context_reactions(context)
     ]
     max_candidates = 3 if mode == "balanced" else 6
     for role in candidate_roles[:max_candidates]:
@@ -3194,7 +3219,7 @@ def _context_reference_pmids(context: Any) -> tuple[str, ...]:
     for owner in (
         context,
         getattr(context, "protein", None),
-        getattr(context, "reaction", None),
+        *context_reactions(context),
     ):
         if owner is None:
             continue
@@ -3222,20 +3247,21 @@ def _context_reference_pmids(context: Any) -> tuple[str, ...]:
 
 
 def _reaction_literature_identity(context: Any) -> str:
-    reaction = context.reaction
-    terms: list[str] = [str(reaction.reaction_id)]
-    names = getattr(reaction, "names", ())
-    if names:
-        terms.append(str(names[0]))
-    ec_numbers = getattr(reaction, "ec_numbers", ())
-    if ec_numbers:
-        terms.append(str(ec_numbers[0]))
-    for item in getattr(reaction, "orthology", ())[:2]:
-        value = getattr(item, "orthology_id", None)
-        if value is None and isinstance(item, Mapping):
-            value = item.get("orthology_id") or item.get("id")
-        if isinstance(value, str):
-            terms.append(value)
+    terms: list[str] = []
+    for reaction in context_reactions(context):
+        terms.append(str(reaction.reaction_id))
+        names = getattr(reaction, "names", ())
+        if names:
+            terms.append(str(names[0]))
+        ec_numbers = getattr(reaction, "ec_numbers", ())
+        if ec_numbers:
+            terms.append(str(ec_numbers[0]))
+        for item in getattr(reaction, "orthology", ())[:2]:
+            value = getattr(item, "orthology_id", None)
+            if value is None and isinstance(item, Mapping):
+                value = item.get("orthology_id") or item.get("id")
+            if isinstance(value, str):
+                terms.append(value)
     return " OR ".join(_quote_term(value) or value for value in _unique_strings(terms))
 
 

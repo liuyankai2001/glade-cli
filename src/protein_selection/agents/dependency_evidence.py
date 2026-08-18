@@ -10,6 +10,12 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.protein_selection.reaction_scope import (
+    ReactionScopedModel,
+    normalize_reaction_ids,
+    require_reaction_subset,
+)
+
 
 DependencyNecessity = Literal["required", "enhancing", "uncertain"]
 SynthesisNecessity = Literal["required", "enhancing"]
@@ -107,7 +113,7 @@ class EvidenceSpan(BaseModel):
     supports: list[EvidenceSpanFact] = Field(min_length=1)
 
 
-class DependencyEvidenceAtom(BaseModel):
+class DependencyEvidenceAtom(ReactionScopedModel):
     """One source-grounded observation about a protein dependency."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -121,7 +127,6 @@ class DependencyEvidenceAtom(BaseModel):
     candidate_protein_mentions: list[str] = Field(min_length=1)
     experimental_organism: str | None = None
     experimental_taxon_id: int | None = None
-    reaction_id: str = Field(min_length=1)
     rhea_family: str | None = None
     experiment_type: ExperimentType
     candidate_scope: CandidateScope
@@ -137,7 +142,7 @@ class DependencyEvidenceAtom(BaseModel):
         return self
 
 
-class DependencyEvidenceSynthesis(BaseModel):
+class DependencyEvidenceSynthesis(ReactionScopedModel):
     """A deterministic decision proposal over one or more evidence atoms."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -147,7 +152,6 @@ class DependencyEvidenceSynthesis(BaseModel):
     candidate_uniprot_id: str = Field(min_length=1)
     organism_name: str | None = None
     taxon_id: int | None = None
-    reaction_id: str = Field(min_length=1)
     rhea_family: str | None = None
     necessity: SynthesisNecessity
     decision_path: DependencyDecisionPath
@@ -167,7 +171,7 @@ class DependencyEvidenceSynthesis(BaseModel):
         return self
 
 
-class CuratedDependencyAssertion(BaseModel):
+class CuratedDependencyAssertion(ReactionScopedModel):
     """A protein-level dependency assertion from one curated lineage."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -182,7 +186,6 @@ class CuratedDependencyAssertion(BaseModel):
     candidate_uniprot_id: str | None = None
     organism_name: str | None = None
     taxon_id: int | None = None
-    reaction_id: str | None = None
     assertion_type: AssertionType
     whole_protein_scope: bool
     necessity: DependencyNecessity
@@ -252,7 +255,7 @@ def evaluate_dependency_synthesis(
     expected_candidate_uniprot_id: str,
     expected_organism: str | None,
     expected_taxon_id: int | None,
-    expected_reaction_id: str,
+    expected_reaction_ids: Sequence[str],
     expected_rhea_family: str | None = None,
 ) -> DependencyEvaluation:
     """Validate atom references, scope and one of four decision paths."""
@@ -269,8 +272,14 @@ def evaluate_dependency_synthesis(
         expected_taxon_id,
     ):
         failures.append("综合结论的物种与候选来源物种不一致或未核验")
-    if synthesis.reaction_id != expected_reaction_id:
-        failures.append("综合结论未精确对应目标反应")
+    try:
+        require_reaction_subset(
+            synthesis.reaction_ids,
+            expected_reaction_ids,
+            label="dependency synthesis",
+        )
+    except ValueError:
+        failures.append("综合结论未对应请求范围内的目标反应")
     if (
         expected_rhea_family is not None
         and synthesis.rhea_family != expected_rhea_family
@@ -320,8 +329,18 @@ def evaluate_dependency_synthesis(
             expected_taxon_id,
         ):
             failures.append(f"原子 {atom.atom_id} 的实验物种不一致或未核验")
-        if atom.reaction_id != expected_reaction_id:
-            failures.append(f"原子 {atom.atom_id} 未精确对应目标反应")
+        try:
+            require_reaction_subset(
+                atom.reaction_ids,
+                expected_reaction_ids,
+                label=f"atom {atom.atom_id}",
+            )
+        except ValueError:
+            failures.append(f"原子 {atom.atom_id} 未对应请求范围内的目标反应")
+        if normalize_reaction_ids(atom.reaction_ids) != normalize_reaction_ids(
+            synthesis.reaction_ids
+        ):
+            failures.append(f"原子 {atom.atom_id} 与综合结论的反应范围不一致")
         if (
             expected_rhea_family is not None
             and atom.rhea_family is not None
@@ -471,7 +490,7 @@ def evaluate_curated_assertion(
     *,
     expected_organism: str | None,
     expected_taxon_id: int | None,
-    reaction_id: str,
+    reaction_ids: Sequence[str],
 ) -> DependencyEvaluation:
     """Accept only an explicit, same-organism, whole-protein assertion."""
 
@@ -482,8 +501,14 @@ def evaluate_curated_assertion(
         failures.append("复合物组成、GPR 或互作不能替代依赖断言")
     if not assertion.whole_protein_scope:
         failures.append("整理断言不是完整蛋白层级")
-    if assertion.reaction_id != reaction_id:
-        failures.append("整理断言未精确对应目标反应")
+    try:
+        require_reaction_subset(
+            assertion.reaction_ids,
+            reaction_ids,
+            label="curated dependency assertion",
+        )
+    except ValueError:
+        failures.append("整理断言未对应请求范围内的目标反应")
     if not _same_organism(
         assertion.organism_name,
         assertion.taxon_id,

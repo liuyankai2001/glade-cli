@@ -11,6 +11,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.protein_selection.reaction_scope import ReactionScopedModel
+
 from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
@@ -143,13 +145,12 @@ class HostRequirementAssessment(BaseModel):
     evidence_ids: list[str] = Field(min_length=1)
 
 
-class HostCompatibilityResearchResult(BaseModel):
+class HostCompatibilityResearchResult(ReactionScopedModel):
     """Structured host-compatibility report returned to the supervisor."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     input_uniprot_id: str = Field(min_length=1)
-    reaction_id: str = Field(min_length=1)
     source_organism: str | None = None
     source_taxon_id: int | None = None
     host_organism: Literal["Escherichia coli K-12 MG1655"] = (
@@ -209,11 +210,14 @@ class HostCompatibilityResearchResult(BaseModel):
 
 HOST_COMPATIBILITY_RESEARCHER_PROMPT = """你是辅助蛋白检索流程中的大肠杆菌宿主兼容性研究员。
 
-输入包含经过校验的 UniProt 蛋白和 KEGG 反应，以及数据库、文献研究员发现的
+输入包含经过校验的 UniProt 蛋白和一个或多个 KEGG 反应，以及数据库、文献研究员发现的
 原生辅助蛋白以及其 required 或 enhancing 功能角色。输入蛋白可能来自任意异源物种。
 你的职责是判断
 E. coli K-12 MG1655 是否已有蛋白能够承担每个角色，并找出可能需要异源补充的
 蛋白；不要重新判断原生系统是否需要该角色，也不要输出最终蛋白列表。
+
+输出 reaction_ids 必须完整复述输入的规范化反应集合。iML1515 检查需要覆盖
+集合中的每个反应，不得只保留第一个反应。
 
 宿主定义：
 - 精确菌株：Escherichia coli str. K-12 substr. MG1655，taxon 511145；

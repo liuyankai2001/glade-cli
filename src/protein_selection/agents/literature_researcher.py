@@ -18,6 +18,11 @@ from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
 )
+from src.protein_selection.reaction_scope import (
+    ReactionScopedModel,
+    normalize_reaction_ids,
+    require_reaction_subset,
+)
 
 
 LITERATURE_RESEARCHER_NAME = "literature_researcher"
@@ -150,13 +155,12 @@ class LiteratureSourceFailure(BaseModel):
     retryable: bool
 
 
-class LiteratureResearchResult(BaseModel):
+class LiteratureResearchResult(ReactionScopedModel):
     """Structured literature report returned to the supervising agent."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     input_uniprot_id: str = Field(min_length=1)
-    reaction_id: str = Field(min_length=1)
     source_organism: str | None = None
     source_taxon_id: int | None = None
     query_strategy: list[str] = Field(min_length=1)
@@ -251,10 +255,11 @@ class LiteratureResearchResult(BaseModel):
                 raise ValueError(
                     f"dependency atom {atom.atom_id} has mismatched input protein"
                 )
-            if atom.reaction_id != self.reaction_id:
-                raise ValueError(
-                    f"dependency atom {atom.atom_id} has mismatched reaction"
-                )
+            require_reaction_subset(
+                atom.reaction_ids,
+                self.reaction_ids,
+                label=f"dependency atom {atom.atom_id}",
+            )
             if atom.paper_id not in known_paper_ids:
                 raise ValueError(
                     "unknown atom paper references: " + atom.paper_id
@@ -284,11 +289,11 @@ class LiteratureResearchResult(BaseModel):
                     f"dependency synthesis {synthesis.synthesis_id} has "
                     "mismatched input protein"
                 )
-            if synthesis.reaction_id != self.reaction_id:
-                raise ValueError(
-                    f"dependency synthesis {synthesis.synthesis_id} has "
-                    "mismatched reaction"
-                )
+            require_reaction_subset(
+                synthesis.reaction_ids,
+                self.reaction_ids,
+                label=f"dependency synthesis {synthesis.synthesis_id}",
+            )
             unknown_atoms = sorted(
                 set(synthesis.atom_ids) - known_atom_ids
             )
@@ -302,7 +307,8 @@ class LiteratureResearchResult(BaseModel):
                 atom.input_uniprot_id != synthesis.input_uniprot_id
                 or atom.candidate_uniprot_id
                 != synthesis.candidate_uniprot_id
-                or atom.reaction_id != synthesis.reaction_id
+                or normalize_reaction_ids(atom.reaction_ids)
+                != normalize_reaction_ids(synthesis.reaction_ids)
                 for atom in selected_atoms
             ):
                 raise ValueError(
@@ -414,10 +420,13 @@ class LiteratureResearchResult(BaseModel):
 
 LITERATURE_RESEARCHER_PROMPT = """你是辅助蛋白检索流程中的文献证据研究员。
 
-输入包含经过校验的 UniProt 蛋白 ID 和 KEGG 反应 ID，并可能包含蛋白名称、基因
+输入包含经过校验的 UniProt 蛋白 ID 和一个或多个 KEGG 反应 ID，并可能包含蛋白名称、基因
 名称、EC、来源物种及其他研究员发现的候选伙伴。输入蛋白可能来自任意物种并被
 异源导入大肠杆菌。你的职责是寻找论文中的蛋白依赖证据，不负责寻找大肠杆菌
 替代蛋白，也不替主智能体输出最终辅助蛋白列表。
+
+输出 reaction_ids 必须完整复述输入反应集合。每个 evidence atom 和 synthesis 的
+reaction_ids 必须是该集合的非空子集；不得把不同反应范围的原子拼成一个结论。
 
 检索流程：
 1. 使用 UniProt ID、蛋白名、基因名、EC、反应名称和来源物种构造多组短查询；

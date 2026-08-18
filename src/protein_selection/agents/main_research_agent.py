@@ -103,8 +103,17 @@ from src.protein_selection.integrations.tooluniverse import ToolUniverseConfig
 from src.protein_selection.progress import emit_progress, progress_heartbeat
 from src.protein_selection.tools.iml1515 import DEFAULT_IML1515_PATH
 from src.protein_selection.research_context import (
+    MainEnzymeResearchContext,
     ResearchContext,
     normalize_rhea_family_id,
+)
+from src.protein_selection.reaction_scope import (
+    ReactionScopedModel,
+    context_reaction_ids,
+    context_reactions,
+    normalize_reaction_ids,
+    require_exact_reaction_scope,
+    require_reaction_subset,
 )
 from src.protein_selection.services.cache import PersistentTTLCache, RetrievalStats
 
@@ -133,6 +142,7 @@ ResearchOutcome = Literal[
     "reaction_mismatch",
     "unresolved",
 ]
+ResearchContextLike = ResearchContext | MainEnzymeResearchContext
 ReactionMatch = Literal["matched", "mismatched", "uncertain"]
 ProteinAvailability = Literal["host_available", "supplement_required"]
 DependencyNecessity = Literal["required", "enhancing"]
@@ -229,13 +239,12 @@ class EvidenceRejection(BaseModel):
     message: str = Field(min_length=1)
 
 
-class MainResearchResult(BaseModel):
+class MainResearchResult(ReactionScopedModel):
     """Final evidence synthesis produced by the supervising agent."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     input_uniprot_id: str = Field(min_length=1)
-    reaction_id: str = Field(min_length=1)
     reaction_match: ReactionMatch
     outcome: ResearchOutcome
     research_summary: str = Field(min_length=1)
@@ -409,12 +418,27 @@ class MainResearchResult(BaseModel):
         atom_ids = [item.atom_id for item in self.dependency_evidence_atoms]
         if len(atom_ids) != len(set(atom_ids)):
             raise ValueError("dependency evidence atom IDs must be unique")
+        for atom in self.dependency_evidence_atoms:
+            require_reaction_subset(
+                atom.reaction_ids,
+                self.reaction_ids,
+                label=f"dependency atom {atom.atom_id}",
+            )
         synthesis_ids = [
             item.synthesis_id for item in self.dependency_syntheses
         ]
         if len(synthesis_ids) != len(set(synthesis_ids)):
             raise ValueError("dependency synthesis IDs must be unique")
+        for synthesis in self.dependency_syntheses:
+            require_reaction_subset(
+                synthesis.reaction_ids,
+                self.reaction_ids,
+                label=f"dependency synthesis {synthesis.synthesis_id}",
+            )
         known_atom_ids = set(atom_ids)
+        atoms_by_id = {
+            item.atom_id: item for item in self.dependency_evidence_atoms
+        }
         for synthesis in self.dependency_syntheses:
             unknown_atoms = sorted(set(synthesis.atom_ids) - known_atom_ids)
             if unknown_atoms:
@@ -422,11 +446,25 @@ class MainResearchResult(BaseModel):
                     "dependency synthesis references unknown atoms: "
                     + ", ".join(unknown_atoms)
                 )
+            if any(
+                normalize_reaction_ids(atoms_by_id[atom_id].reaction_ids)
+                != normalize_reaction_ids(synthesis.reaction_ids)
+                for atom_id in synthesis.atom_ids
+            ):
+                raise ValueError(
+                    "dependency synthesis combines different reaction scopes"
+                )
         assertion_ids = [
             item.assertion_id for item in self.curated_dependency_assertions
         ]
         if len(assertion_ids) != len(set(assertion_ids)):
             raise ValueError("curated dependency assertion IDs must be unique")
+        for assertion in self.curated_dependency_assertions:
+            require_reaction_subset(
+                assertion.reaction_ids,
+                self.reaction_ids,
+                label=f"curated assertion {assertion.assertion_id}",
+            )
         syntheses_by_id = {
             item.synthesis_id: item for item in self.dependency_syntheses
         }
@@ -591,10 +629,13 @@ class MainResearchResult(BaseModel):
 
 DEEP_MAIN_RESEARCH_AGENT_PROMPT = """你是大肠杆菌酶蛋白补全系统的研究主管。
 
-输入包含经过校验的 UniProt ID、KEGG reaction ID、完整 UniProt 注释，以及上游
+输入包含经过校验的 UniProt ID、一个或多个 KEGG reaction ID、完整 UniProt 注释，以及上游
 辅助蛋白需求的初步判断。输入蛋白可能来自任意物种并被异源导入大肠杆菌。
 上游 required、enhancing 或 undetermined 只是启动研究的路由信号，
 不是最终生物学事实。
+
+所有研究报告和最终结果的 reaction_ids 必须完整复述输入反应集合。证据原子、
+综合结论和整理断言可以绑定其中一个或多个反应，但不得超出输入范围。
 
 你只负责调用下列专业研究员、比较其结构化 JSON 证据并作最终裁决。不得把文件
 工具、execute、模型常识或未调用的网页当作证据来源。
@@ -816,8 +857,8 @@ raw_evidence_id 中的一段逐字 EvidenceSpan 支持。可抽取输入/候选�
 输出引用规则：
 - 原样复制输入的 paper_id、raw_evidence_id、input_uniprot_id 和
   candidate_uniprot_id；每个 atom.evidence_id 必须等于 required_evidence_id，
-  atom.reaction_id 必须等于 input.reaction.reaction_id。这些只是请求范围键，不是论文
-  原文主张。
+  atom.reaction_ids 必须是 input.reaction_ids 的非空子集，并只包含该事实实际对应的
+  反应。这些只是请求范围键，不是论文原文主张。
 - EvidenceSpan.text 必须逐字复制 paper.title 或 paper.abstract 中的连续文字；身份
   fact 可以由论文中的基因名或蛋白名支撑，不要求原文出现 UniProt accession。
 - 如果摘要用 respectively 明确给出同工酶/基因的顺序，并同时报告各大亚基的残余
@@ -831,7 +872,8 @@ raw_evidence_id 中的一段逐字 EvidenceSpan 支持。可抽取输入/候选�
 DATABASE_ASSERTION_EXTRACTION_PROMPT = """你只分析给定官方数据库记录是否包含明确的
 整蛋白依赖断言。只返回 CuratedDependencyAssertionExtractionResult。复合物组成、
 GPR、物理互作和功能关联不是 explicit_dependency。每个断言必须逐字绑定给定原始
-记录，包含同物种、精确 KEGG 反应、完整候选蛋白、required/enhancing 和独立数据库
+记录，包含同物种、输入 reaction_ids 的非空精确子集、完整候选蛋白、
+required/enhancing 和独立数据库
 lineage；任何字段不足时返回空 assertions，不得推断或补写。"""
 
 
@@ -876,6 +918,8 @@ class BalancedResearchAgent:
         # without the query-scoped MCP tools. Production construction always
         # uses the evidence-first path above.
         payload = _extract_research_payload(input)
+        context = _research_context_from_payload(payload)
+        expected_reaction_ids = context_reaction_ids(context)
 
         database_task = _research_task_input(
             payload,
@@ -978,6 +1022,7 @@ class BalancedResearchAgent:
                 "host", {}
             ).get("report"),
         }
+        _validate_reports_reaction_scope(reports, expected_reaction_ids)
         bundle = {
             "input": payload,
             "database_research": _serializable_run(database_run),
@@ -1018,6 +1063,11 @@ class BalancedResearchAgent:
                 final_result,
                 MainResearchResult,
             )
+            require_exact_reaction_scope(
+                structured.reaction_ids,
+                expected_reaction_ids,
+                label="main research result",
+            )
             _validate_final_citation_provenance(
                 structured,
                 {
@@ -1050,10 +1100,7 @@ class BalancedResearchAgent:
         workflow_started = time.perf_counter()
         timings: dict[str, float] = {}
         payload = _extract_research_payload(input)
-        context_data = payload.get("research_context")
-        if not isinstance(context_data, Mapping):
-            raise ValueError("evidence-first research requires research_context")
-        context = ResearchContext.model_validate(context_data)
+        context = _research_context_from_payload(payload)
         emit_progress(
             "research",
             "info",
@@ -1833,6 +1880,10 @@ class BalancedResearchAgent:
                 "host", {}
             ).get("report"),
         }
+        _validate_reports_reaction_scope(
+            reports,
+            context_reaction_ids(context),
+        )
         stage_started = time.perf_counter()
         deterministic_final = _deterministic_final_result(
             context,
@@ -1955,6 +2006,11 @@ class BalancedResearchAgent:
             structured = _extract_structured_response(
                 final_raw,
                 MainResearchResult,
+            )
+            require_exact_reaction_scope(
+                structured.reaction_ids,
+                context_reaction_ids(context),
+                label="main research result",
             )
             structured = _repair_final_citation_provenance(
                 structured,
@@ -2175,6 +2231,65 @@ def _extract_research_payload(input: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _research_context_from_payload(
+    payload: dict[str, Any],
+) -> ResearchContextLike:
+    """Validate either context generation and canonicalize its scope."""
+
+    main_context_data = payload.get("main_enzyme_research_context")
+    legacy_context_data = payload.get("research_context")
+    if isinstance(main_context_data, Mapping):
+        context: ResearchContextLike = MainEnzymeResearchContext.model_validate(
+            main_context_data
+        )
+    elif isinstance(legacy_context_data, Mapping):
+        context = ResearchContext.model_validate(legacy_context_data)
+    else:
+        raise ValueError(
+            "evidence-first research requires research_context or "
+            "main_enzyme_research_context"
+        )
+
+    expected_ids = context_reaction_ids(context)
+    raw_plural = payload.get("reaction_ids")
+    raw_legacy = payload.get("reaction_id")
+    if raw_plural is not None and raw_legacy is not None:
+        raise ValueError("research payload contains both reaction_ids and reaction_id")
+    if raw_plural is None and raw_legacy is not None:
+        raw_plural = [raw_legacy]
+    if raw_plural is not None:
+        if not isinstance(raw_plural, Sequence) or isinstance(
+            raw_plural,
+            (str, bytes),
+        ):
+            raise ValueError("research payload reaction_ids must be a list")
+        require_exact_reaction_scope(
+            list(raw_plural),
+            expected_ids,
+            label="research payload",
+        )
+    payload.pop("reaction_id", None)
+    payload["reaction_ids"] = expected_ids
+    return context
+
+
+def _validate_reports_reaction_scope(
+    reports: Mapping[str, Any],
+    expected_reaction_ids: Sequence[str],
+) -> None:
+    for researcher, report in reports.items():
+        if report is None:
+            continue
+        reaction_ids = getattr(report, "reaction_ids", None)
+        if not isinstance(reaction_ids, list):
+            raise ValueError(f"{researcher} omitted reaction_ids")
+        require_exact_reaction_scope(
+            reaction_ids,
+            expected_reaction_ids,
+            label=researcher,
+        )
+
+
 def _research_task_input(
     payload: Mapping[str, Any],
     task: str,
@@ -2195,7 +2310,7 @@ def _research_task_input(
 
 def _analysis_task_input(
     payload: Mapping[str, Any],
-    context: ResearchContext,
+    context: ResearchContextLike,
     records: Sequence[RawResearchEvidence],
     task: str,
 ) -> dict[str, list[dict[str, str]]]:
@@ -2227,7 +2342,7 @@ def _compact_analysis_payload(
 
     keys = (
         "uniprot_id",
-        "reaction_id",
+        "reaction_ids",
         "preliminary_reaction_match",
         "preliminary_reaction_match_reason",
         "requirement_assessment",
@@ -2240,18 +2355,29 @@ def _compact_analysis_payload(
     return {key: payload[key] for key in keys if key in payload}
 
 
-def _context_rhea_family(context: ResearchContext) -> str | None:
-    """Return the normalized family represented by the requested KEGG reaction."""
+def _context_rhea_family(
+    context: ResearchContextLike,
+    reaction_ids: Sequence[str] | None = None,
+) -> str | None:
+    """Return one family only when the selected scope has a unique family."""
 
-    for rhea_id in context.reaction.rhea_ids:
-        family = normalize_rhea_family_id(rhea_id)
-        if family is not None:
-            return family
-    return None
+    selected = set(
+        normalize_reaction_ids(reaction_ids)
+        if reaction_ids is not None
+        else context_reaction_ids(context)
+    )
+    families = {
+        family
+        for reaction in context_reactions(context)
+        if reaction.reaction_id.upper() in selected
+        for rhea_id in reaction.rhea_ids
+        if (family := normalize_rhea_family_id(rhea_id)) is not None
+    }
+    return next(iter(families)) if len(families) == 1 else None
 
 
 def _build_dependency_syntheses(
-    context: ResearchContext,
+    context: ResearchContextLike,
     atoms: Sequence[DependencyEvidenceAtom],
     papers: Mapping[str, Any],
 ) -> tuple[list[DependencyEvidenceSynthesis], list[EvidenceRejection]]:
@@ -2289,7 +2415,7 @@ def _build_dependency_syntheses(
         eligible.append(atom)
 
     groups: dict[
-        tuple[str, str, str, str, str | None],
+        tuple[str, str, str, tuple[str, ...], str | None],
         list[DependencyEvidenceAtom],
     ] = {}
     for atom in eligible:
@@ -2302,15 +2428,18 @@ def _build_dependency_syntheses(
             atom.input_uniprot_id.upper(),
             atom.candidate_uniprot_id.upper(),
             organism_key,
-            atom.reaction_id.upper(),
+            tuple(atom.reaction_ids),
             atom.rhea_family,
         )
         groups.setdefault(key, []).append(atom)
 
-    expected_family = _context_rhea_family(context)
     syntheses: list[DependencyEvidenceSynthesis] = []
     for group_atoms in groups.values():
         first = group_atoms[0]
+        expected_family = _context_rhea_family(
+            context,
+            first.reaction_ids,
+        )
         activity_without = {
             atom.activity_status
             for atom in group_atoms
@@ -2367,13 +2496,14 @@ def _build_dependency_syntheses(
                 synthesis = DependencyEvidenceSynthesis(
                     synthesis_id=(
                         f"SYN-{first.candidate_uniprot_id.upper()}-"
+                        f"{'-'.join(first.reaction_ids)}-"
                         f"{decision_path.upper().replace('_', '-')}"
                     ),
                     input_uniprot_id=context.protein.primary_accession,
                     candidate_uniprot_id=first.candidate_uniprot_id.upper(),
                     organism_name=context.protein.organism_name,
                     taxon_id=context.protein.taxon_id,
-                    reaction_id=context.reaction.reaction_id,
+                    reaction_ids=first.reaction_ids,
                     rhea_family=expected_family,
                     necessity=necessity,
                     decision_path=decision_path,
@@ -2401,7 +2531,7 @@ def _build_dependency_syntheses(
                     ),
                     expected_organism=context.protein.organism_name,
                     expected_taxon_id=context.protein.taxon_id,
-                    expected_reaction_id=context.reaction.reaction_id,
+                    expected_reaction_ids=context_reaction_ids(context),
                     expected_rhea_family=expected_family,
                 )
                 if evaluation.valid:
@@ -2471,7 +2601,7 @@ def _has_chemical_component_atom(
 
 
 def _deterministic_literature_report(
-    context: ResearchContext,
+    context: ResearchContextLike,
     literature_records: Sequence[RawResearchEvidence],
     identity_records: Sequence[RawResearchEvidence],
     candidate_hints: Sequence[VerifiedCandidateHint],
@@ -2702,7 +2832,7 @@ def _deterministic_literature_report(
     return LiteratureResearchResult.model_validate(
         {
             "input_uniprot_id": context.protein.primary_accession,
-            "reaction_id": context.reaction.reaction_id,
+            "reaction_ids": context_reaction_ids(context),
             "source_organism": context.protein.organism_name,
             "source_taxon_id": context.protein.taxon_id,
             "query_strategy": [
@@ -2732,7 +2862,7 @@ def _deterministic_literature_report(
 
 
 def _deterministic_database_report(
-    context: ResearchContext,
+    context: ResearchContextLike,
     database_records: Sequence[RawResearchEvidence],
     candidate_hints: Sequence[VerifiedCandidateHint],
 ) -> BioDatabaseResearchResult:
@@ -2831,7 +2961,7 @@ def _deterministic_database_report(
     return BioDatabaseResearchResult.model_validate(
         {
             "input_uniprot_id": context.protein.primary_accession,
-            "reaction_id": context.reaction.reaction_id,
+            "reaction_ids": context_reaction_ids(context),
             "source_organism": context.protein.organism_name,
             "source_taxon_id": context.protein.taxon_id,
             "reaction_match": context.preliminary_reaction_match,
@@ -2865,7 +2995,7 @@ async def _augment_database_assertions(
     agent: Any,
     report: BioDatabaseResearchResult,
     records: Sequence[RawResearchEvidence],
-    context: ResearchContext,
+    context: ResearchContextLike,
     mode: ResearchMode,
 ) -> BioDatabaseResearchResult:
     """Ask a small model only when raw records may state explicit dependency."""
@@ -2948,7 +3078,7 @@ async def _augment_database_assertions(
                 candidate.organism_name or report.source_organism
             ),
             expected_taxon_id=(candidate.taxon_id or report.source_taxon_id),
-            reaction_id=report.reaction_id,
+            reaction_ids=report.reaction_ids,
         )
         if evaluation.valid:
             accepted.append(assertion)
@@ -2979,7 +3109,7 @@ async def _augment_database_assertions(
 
 async def _model_extracted_literature_report(
     agent: Any,
-    context: ResearchContext,
+    context: ResearchContextLike,
     literature_records: Sequence[RawResearchEvidence],
     identity_records: Sequence[RawResearchEvidence],
     candidate_hints: Sequence[VerifiedCandidateHint],
@@ -3195,7 +3325,9 @@ async def _model_extracted_literature_report(
             if (
                 atom.input_uniprot_id != context.protein.primary_accession
                 or atom.candidate_uniprot_id != hint.uniprot_id
-                or atom.reaction_id != context.reaction.reaction_id
+                or not set(atom.reaction_ids).issubset(
+                    context_reaction_ids(context)
+                )
             ):
                 continue
             if (
@@ -3366,7 +3498,7 @@ async def _model_extracted_literature_report(
     return LiteratureResearchResult.model_validate(
         {
             "input_uniprot_id": context.protein.primary_accession,
-            "reaction_id": context.reaction.reaction_id,
+            "reaction_ids": context_reaction_ids(context),
             "source_organism": context.protein.organism_name,
             "source_taxon_id": context.protein.taxon_id,
             "query_strategy": [
@@ -3541,24 +3673,42 @@ _ELECTRON_TARGET_COUPLING_PATTERN = re.compile(
 
 
 def _target_reaction_activity_is_named(
-    context: ResearchContext,
+    context: ResearchContextLike,
     text: str,
 ) -> bool:
     """Require an activity verb plus a source-grounded target identifier."""
+
+    return bool(_target_reaction_ids(context, text))
+
+
+def _target_reaction_ids(
+    context: ResearchContextLike,
+    text: str,
+) -> list[str]:
+    """Return only requested reactions explicitly represented by source text."""
 
     normalized = text.casefold()
     if not re.search(
         r"(?:convert|conversion|transform|cataly[sz]|activity|active)",
         normalized,
     ):
-        return False
-    exact_terms = [
-        context.reaction.reaction_id,
-        *context.reaction.ec_numbers,
-        *context.reaction.names,
+        return []
+    reactions = context_reactions(context)
+    matched = [
+        reaction.reaction_id
+        for reaction in reactions
+        if any(
+            _term_occurs(term, normalized)
+            for term in (
+                reaction.reaction_id,
+                *reaction.ec_numbers,
+                *reaction.names,
+            )
+            if term
+        )
     ]
-    if any(_term_occurs(term, normalized) for term in exact_terms if term):
-        return True
+    if matched:
+        return normalize_reaction_ids(sorted(set(matched)))
     informative: list[str] = []
     for name in context.protein.protein_names:
         informative.extend(
@@ -3577,19 +3727,28 @@ def _target_reaction_activity_is_named(
             and not token.isdigit()
         )
     if len({token for token in informative if token in normalized}) >= 2:
-        return True
-    definition = context.reaction.definition or ""
-    reactant_side = re.split(r"<?=>?", definition, maxsplit=1)[0]
-    reactant_terms = [
-        token.casefold()
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{3,}", reactant_side)
-        if token.casefold() not in {"oxygen", "water"}
+        return context_reaction_ids(context)
+    matched = [
+        reaction.reaction_id
+        for reaction in reactions
+        if any(
+            _term_occurs(token.casefold(), normalized)
+            for token in re.findall(
+                r"[A-Za-z][A-Za-z0-9-]{3,}",
+                re.split(
+                    r"<?=>?",
+                    reaction.definition or "",
+                    maxsplit=1,
+                )[0],
+            )
+            if token.casefold() not in {"oxygen", "water"}
+        )
     ]
-    return any(_term_occurs(term, normalized) for term in reactant_terms)
+    return normalize_reaction_ids(sorted(set(matched))) if matched else []
 
 
 def _coupling_atoms(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     raw_evidence_id: str,
     paper_id: str,
@@ -3635,7 +3794,17 @@ def _coupling_atoms(
             "whole_protein",
         ),
     )
-    family = _context_rhea_family(context)
+    reaction_ids = _target_reaction_ids(
+        context,
+        " ".join(
+            (
+                reaction_span,
+                component_span,
+                coupled_span,
+            )
+        ),
+    ) or context_reaction_ids(context)
+    family = _context_rhea_family(context, reaction_ids)
     atoms: list[DependencyEvidenceAtom] = []
     for index, (suffix, span_text, fact, scope) in enumerate(specs, start=1):
         atom_id = f"{atom_prefix}-{suffix}-{index}"
@@ -3656,7 +3825,7 @@ def _coupling_atoms(
                 ],
                 experimental_organism=organism_name,
                 experimental_taxon_id=organism_taxon,
-                reaction_id=context.reaction.reaction_id,
+                reaction_ids=reaction_ids,
                 rhea_family=family,
                 experiment_type="other",
                 candidate_scope=scope,
@@ -3702,7 +3871,7 @@ def _source_windows(
 
 
 def _extract_electron_component_coupling_atoms(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     title: str,
     sentences: Sequence[str],
@@ -3775,7 +3944,7 @@ def _extract_electron_component_coupling_atoms(
     )
 
 def _ordered_residual_reconstitution_spans(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     sentences: Sequence[str],
 ) -> tuple[str, str] | None:
@@ -4017,13 +4186,14 @@ def _whole_gene_loss_names_candidate(
 
 def _source_names_target_reaction(
     text: str,
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
 ) -> bool:
     normalized = text.casefold()
     exact_terms = [
-        *context.reaction.names,
-        *context.reaction.ec_numbers,
+        term
+        for reaction in context_reactions(context)
+        for term in (*reaction.names, *reaction.ec_numbers)
     ]
     if any(_term_occurs(term, normalized) for term in exact_terms if term):
         return True
@@ -4036,7 +4206,7 @@ def _source_names_target_reaction(
 
 def _explicit_genetic_loss_spans(
     source_parts: Sequence[str],
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     candidate_terms: Sequence[str],
 ) -> tuple[str, str, str] | None:
@@ -4072,7 +4242,7 @@ def _explicit_genetic_loss_spans(
 
 
 def _extract_deterministic_dependency_atoms(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     title: str,
     abstract: str,
@@ -4334,7 +4504,11 @@ def _extract_deterministic_dependency_atoms(
             ("COUPLING", coupling_span, "coupled_target_activity", "whole_protein", "not_reported")
         )
 
-    family = _context_rhea_family(context)
+    reaction_ids = _target_reaction_ids(
+        context,
+        f"{title} {abstract}",
+    ) or context_reaction_ids(context)
+    family = _context_rhea_family(context, reaction_ids)
     result: list[DependencyEvidenceAtom] = []
     for index, (suffix, text, fact, default_scope, activity) in enumerate(
         atom_specs,
@@ -4370,7 +4544,7 @@ def _extract_deterministic_dependency_atoms(
                 candidate_protein_mentions=[hint.uniprot_id, *hint.gene_names],
                 experimental_organism=organism_name,
                 experimental_taxon_id=organism_taxon,
-                reaction_id=context.reaction.reaction_id,
+                reaction_ids=reaction_ids,
                 rhea_family=family,
                 experiment_type=experiment_type,
                 candidate_scope=scope,
@@ -4466,7 +4640,7 @@ def _fulltext_snippet_strings(content: str) -> list[tuple[str, str]]:
 
 
 def _extract_fulltext_genetic_dependency_atoms(
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
     snippet_sources: Sequence[tuple[str, str, str]],
     paper_id: str,
@@ -4557,7 +4731,11 @@ def _extract_fulltext_genetic_dependency_atoms(
         ("GENETIC", loss_part, "genetic_loss_of_function", "whole_protein", "not_reported"),
         ("GENLOSS", activity_part, "activity_without_candidate", "whole_protein", activity_status),
     )
-    family = _context_rhea_family(context)
+    reaction_ids = _target_reaction_ids(
+        context,
+        " ".join(text for text, _, _ in source_parts),
+    ) or context_reaction_ids(context)
+    family = _context_rhea_family(context, reaction_ids)
     result: list[DependencyEvidenceAtom] = []
     for index, (suffix, part, fact, scope, status) in enumerate(
         atom_specs,
@@ -4582,7 +4760,7 @@ def _extract_fulltext_genetic_dependency_atoms(
                 ],
                 experimental_organism=organism_name,
                 experimental_taxon_id=organism_taxon,
-                reaction_id=context.reaction.reaction_id,
+                reaction_ids=reaction_ids,
                 rhea_family=family,
                 experiment_type=(
                     "gene_loss_of_function"
@@ -4794,7 +4972,7 @@ def _pubmed_articles(
 
 def _article_matches_input_and_hint(
     text: str,
-    context: ResearchContext,
+    context: ResearchContextLike,
     hint: VerifiedCandidateHint,
 ) -> bool:
     normalized = text.casefold()
@@ -4831,7 +5009,7 @@ def _span_mentions_candidate(
 
 def _normalize_historical_atom_organism(
     atom: DependencyEvidenceAtom,
-    context: ResearchContext,
+    context: ResearchContextLike,
 ) -> DependencyEvidenceAtom:
     """Map a UniProt-backed historical species name to the canonical taxon."""
 
@@ -4953,7 +5131,7 @@ def _article_year(article: Mapping[str, Any]) -> int | None:
 
 
 def _deterministic_host_report(
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidate_roles: Sequence[Mapping[str, Any]],
     host_records: Sequence[RawResearchEvidence],
 ) -> HostCompatibilityResearchResult | None:
@@ -5135,7 +5313,7 @@ def _deterministic_host_report(
     return HostCompatibilityResearchResult.model_validate(
         {
             "input_uniprot_id": context.protein.primary_accession,
-            "reaction_id": context.reaction.reaction_id,
+            "reaction_ids": context_reaction_ids(context),
             "source_organism": context.protein.organism_name,
             "source_taxon_id": context.protein.taxon_id,
             "assessments": assessments,
@@ -5149,7 +5327,7 @@ def _deterministic_host_report(
 
 
 def _deterministic_supplement_host_report(
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidate_roles: Sequence[Mapping[str, Any]],
     host_records: Sequence[RawResearchEvidence],
 ) -> HostCompatibilityResearchResult | None:
@@ -5373,7 +5551,7 @@ def _deterministic_supplement_host_report(
     return HostCompatibilityResearchResult.model_validate(
         {
             "input_uniprot_id": context.protein.primary_accession,
-            "reaction_id": context.reaction.reaction_id,
+            "reaction_ids": context_reaction_ids(context),
             "source_organism": context.protein.organism_name,
             "source_taxon_id": context.protein.taxon_id,
             "assessments": assessments,
@@ -5462,7 +5640,7 @@ def _mapping_list(value: Any, key: str) -> list[Any]:
 
 
 def _deterministic_final_result(
-    context: ResearchContext,
+    context: ResearchContextLike,
     payload: Mapping[str, Any],
     reports: Mapping[str, Any],
 ) -> MainResearchResult | None:
@@ -5535,8 +5713,11 @@ def _deterministic_final_result(
                     candidate.taxon_id
                     or literature_report.source_taxon_id
                 ),
-                expected_reaction_id=context.reaction.reaction_id,
-                expected_rhea_family=_context_rhea_family(context),
+                expected_reaction_ids=context_reaction_ids(context),
+                expected_rhea_family=_context_rhea_family(
+                    context,
+                    synthesis.reaction_ids,
+                ),
             )
             if evaluation.valid and _synthesis_has_eligible_papers(
                 synthesis,
@@ -5683,7 +5864,7 @@ def _deterministic_final_result(
         summary = "直接实验和宿主映射共同支持所列蛋白依赖。"
     return MainResearchResult(
         input_uniprot_id=context.protein.primary_accession,
-        reaction_id=context.reaction.reaction_id,
+        reaction_ids=context_reaction_ids(context),
         reaction_match="matched",
         outcome=outcome,
         research_summary=summary,
@@ -5726,12 +5907,12 @@ def _synthesis_has_eligible_papers(
 async def _register_validated_input_evidence(
     ledger: ResearchEvidenceLedger,
     payload: Mapping[str, Any],
-    context: ResearchContext,
+    context: ResearchContextLike,
 ) -> list[RawResearchEvidence]:
     """Register official input records as first-class evidence sources."""
 
     records: list[RawResearchEvidence] = []
-    sources = (
+    sources = [
         (
             f"INPUT-UNIPROT-{context.protein.primary_accession}",
             "UniProt_validated_input",
@@ -5744,15 +5925,18 @@ async def _register_validated_input_evidence(
                 else ""
             ],
         ),
-        (
-            f"INPUT-KEGG-{context.reaction.reaction_id}",
-            "KEGG_validated_input",
-            context.reaction.model_dump(mode="json"),
-            {"reaction_id": context.reaction.reaction_id},
-            [context.reaction.reaction_id],
-            [context.reaction.source_url or ""],
+        *(
+            (
+                f"INPUT-KEGG-{reaction.reaction_id}",
+                "KEGG_validated_input",
+                reaction.model_dump(mode="json"),
+                {"reaction_id": reaction.reaction_id},
+                [reaction.reaction_id],
+                [reaction.source_url or ""],
+            )
+            for reaction in context_reactions(context)
         ),
-    )
+    ]
     for (
         evidence_id,
         tool_name,
@@ -6335,7 +6519,7 @@ def _enforce_structured_dependency_report(report: Any) -> Any:
                         expected_taxon_id=(
                             candidate.taxon_id or report.source_taxon_id
                         ),
-                        expected_reaction_id=report.reaction_id,
+                        expected_reaction_ids=report.reaction_ids,
                         expected_rhea_family=synthesis.rhea_family,
                     )
                     if evaluation.valid:
@@ -6408,7 +6592,7 @@ def _enforce_structured_dependency_report(report: Any) -> Any:
                         expected_taxon_id=(
                             candidate.taxon_id or report.source_taxon_id
                         ),
-                        reaction_id=report.reaction_id,
+                        reaction_ids=report.reaction_ids,
                     )
                     if evaluation.valid:
                         valid_ids.append(assertion_id)
@@ -6621,10 +6805,9 @@ def _recover_report_without_invalid_relations(
     They are removed and their candidates are demoted to ``uncertain``.
     """
 
-    if not isinstance(value, Mapping) or not {
-        "input_uniprot_id",
-        "reaction_id",
-    }.issubset(value):
+    if not isinstance(value, Mapping) or "input_uniprot_id" not in value:
+        return None
+    if "reaction_ids" not in value and "reaction_id" not in value:
         return None
     if schema not in {
         LiteratureResearchResult,
@@ -6852,7 +7035,7 @@ def _matching_candidate_hint(
 
 
 def _disambiguate_isozyme_candidates(
-    context: ResearchContext,
+    context: ResearchContextLike,
     candidates: Sequence[VerifiedCandidateHint],
 ) -> list[VerifiedCandidateHint]:
     """Resolve a paralog set only when one candidate shares the isozyme label."""
@@ -7350,7 +7533,7 @@ def _validated_dependency_relations_for_auxiliary(
                     expected_taxon_id=(
                         candidate.taxon_id or literature.source_taxon_id
                     ),
-                    expected_reaction_id=literature.reaction_id,
+                    expected_reaction_ids=literature.reaction_ids,
                     expected_rhea_family=synthesis.rhea_family,
                 )
                 if evaluation.valid and _synthesis_has_eligible_papers(
@@ -7387,7 +7570,7 @@ def _validated_dependency_relations_for_auxiliary(
                     expected_taxon_id=(
                         candidate.taxon_id or database.source_taxon_id
                     ),
-                    reaction_id=database.reaction_id,
+                    reaction_ids=database.reaction_ids,
                 )
                 if evaluation.valid:
                     curated.append(assertion)
@@ -7653,7 +7836,7 @@ def _unresolved_fallback_result(
     ]
     return MainResearchResult(
         input_uniprot_id=str(payload.get("uniprot_id") or "unknown"),
-        reaction_id=str(payload.get("reaction_id") or "unknown"),
+        reaction_ids=normalize_reaction_ids(payload.get("reaction_ids", [])),
         reaction_match="uncertain",
         outcome="unresolved",
         research_summary="均衡研究未能产生通过来源校验的最终结论。",
@@ -7675,7 +7858,7 @@ def _unresolved_fallback_result(
 
 
 def _deterministic_unresolved_result(
-    context: ResearchContext,
+    context: ResearchContextLike,
     payload: Mapping[str, Any],
     raw_evidence: Sequence[RawResearchEvidence],
     database_run: Mapping[str, Any],
@@ -7734,7 +7917,7 @@ def _deterministic_unresolved_result(
     ]
     return MainResearchResult(
         input_uniprot_id=context.protein.primary_accession,
-        reaction_id=context.reaction.reaction_id,
+        reaction_ids=context_reaction_ids(context),
         reaction_match=(
             context.preliminary_reaction_match
             if context.preliminary_reaction_match != "mismatched"

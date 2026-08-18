@@ -15,6 +15,10 @@ from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
 )
+from src.protein_selection.reaction_scope import (
+    ReactionScopedModel,
+    require_reaction_subset,
+)
 
 
 BIO_DATABASE_RESEARCHER_NAME = "bio_database_researcher"
@@ -97,13 +101,12 @@ class SmallMoleculeCofactor(BaseModel):
     evidence_ids: list[str] = Field(min_length=1)
 
 
-class BioDatabaseResearchResult(BaseModel):
+class BioDatabaseResearchResult(ReactionScopedModel):
     """Structured evidence report returned by the database researcher."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     input_uniprot_id: str = Field(min_length=1)
-    reaction_id: str = Field(min_length=1)
     source_organism: str | None = None
     source_taxon_id: int | None = None
     reaction_match: ReactionMatch
@@ -152,6 +155,11 @@ class BioDatabaseResearchResult(BaseModel):
             referenced_ids.update(cofactor.evidence_ids)
         for assertion in self.dependency_assertions:
             referenced_ids.update(assertion.evidence_ids)
+            require_reaction_subset(
+                assertion.reaction_ids,
+                self.reaction_ids,
+                label=f"dependency assertion {assertion.assertion_id}",
+            )
 
         unknown_ids = sorted(referenced_ids - known_ids)
         if unknown_ids:
@@ -162,10 +170,13 @@ class BioDatabaseResearchResult(BaseModel):
 
 BIO_DATABASE_RESEARCHER_PROMPT = """你是辅助蛋白检索流程中的生物数据库证据研究员。
 
-输入包含一个经过校验的 UniProt 蛋白 ID 和 KEGG 反应 ID。输入蛋白可能来自任意
+输入包含一个经过校验的 UniProt 蛋白 ID 和一个或多个 KEGG 反应 ID。输入蛋白可能来自任意
 物种并被异源导入大肠杆菌。你的任务仅限于重建该蛋白在来源物种中的原生催化
 系统和蛋白依赖证据；不要寻找大肠杆菌替代蛋白，也不要替最终裁决智能体决定
 最终补全列表。
+
+输出 reaction_ids 必须完整复述输入的反应集合。每条 dependency assertion 的
+reaction_ids 必须是该集合的非空子集；不得只保留第一个反应或补写范围外反应。
 
 必须遵循以下调查顺序：
 1. 首先查询 UniProt，确认来源物种、NCBI taxonomy ID、功能注释和可用交叉引用。

@@ -8,6 +8,14 @@ from typing import Any, Literal, Protocol
 
 from src.protein_selection.agents.main_research_agent import MainResearchResult
 from src.protein_selection.progress import emit_progress
+from src.protein_selection.reaction_scope import (
+    context_reaction_ids,
+    require_exact_reaction_scope,
+)
+from src.protein_selection.research_context import (
+    MainEnzymeResearchContext,
+    ResearchContext,
+)
 from src.protein_selection.state import ProteinSupplyState
 
 
@@ -71,6 +79,23 @@ def _decision_state_update(
     }
 
 
+def _state_reaction_ids(state: ProteinSupplyState) -> list[str]:
+    """Derive the canonical reaction scope from validated state."""
+
+    main_context = state.get("main_enzyme_research_context")
+    if isinstance(main_context, Mapping):
+        return context_reaction_ids(
+            MainEnzymeResearchContext.model_validate(main_context)
+        )
+    legacy_context = state.get("research_context")
+    if isinstance(legacy_context, Mapping):
+        return context_reaction_ids(ResearchContext.model_validate(legacy_context))
+    reaction_id = state.get("reaction_id")
+    if reaction_id:
+        return [reaction_id]
+    raise ValueError("validated reaction context is required")
+
+
 def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
     """Complete a positively independent case without starting research."""
 
@@ -118,7 +143,7 @@ def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
     decision = MainResearchResult.model_validate(
         {
             "input_uniprot_id": uniprot_id,
-            "reaction_id": reaction_id,
+            "reaction_ids": [reaction_id],
             "reaction_match": "matched",
             "outcome": "independent",
             "research_summary": (
@@ -203,7 +228,7 @@ def return_reaction_mismatch(state: ProteinSupplyState) -> dict[str, Any]:
     decision = MainResearchResult.model_validate(
         {
             "input_uniprot_id": uniprot_id,
-            "reaction_id": reaction_id,
+            "reaction_ids": [reaction_id],
             "reaction_match": "mismatched",
             "outcome": "reaction_mismatch",
             "research_summary": (
@@ -326,20 +351,22 @@ def build_main_research_node(
             )
 
         uniprot_id = state.get("uniprot_id")
-        reaction_id = state.get("reaction_id")
-        if not uniprot_id or not reaction_id:
-            raise ValueError(
-                "validated UniProt and reaction identifiers are required"
-            )
+        if not uniprot_id:
+            raise ValueError("validated UniProt identifier is required")
+        reaction_ids = _state_reaction_ids(state)
 
         payload = {
             "uniprot_id": uniprot_id,
-            "reaction_id": reaction_id,
+            "reaction_ids": reaction_ids,
             "uniprot_record": state.get("uniprot_record"),
             "reaction_record": state.get("reaction_record"),
+            "reaction_records": state.get("reaction_records"),
             "uniprot_annotation": state.get("uniprot_annotation"),
             "requirement_assessment": state.get("requirement_assessment"),
             "research_context": state.get("research_context"),
+            "main_enzyme_research_context": state.get(
+                "main_enzyme_research_context"
+            ),
             "preliminary_reaction_match": state.get(
                 "preliminary_reaction_match"
             ),
@@ -379,10 +406,11 @@ def build_main_research_node(
                 raise ValueError(
                     "main research result changed the input UniProt ID"
                 )
-            if decision.reaction_id != reaction_id:
-                raise ValueError(
-                    "main research result changed the input reaction ID"
-                )
+            require_exact_reaction_scope(
+                decision.reaction_ids,
+                reaction_ids,
+                label="main research result",
+            )
         except Exception as exc:
             emit_progress(
                 "research",

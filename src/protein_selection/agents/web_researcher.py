@@ -9,6 +9,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.protein_selection.reaction_scope import ReactionScopedModel
+
 from src.protein_selection.integrations.open_websearch import (
     OpenWebSearchConfig,
     load_open_websearch_tools,
@@ -102,13 +104,12 @@ class WebSourceFailure(BaseModel):
     retryable: bool
 
 
-class WebResearchResult(BaseModel):
+class WebResearchResult(ReactionScopedModel):
     """Structured web-evidence report returned to the supervisor."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     input_uniprot_id: str = Field(min_length=1)
-    reaction_id: str = Field(min_length=1)
     source_organism: str | None = None
     source_taxon_id: int | None = None
     query_strategy: list[str] = Field(min_length=1)
@@ -157,9 +158,12 @@ class WebResearchResult(BaseModel):
 
 WEB_RESEARCHER_PROMPT = """你是辅助蛋白检索流程中的网络证据研究员。
 
-你的任务是围绕输入的 UniProt 蛋白、KEGG 反应和大肠杆菌宿主开展网络检索，
+你的任务是围绕输入的 UniProt 蛋白、一个或多个 KEGG 反应和大肠杆菌宿主开展网络检索，
 寻找该催化系统的蛋白组成、必需或增效互作蛋白、电子传递伙伴、成熟/装配蛋白及
 可替代的大肠杆菌蛋白证据。输入蛋白可能来自异源物种。
+
+输出 reaction_ids 必须完整复述输入的规范化反应集合，不得只返回第一个反应，
+也不得加入输入范围之外的反应。
 
 工作要求：
 1. 先使用 search 发现来源，必要时组合多个搜索引擎和不同查询表述。
