@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
+from src.pathway_analyze.kegg_gap_analyze import (
+    ELECTRON_INFERENCE_VERSION,
+    gap_depth_output_dir,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -65,6 +68,27 @@ def _risk_name(value: Any) -> str:
     }.get(str(value or "").strip().lower(), str(value or "").strip())
 
 
+def _balance_name(value: Any) -> str:
+    return {
+        "not_applicable": "不涉及电子载体",
+        "internally_balanced": "路线内已平衡",
+        "unbalanced": "存在净消耗",
+        "unresolved": "载体配对待确认",
+    }.get(str(value or "").strip(), str(value or "").strip())
+
+
+def _electron_status_name(value: Any) -> str:
+    return {
+        "not_required": "不需要额外电子系统",
+        "internally_balanced": "电子载体已在路线内平衡",
+        "internally_balanced_carrier_check_required": (
+            "电子已内部平衡，但真实载体兼容性待确认"
+        ),
+        "carrier_check_required": "真实载体或电子伙伴待确认",
+        "external_regeneration_required": "需要外部电子载体再生系统",
+    }.get(str(value or "").strip(), str(value or "").strip())
+
+
 def get_gap_info(config: Any) -> dict[str, Any]:
     """Return a compact Chinese summary for one gap-search depth."""
 
@@ -75,6 +99,24 @@ def get_gap_info(config: Any) -> dict[str, Any]:
     run_config = _read_json(gap_dir / "run_config.json")
     solutions = _read_csv(gap_dir / "solutions.csv")
     rejected = _read_csv(gap_dir / "rejected_reaction_routes.csv")
+    required_electron_columns = {
+        "electron_balance_status",
+        "electron_system_status",
+        "requires_external_electron_regeneration",
+        "requires_carrier_compatibility_check",
+    }
+    missing_electron_columns = (
+        required_electron_columns.difference(solutions[0]) if solutions else set()
+    )
+    if (
+        run_config.get("electron_inference_version")
+        != ELECTRON_INFERENCE_VERSION
+        or missing_electron_columns
+    ):
+        raise ValueError(
+            "gap 结果使用旧版电子推断，请重新运行："
+            f"gap -i <输入文件> -d {depth}"
+        )
 
     target_id = str(getattr(config, "target_name", "") or "").strip().upper()
     warnings: list[str] = []
@@ -98,8 +140,15 @@ def get_gap_info(config: Any) -> dict[str, Any]:
             "需要氧气步骤数": _as_int(row.get("oxygen_required_steps")),
             "热力学不利步骤数": _as_int(row.get("thermo_disfavored_steps")),
             "最大电子风险": _risk_name(row.get("max_electron_risk_level")),
-            "需要下游电子系统设计": _as_bool(
-                row.get("requires_downstream_electron_design")
+            "电子载体平衡": _balance_name(row.get("electron_balance_status")),
+            "电子系统结论": _electron_status_name(
+                row.get("electron_system_status")
+            ),
+            "需要额外电子再生系统": _as_bool(
+                row.get("requires_external_electron_regeneration")
+            ),
+            "需要确认真实载体兼容性": _as_bool(
+                row.get("requires_carrier_compatibility_check")
             ),
             "可以推荐": _as_bool(row.get("eligible_for_recommendation")),
         }

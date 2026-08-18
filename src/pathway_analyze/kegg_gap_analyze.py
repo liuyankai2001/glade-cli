@@ -57,6 +57,29 @@ ELECTRON_AVOIDANCE_MODES = frozenset(
     {"off", "prefer", "strict", "strict_with_fallback"}
 )
 HIGH_ELECTRON_RISK_SCORE = 2
+ELECTRON_BALANCE_TOLERANCE = 1e-9
+# (名称, 氧化态, 还原态, 是否仍需确认具体载体兼容性)。只有明确出现在
+# 定向反应方程中的载体才参与路线级净平衡计算；纯注释推断继续标记待确认。
+ELECTRON_CARRIER_PAIRS = (
+    ("nadh", "C00003", "C00004", False),
+    ("nadph", "C00006", "C00005", False),
+    ("generic_electron_acceptor", "C00028", "C00030", True),
+    ("ferredoxin", "C00139", "C00138", True),
+    ("thioredoxin", "C00343", "C00342", True),
+    ("hemoprotein_reductase", "C03161", "C03024", True),
+)
+ELECTRON_CARRIER_CLASSES = {
+    carrier_id: pair_name
+    for pair_name, oxidized_id, reduced_id, _ in ELECTRON_CARRIER_PAIRS
+    for carrier_id in (oxidized_id, reduced_id)
+}
+# C14818 在当前知识库中没有同时登记可核算的配对成员，保留为待确认载体。
+ELECTRON_CARRIER_CLASSES["C14818"] = "ferredoxin"
+PAIRED_ELECTRON_CARRIER_IDS = frozenset(
+    carrier_id
+    for _, oxidized_id, reduced_id, _ in ELECTRON_CARRIER_PAIRS
+    for carrier_id in (oxidized_id, reduced_id)
+)
 DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS = 20
 DEFAULT_ELECTRON_FALLBACK_MAX_NEW_ENZYMES = 20
 DEFAULT_ELECTRON_FALLBACK_MAX_REACTIONS_PER_COMPOUND = 15
@@ -64,6 +87,7 @@ DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE = 5
 
 EndogenousDirectionIndex = Dict[str, frozenset[str]]
 SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
+ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v2"
 REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
 ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS = "gem_bounds"
@@ -214,8 +238,8 @@ class ElectronRequirement:
     risk_level: str
     risk_score: int
     evidence: Tuple[str, ...]
+    carrier_net_stoichiometry: Tuple[Tuple[str, float], ...]
     avoid_if_alternative_exists: bool
-    requires_downstream_electron_design: bool
 
 
 @dataclass(frozen=True)
@@ -445,24 +469,15 @@ def infer_electron_requirement(
     consumed_ids = {compound_id for compound_id, _ in consumed_stoichiometry}
     produced_ids = {compound_id for compound_id, _ in produced_stoichiometry}
     involved_ids = consumed_ids | produced_ids
-    carrier_classes = {
-        "C00004": "nadh",
-        "C00005": "nadph",
-        "C00138": "ferredoxin",
-        "C00139": "ferredoxin",
-        "C00342": "thioredoxin",
-        "C00343": "thioredoxin",
-        "C00028": "generic_electron_acceptor",
-        "C00030": "generic_electron_acceptor",
-        "C03024": "hemoprotein_reductase",
-        "C03161": "hemoprotein_reductase",
-        "C14818": "ferredoxin",
-    }
     carrier_ids = dedupe_keep_order(
-        compound_id for compound_id in carrier_classes if compound_id in involved_ids
+        compound_id
+        for compound_id in ELECTRON_CARRIER_CLASSES
+        if compound_id in involved_ids
     )
     requirement_classes = list(
-        dedupe_keep_order(carrier_classes[compound_id] for compound_id in carrier_ids)
+        dedupe_keep_order(
+            ELECTRON_CARRIER_CLASSES[compound_id] for compound_id in carrier_ids
+        )
     )
     evidence: List[str] = [
         f"explicit_carrier:{compound_id}" for compound_id in carrier_ids
@@ -501,15 +516,62 @@ def infer_electron_requirement(
         risk_score = 0
     risk_level = {0: "none", 1: "low", 2: "high"}[risk_score]
 
+    carrier_net: Dict[str, float] = {carrier_id: 0.0 for carrier_id in carrier_ids}
+    for compound_id, coefficient in consumed_stoichiometry:
+        if compound_id in carrier_net:
+            carrier_net[compound_id] -= float(coefficient)
+    for compound_id, coefficient in produced_stoichiometry:
+        if compound_id in carrier_net:
+            carrier_net[compound_id] += float(coefficient)
+    carrier_net_stoichiometry = tuple(
+        (carrier_id, carrier_net[carrier_id]) for carrier_id in carrier_ids
+    )
+
     return ElectronRequirement(
         carrier_ids=carrier_ids,
         requirement_classes=tuple(requirement_classes),
         risk_level=risk_level,
         risk_score=risk_score,
         evidence=tuple(evidence),
+        carrier_net_stoichiometry=carrier_net_stoichiometry,
         avoid_if_alternative_exists=risk_score >= HIGH_ELECTRON_RISK_SCORE,
-        requires_downstream_electron_design=risk_score >= HIGH_ELECTRON_RISK_SCORE,
     )
+
+
+def format_electron_carrier_net_changes(
+    values: Iterable[Tuple[str, float]],
+) -> str:
+    """将有符号载体净变化编码为稳定、可审计的 CSV 文本。"""
+
+    parts: List[str] = []
+    for carrier_id, value in values:
+        normalized_value = float(value)
+        if abs(normalized_value) <= ELECTRON_BALANCE_TOLERANCE:
+            normalized_value = 0.0
+        parts.append(f"{carrier_id}:{normalized_value:g}")
+    return ";".join(parts)
+
+
+def parse_electron_carrier_net_changes(value: Any) -> Dict[str, float]:
+    """解析 ``Cxxxxx:+/-n`` 形式的电子载体净变化。"""
+
+    if isinstance(value, dict):
+        return {str(key): float(amount) for key, amount in value.items()}
+    changes: Dict[str, float] = {}
+    for item in str(value or "").split(";"):
+        token = item.strip()
+        if not token:
+            continue
+        try:
+            carrier_id, raw_amount = token.split(":", 1)
+            amount = float(raw_amount)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"无效的电子载体净变化：{token!r}") from exc
+        carrier_id = carrier_id.strip()
+        if not carrier_id:
+            raise ValueError(f"无效的电子载体净变化：{token!r}")
+        changes[carrier_id] = changes.get(carrier_id, 0.0) + amount
+    return changes
 
 
 def summarize_solution_electron_requirements(
@@ -520,9 +582,6 @@ def summarize_solution_electron_requirements(
     rows = list(step_fields)
     max_score = max((int(row.get("electron_risk_score", 0)) for row in rows), default=0)
     risk_level = {0: "none", 1: "low", 2: "high"}.get(max_score, "high")
-    requires_design = any(
-        bool(row.get("requires_downstream_electron_design", False)) for row in rows
-    )
     carrier_ids = dedupe_keep_order(
         carrier_id
         for row in rows
@@ -535,15 +594,97 @@ def summarize_solution_electron_requirements(
         for class_name in str(row.get("electron_requirement_classes", "")).split(";")
         if class_name
     )
+    carrier_net_totals: Dict[str, float] = {}
+    for row in rows:
+        for carrier_id, amount in parse_electron_carrier_net_changes(
+            row.get("electron_carrier_net_changes")
+        ).items():
+            carrier_net_totals[carrier_id] = (
+                carrier_net_totals.get(carrier_id, 0.0) + amount
+            )
+
+    present_carrier_ids = set(carrier_ids)
+    balanced_pairs: List[str] = []
+    unbalanced_pairs: List[str] = []
+    compatibility_pairs: List[str] = []
+    present_pair_names: set[str] = set()
+    for (
+        pair_name,
+        oxidized_id,
+        reduced_id,
+        needs_compatibility,
+    ) in ELECTRON_CARRIER_PAIRS:
+        if not ({oxidized_id, reduced_id} & present_carrier_ids):
+            continue
+        present_pair_names.add(pair_name)
+        oxidized_net = carrier_net_totals.get(oxidized_id, 0.0)
+        reduced_net = carrier_net_totals.get(reduced_id, 0.0)
+        if (
+            abs(oxidized_net) <= ELECTRON_BALANCE_TOLERANCE
+            and abs(reduced_net) <= ELECTRON_BALANCE_TOLERANCE
+        ):
+            balanced_pairs.append(pair_name)
+        else:
+            unbalanced_pairs.append(pair_name)
+        if needs_compatibility:
+            compatibility_pairs.append(pair_name)
+
+    unresolved_carrier_ids = [
+        carrier_id
+        for carrier_id in carrier_ids
+        if carrier_id not in PAIRED_ELECTRON_CARRIER_IDS
+    ]
+    annotation_only_classes = [
+        class_name
+        for class_name in requirement_classes
+        if class_name not in present_pair_names
+    ]
+    requires_external_regeneration = bool(unbalanced_pairs)
+    requires_compatibility_check = bool(
+        compatibility_pairs
+        or unresolved_carrier_ids
+        or annotation_only_classes
+    )
+
+    if unbalanced_pairs:
+        balance_status = "unbalanced"
+    elif present_pair_names:
+        balance_status = "internally_balanced"
+    elif unresolved_carrier_ids or annotation_only_classes:
+        balance_status = "unresolved"
+    else:
+        balance_status = "not_applicable"
+
+    if requires_external_regeneration:
+        system_status = "external_regeneration_required"
+    elif requires_compatibility_check and balance_status == "internally_balanced":
+        system_status = "internally_balanced_carrier_check_required"
+    elif requires_compatibility_check:
+        system_status = "carrier_check_required"
+    elif balance_status == "internally_balanced":
+        system_status = "internally_balanced"
+    else:
+        system_status = "not_required"
+
     return {
         "max_electron_risk_level": risk_level,
         "max_electron_risk_score": max_score,
-        "electron_system_status": "design_required" if requires_design else (
-            "low_risk" if max_score else "not_required"
-        ),
-        "requires_downstream_electron_design": requires_design,
+        "electron_system_status": system_status,
+        "electron_balance_status": balance_status,
+        "requires_external_electron_regeneration": requires_external_regeneration,
+        "requires_carrier_compatibility_check": requires_compatibility_check,
         "electron_carrier_ids": ";".join(carrier_ids),
         "electron_requirement_classes": ";".join(requirement_classes),
+        "electron_carrier_net_changes": format_electron_carrier_net_changes(
+            (carrier_id, carrier_net_totals.get(carrier_id, 0.0))
+            for carrier_id in carrier_ids
+        ),
+        "balanced_electron_carrier_pairs": ";".join(balanced_pairs),
+        "unbalanced_electron_carrier_pairs": ";".join(unbalanced_pairs),
+        "unresolved_electron_carrier_ids": ";".join(unresolved_carrier_ids),
+        "annotation_only_electron_requirements": ";".join(
+            annotation_only_classes
+        ),
     }
 
 
@@ -3264,8 +3405,10 @@ def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
         "electron_risk_level": requirement.risk_level,
         "electron_risk_score": requirement.risk_score,
         "electron_risk_evidence": "; ".join(requirement.evidence),
+        "electron_carrier_net_changes": format_electron_carrier_net_changes(
+            requirement.carrier_net_stoichiometry
+        ),
         "avoid_if_alternative_exists": requirement.avoid_if_alternative_exists,
-        "requires_downstream_electron_design": requirement.requires_downstream_electron_design,
     }
 
 
@@ -3376,8 +3519,14 @@ def build_solution_summary_rows(
                 "max_electron_risk_level": electron_summary["max_electron_risk_level"],
                 "max_electron_risk_score": electron_summary["max_electron_risk_score"],
                 "electron_system_status": electron_summary["electron_system_status"],
-                "requires_downstream_electron_design": electron_summary[
-                    "requires_downstream_electron_design"
+                "electron_balance_status": electron_summary[
+                    "electron_balance_status"
+                ],
+                "requires_external_electron_regeneration": electron_summary[
+                    "requires_external_electron_regeneration"
+                ],
+                "requires_carrier_compatibility_check": electron_summary[
+                    "requires_carrier_compatibility_check"
                 ],
             }
         )
@@ -3489,8 +3638,10 @@ def build_electron_requirement_rows(result: SearchExecutionResult) -> List[Dict[
                     "electron_risk_level": requirement.risk_level,
                     "electron_risk_score": requirement.risk_score,
                     "electron_risk_evidence": "; ".join(requirement.evidence),
-                    "requires_downstream_electron_design": (
-                        requirement.requires_downstream_electron_design
+                    "electron_carrier_net_changes": (
+                        format_electron_carrier_net_changes(
+                            requirement.carrier_net_stoichiometry
+                        )
                     ),
                 }
             )
@@ -3613,6 +3764,7 @@ def write_outputs(
             "electron_fallback_parameters": result.electron_fallback_parameters,
             "electron_search_stage_used": electron_search_stage(result),
             "screening_rule_version": SCREENING_RULE_VERSION,
+            "electron_inference_version": ELECTRON_INFERENCE_VERSION,
             "reaction_resolution_version": REACTION_RESOLUTION_VERSION,
             "reaction_resolution_mode": result.reaction_resolution_mode,
             "rejected_reaction_route_count": len(

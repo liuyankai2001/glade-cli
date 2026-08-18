@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from src.pathway_analyze.gem_validation import validation_depth_output_dir
-from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
+from src.pathway_analyze.kegg_gap_analyze import (
+    ELECTRON_INFERENCE_VERSION,
+    gap_depth_output_dir,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.write_manifest.store import update_design_manifest
 
@@ -81,7 +84,16 @@ ELECTRON_SUMMARY_FIELDS = (
     "max_electron_risk_level",
     "max_electron_risk_score",
     "electron_system_status",
-    "requires_downstream_electron_design",
+    "electron_balance_status",
+    "requires_external_electron_regeneration",
+    "requires_carrier_compatibility_check",
+    "electron_carrier_ids",
+    "electron_requirement_classes",
+    "electron_carrier_net_changes",
+    "balanced_electron_carrier_pairs",
+    "unbalanced_electron_carrier_pairs",
+    "unresolved_electron_carrier_ids",
+    "annotation_only_electron_requirements",
 )
 
 ELECTRON_RISK_STEP_FIELDS = (
@@ -93,7 +105,7 @@ ELECTRON_RISK_STEP_FIELDS = (
     "electron_risk_level",
     "electron_risk_score",
     "electron_risk_evidence",
-    "requires_downstream_electron_design",
+    "electron_carrier_net_changes",
 )
 
 SOLUTION_DOWNSTREAM_SECTIONS = (
@@ -341,6 +353,20 @@ def write_solution(config: Any) -> dict[str, Any]:
     gap_dir = gap_depth_output_dir(gap_root_dir, expansion_depth)
     validation_dir = validation_depth_output_dir(gap_root_dir, expansion_depth)
     manifest_path = Path(config.manifest_output_path).expanduser()
+    run_config_path = gap_dir / "run_config.json"
+    try:
+        run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
+    if (
+        not isinstance(run_config, dict)
+        or run_config.get("electron_inference_version")
+        != ELECTRON_INFERENCE_VERSION
+    ):
+        raise ValueError(
+            "gap 结果使用旧版电子推断，请重新运行："
+            f"gap -i <输入文件> -d {expansion_depth}"
+        )
 
     summary = _select_solution_summary(gap_dir / "solutions.csv", solution_id)
     if summary.get("target_compound_id") != target_compound:
@@ -370,6 +396,20 @@ def write_solution(config: Any) -> dict[str, Any]:
         gap_dir / "solution_electron_summary.csv",
         solution_id,
     )
+    required_electron_fields = {
+        "electron_system_status",
+        "electron_balance_status",
+        "requires_external_electron_regeneration",
+        "requires_carrier_compatibility_check",
+    }
+    if (
+        not electron_summary
+        or required_electron_fields.difference(electron_summary)
+    ):
+        raise ValueError(
+            "gap 结果使用旧版电子推断，请重新运行："
+            f"gap -i <输入文件> -d {expansion_depth}"
+        )
     electron_steps = _remap_electron_steps(
         _select_optional_solution_rows(
             gap_dir / "route_electron_requirements.csv",
@@ -416,8 +456,12 @@ def write_solution(config: Any) -> dict[str, Any]:
         "通量验证状态": validation.get("validation_status"),
         "辅因子模式": validation.get("cofactor_mode"),
         "电子系统状态": electron_summary.get("electron_system_status"),
-        "是否需要后续电子传递设计": electron_summary.get(
-            "requires_downstream_electron_design"
+        "电子载体平衡状态": electron_summary.get("electron_balance_status"),
+        "是否需要额外电子再生系统": electron_summary.get(
+            "requires_external_electron_regeneration"
+        ),
+        "是否需要确认真实载体兼容性": electron_summary.get(
+            "requires_carrier_compatibility_check"
         ),
         "清单文件": str(manifest_path.resolve()),
         "清单版本": manifest["revision"],

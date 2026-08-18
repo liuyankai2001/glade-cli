@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
+from src.pathway_analyze.kegg_gap_analyze import (
+    ELECTRON_INFERENCE_VERSION,
+    gap_depth_output_dir,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
@@ -114,6 +117,27 @@ def _risk_name(value: Any) -> str:
         "medium": "中",
         "high": "高",
     }.get(str(value or "").strip().lower(), str(value or "").strip())
+
+
+def _balance_name(value: Any) -> str:
+    return {
+        "not_applicable": "不涉及电子载体",
+        "internally_balanced": "路线内已平衡",
+        "unbalanced": "存在净消耗",
+        "unresolved": "载体配对待确认",
+    }.get(str(value or "").strip(), str(value or "").strip())
+
+
+def _electron_status_name(value: Any) -> str:
+    return {
+        "not_required": "不需要额外电子系统",
+        "internally_balanced": "电子载体已在路线内平衡",
+        "internally_balanced_carrier_check_required": (
+            "电子已内部平衡，但真实载体兼容性待确认"
+        ),
+        "carrier_check_required": "真实载体或电子伙伴待确认",
+        "external_regeneration_required": "需要外部电子载体再生系统",
+    }.get(str(value or "").strip(), str(value or "").strip())
 
 
 def _select_solution_summary(
@@ -246,6 +270,30 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         raise ValueError(f"gap 分析没有生成候选路线：{summaries_path}")
     if "solution_id" not in summary_rows[0]:
         raise ValueError(f"路线结果缺少 solution_id 字段：{summaries_path}")
+    required_electron_columns = {
+        "electron_balance_status",
+        "electron_system_status",
+        "requires_external_electron_regeneration",
+        "requires_carrier_compatibility_check",
+    }
+    missing_electron_columns = required_electron_columns.difference(
+        summary_rows[0]
+    )
+    run_config_path = gap_dir / "run_config.json"
+    try:
+        run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
+    if (
+        not isinstance(run_config, dict)
+        or run_config.get("electron_inference_version")
+        != ELECTRON_INFERENCE_VERSION
+        or missing_electron_columns
+    ):
+        raise ValueError(
+            "gap 结果使用旧版电子推断，请重新运行："
+            f"gap -i <输入文件> -d {expansion_depth}"
+        )
     summary = _select_solution_summary(summary_rows, selected_solution_id)
 
     all_rows = _read_csv_rows(steps_path)
@@ -305,8 +353,15 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             or summary.get("reachable_anchor_compounds")
         ),
         "最大电子风险": _risk_name(summary.get("max_electron_risk_level")),
-        "需要下游电子系统设计": bool(
-            summary.get("requires_downstream_electron_design")
+        "电子载体平衡": _balance_name(summary.get("electron_balance_status")),
+        "电子系统结论": _electron_status_name(
+            summary.get("electron_system_status")
+        ),
+        "需要额外电子再生系统": bool(
+            summary.get("requires_external_electron_regeneration")
+        ),
+        "需要确认真实载体兼容性": bool(
+            summary.get("requires_carrier_compatibility_check")
         ),
         "可以推荐": bool(summary.get("eligible_for_recommendation")),
         "反应步骤": [
