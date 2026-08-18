@@ -4,14 +4,28 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from math import isclose
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v1"
+MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v1"
+MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
+    "evidence_constrained_assignment.v1"
+)
 AcceptedReactionFitStatus = Literal["verified", "verified_with_risk"]
 SelectionStatus = Literal["complete", "source_unavailable"]
+MainEnzymeSetStatus = Literal["complete", "review_required"]
+MainEnzymeSetsStatus = Literal[
+    "complete",
+    "review_required",
+    "infeasible",
+    "truncated",
+    "stale_input",
+    "source_unavailable",
+]
 
 
 def _string(value: Any) -> str:
@@ -141,6 +155,10 @@ class MainEnzymeSelectionResult(BaseModel):
     solution_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     chassis_key: str = Field(min_length=1)
     parameters: MainEnzymeSelectionParameters
+    shortlist_decision_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     candidates_by_step: dict[int, list[MainEnzymeCandidate]]
     uncovered_step_indexes: list[int] = Field(default_factory=list)
     direction_rejected_step_indexes: list[int] = Field(default_factory=list)
@@ -166,9 +184,579 @@ class MainEnzymeSelectionResult(BaseModel):
         return self
 
 
+def _require_sorted_unique_positive(
+    values: list[int],
+    field_name: str,
+    *,
+    allow_empty: bool = True,
+) -> None:
+    """Validate a deterministic list of positive step indexes."""
+
+    if not allow_empty and not values:
+        raise ValueError(f"{field_name} must not be empty")
+    if any(value < 1 for value in values):
+        raise ValueError(f"{field_name} must contain positive integers")
+    if values != sorted(set(values)):
+        raise ValueError(f"{field_name} must be sorted and unique")
+
+
+class MainEnzymeSetParameters(BaseModel):
+    """Controls that materially affect enzyme-set enumeration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_sets: int = Field(ge=1)
+    max_search_nodes: int = Field(ge=1)
+    candidate_scope: Literal["top_n_shortlist"] = "top_n_shortlist"
+
+
+class MainEnzymeStepAssignment(BaseModel):
+    """The one protein assigned as the primary catalyst for one step."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    step_index: int = Field(ge=1)
+    reaction_id: str = Field(min_length=1)
+    accession: str = Field(min_length=1)
+    candidate_rank: int = Field(ge=1)
+    protein_score: float = Field(ge=0.0)
+    host_fit_score: float = Field(ge=0.0)
+    reaction_fit_status: AcceptedReactionFitStatus
+    reaction_fit_score: float = Field(ge=0.0)
+    direction_verdict: str = ""
+    direction_confidence: str = ""
+    specificity_status: str = Field(min_length=1)
+
+
+class MainEnzymeSetProtein(BaseModel):
+    """One distinct protein used by an enzyme set."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    accession: str = Field(min_length=1)
+    protein_name: str = ""
+    organism_name: str = ""
+    reviewed: bool
+    sequence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cofactors: list[str] = Field(default_factory=list)
+    capable_step_indexes: list[int]
+    assigned_step_indexes: list[int]
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "MainEnzymeSetProtein":
+        _require_sorted_unique_positive(
+            self.capable_step_indexes,
+            "capable_step_indexes",
+            allow_empty=False,
+        )
+        _require_sorted_unique_positive(
+            self.assigned_step_indexes,
+            "assigned_step_indexes",
+            allow_empty=False,
+        )
+        if not set(self.assigned_step_indexes).issubset(
+            self.capable_step_indexes
+        ):
+            raise ValueError(
+                "assigned_step_indexes must be a subset of "
+                "capable_step_indexes"
+            )
+        if any(not cofactor for cofactor in self.cofactors):
+            raise ValueError("cofactors must not contain empty values")
+        if self.cofactors != sorted(set(self.cofactors)):
+            raise ValueError("cofactors must be sorted and unique")
+        return self
+
+
+class MainEnzymeSetMetrics(BaseModel):
+    """Deterministic ranking and review metrics for one enzyme set."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    protein_count: int = Field(ge=1)
+    organism_count: int = Field(ge=0)
+    min_reaction_fit_score: float = Field(ge=0.0)
+    mean_reaction_fit_score: float = Field(ge=0.0)
+    min_protein_score: float = Field(ge=0.0)
+    mean_protein_score: float = Field(ge=0.0)
+    min_host_fit_score: float = Field(ge=0.0)
+    mean_host_fit_score: float = Field(ge=0.0)
+    reviewed_fraction: float = Field(ge=0.0, le=1.0)
+    reaction_fit_risk_count: int = Field(ge=0)
+    direction_risk_count: int = Field(ge=0)
+    low_direction_confidence_count: int = Field(ge=0)
+    specificity_risk_count: int = Field(ge=0)
+    exact_specificity_count: int = Field(ge=0)
+    warning_count: int = Field(ge=0)
+    carrier_compatibility_status: str = Field(min_length=1)
+    electron_reassessment_status: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_score_ranges(self) -> "MainEnzymeSetMetrics":
+        if self.min_reaction_fit_score > self.mean_reaction_fit_score:
+            raise ValueError(
+                "min_reaction_fit_score must not exceed "
+                "mean_reaction_fit_score"
+            )
+        if self.min_protein_score > self.mean_protein_score:
+            raise ValueError(
+                "min_protein_score must not exceed mean_protein_score"
+            )
+        if self.min_host_fit_score > self.mean_host_fit_score:
+            raise ValueError(
+                "min_host_fit_score must not exceed mean_host_fit_score"
+            )
+        return self
+
+
+class MainEnzymeSet(BaseModel):
+    """One complete or review-required cover of the selected-route steps."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    set_id: int = Field(ge=1)
+    set_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: MainEnzymeSetStatus
+    protein_count: int = Field(ge=1)
+    coverage_complete: bool
+    covered_step_indexes: list[int]
+    uncovered_step_indexes: list[int] = Field(default_factory=list)
+    proteins: list[MainEnzymeSetProtein]
+    step_assignments: list[MainEnzymeStepAssignment]
+    review_required_step_indexes: list[int] = Field(default_factory=list)
+    electron_assessment: str = Field(min_length=1)
+    metrics: MainEnzymeSetMetrics
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "MainEnzymeSet":
+        _require_sorted_unique_positive(
+            self.covered_step_indexes,
+            "covered_step_indexes",
+            allow_empty=False,
+        )
+        _require_sorted_unique_positive(
+            self.uncovered_step_indexes,
+            "uncovered_step_indexes",
+        )
+        _require_sorted_unique_positive(
+            self.review_required_step_indexes,
+            "review_required_step_indexes",
+        )
+        covered = set(self.covered_step_indexes)
+        uncovered = set(self.uncovered_step_indexes)
+        if covered & uncovered:
+            raise ValueError(
+                "covered_step_indexes and uncovered_step_indexes "
+                "must be disjoint"
+            )
+        if self.coverage_complete != (not self.uncovered_step_indexes):
+            raise ValueError(
+                "coverage_complete must agree with uncovered_step_indexes"
+            )
+        if not self.coverage_complete:
+            raise ValueError(
+                "main-enzyme sets must cover every required step"
+            )
+        if not set(self.review_required_step_indexes).issubset(covered):
+            raise ValueError(
+                "review_required_step_indexes must be covered steps"
+            )
+
+        protein_accessions = [protein.accession for protein in self.proteins]
+        if not protein_accessions:
+            raise ValueError("proteins must not be empty")
+        if protein_accessions != sorted(set(protein_accessions)):
+            raise ValueError("proteins must be sorted by unique accession")
+        if self.protein_count != len(self.proteins):
+            raise ValueError("protein_count must equal len(proteins)")
+        if self.metrics.protein_count != self.protein_count:
+            raise ValueError(
+                "metrics.protein_count must equal protein_count"
+            )
+
+        assignment_steps = [
+            assignment.step_index for assignment in self.step_assignments
+        ]
+        if assignment_steps != sorted(set(assignment_steps)):
+            raise ValueError(
+                "step_assignments must be sorted with one assignment per step"
+            )
+        if assignment_steps != self.covered_step_indexes:
+            raise ValueError(
+                "step_assignments must cover exactly covered_step_indexes"
+            )
+        known_accessions = set(protein_accessions)
+        if any(
+            assignment.accession not in known_accessions
+            for assignment in self.step_assignments
+        ):
+            raise ValueError(
+                "every step assignment must reference a set protein"
+            )
+
+        assignments_by_accession: dict[str, list[int]] = {
+            accession: [] for accession in protein_accessions
+        }
+        for assignment in self.step_assignments:
+            assignments_by_accession[assignment.accession].append(
+                assignment.step_index
+            )
+        for protein in self.proteins:
+            if (
+                assignments_by_accession[protein.accession]
+                != protein.assigned_step_indexes
+            ):
+                raise ValueError(
+                    "protein assigned_step_indexes must agree with "
+                    "step_assignments"
+                )
+
+        organisms = {
+            protein.organism_name
+            for protein in self.proteins
+            if protein.organism_name
+        }
+        if self.metrics.organism_count != len(organisms):
+            raise ValueError(
+                "metrics.organism_count must equal the distinct "
+                "non-empty organism count"
+            )
+        reviewed_fraction = sum(
+            protein.reviewed for protein in self.proteins
+        ) / len(self.proteins)
+        if not isclose(
+            self.metrics.reviewed_fraction,
+            reviewed_fraction,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError(
+                "metrics.reviewed_fraction must agree with proteins"
+            )
+        if self.metrics.warning_count != len(self.warnings):
+            raise ValueError("metrics.warning_count must equal len(warnings)")
+
+        reaction_fit_scores = [
+            assignment.reaction_fit_score
+            for assignment in self.step_assignments
+        ]
+        protein_scores = [
+            assignment.protein_score for assignment in self.step_assignments
+        ]
+        host_fit_scores = [
+            assignment.host_fit_score
+            for assignment in self.step_assignments
+        ]
+        score_checks = (
+            (
+                self.metrics.min_reaction_fit_score,
+                min(reaction_fit_scores),
+                "metrics.min_reaction_fit_score",
+            ),
+            (
+                self.metrics.mean_reaction_fit_score,
+                sum(reaction_fit_scores) / len(reaction_fit_scores),
+                "metrics.mean_reaction_fit_score",
+            ),
+            (
+                self.metrics.min_protein_score,
+                min(protein_scores),
+                "metrics.min_protein_score",
+            ),
+            (
+                self.metrics.mean_protein_score,
+                sum(protein_scores) / len(protein_scores),
+                "metrics.mean_protein_score",
+            ),
+            (
+                self.metrics.min_host_fit_score,
+                min(host_fit_scores),
+                "metrics.min_host_fit_score",
+            ),
+            (
+                self.metrics.mean_host_fit_score,
+                sum(host_fit_scores) / len(host_fit_scores),
+                "metrics.mean_host_fit_score",
+            ),
+        )
+        for actual, expected, field_name in score_checks:
+            if not isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-6):
+                raise ValueError(f"{field_name} must agree with assignments")
+
+        supported_directions = {
+            "supported",
+            "verified",
+            "compatible",
+            "forward",
+            "reversible",
+        }
+        direction_risk_steps = {
+            assignment.step_index
+            for assignment in self.step_assignments
+            if assignment.direction_verdict.lower()
+            not in supported_directions
+        }
+        specificity_risk_steps = {
+            assignment.step_index
+            for assignment in self.step_assignments
+            if assignment.specificity_status.lower()
+            not in {"exact", "supported"}
+        }
+        fit_risk_steps = {
+            assignment.step_index
+            for assignment in self.step_assignments
+            if assignment.reaction_fit_status == "verified_with_risk"
+        }
+        low_direction_confidence_steps = {
+            assignment.step_index
+            for assignment in self.step_assignments
+            if assignment.direction_confidence.lower() not in {"high", "medium"}
+        }
+        exact_specificity_steps = {
+            assignment.step_index
+            for assignment in self.step_assignments
+            if assignment.specificity_status.lower() == "exact"
+        }
+        if self.metrics.reaction_fit_risk_count != len(fit_risk_steps):
+            raise ValueError(
+                "metrics.reaction_fit_risk_count must agree with assignments"
+            )
+        if self.metrics.direction_risk_count != len(direction_risk_steps):
+            raise ValueError(
+                "metrics.direction_risk_count must agree with assignments"
+            )
+        if self.metrics.specificity_risk_count != len(
+            specificity_risk_steps
+        ):
+            raise ValueError(
+                "metrics.specificity_risk_count must agree with assignments"
+            )
+        if self.metrics.low_direction_confidence_count != len(
+            low_direction_confidence_steps
+        ):
+            raise ValueError(
+                "metrics.low_direction_confidence_count must agree with "
+                "assignments"
+            )
+        if self.metrics.exact_specificity_count != len(
+            exact_specificity_steps
+        ):
+            raise ValueError(
+                "metrics.exact_specificity_count must agree with assignments"
+            )
+        assignment_review_steps = (
+            direction_risk_steps
+            | low_direction_confidence_steps
+            | specificity_risk_steps
+            | fit_risk_steps
+        )
+        if not assignment_review_steps.issubset(
+            self.review_required_step_indexes
+        ):
+            raise ValueError(
+                "review_required_step_indexes must include assignment risks"
+            )
+
+        requires_review = bool(
+            self.review_required_step_indexes
+            or self.warnings
+            or self.metrics.direction_risk_count
+            or self.metrics.low_direction_confidence_count
+            or self.metrics.specificity_risk_count
+            or self.metrics.electron_reassessment_status
+            == "review_required"
+            or any(
+                assignment.reaction_fit_status == "verified_with_risk"
+                for assignment in self.step_assignments
+            )
+        )
+        if self.status == "complete" and requires_review:
+            raise ValueError(
+                "complete set cannot contain unresolved review indicators"
+            )
+        if (
+            self.status == "complete"
+            and self.metrics.electron_reassessment_status != "not_required"
+        ):
+            raise ValueError(
+                "complete set requires electron_reassessment_status=not_required"
+            )
+        if self.status == "review_required" and not requires_review:
+            raise ValueError(
+                "review_required set must contain a review indicator"
+            )
+        return self
+
+
+class MainEnzymeSetsResult(BaseModel):
+    """Canonical machine-readable enzyme-set enumeration result."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal["main_enzyme_sets.v1"] = (
+        MAIN_ENZYME_SETS_SCHEMA_VERSION
+    )
+    algorithm_version: Literal["evidence_constrained_assignment.v1"] = (
+        MAIN_ENZYME_SETS_ALGORITHM_VERSION
+    )
+    ok: bool
+    status: MainEnzymeSetsStatus
+    selected_solution_id: int = Field(ge=1)
+    expansion_depth: int = Field(ge=0)
+    solution_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    chassis_key: str = Field(min_length=1)
+    parameters: MainEnzymeSetParameters
+    candidate_pool_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    required_step_indexes: list[int]
+    minimum_protein_count: int | None = Field(default=None, ge=1)
+    search_complete: bool
+    search_nodes: int = Field(ge=0)
+    sets: list[MainEnzymeSet] = Field(default_factory=list)
+    uncovered_step_indexes: list[int] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    source_artifacts: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "MainEnzymeSetsResult":
+        _require_sorted_unique_positive(
+            self.required_step_indexes,
+            "required_step_indexes",
+        )
+        _require_sorted_unique_positive(
+            self.uncovered_step_indexes,
+            "uncovered_step_indexes",
+        )
+        required = set(self.required_step_indexes)
+        if not set(self.uncovered_step_indexes).issubset(required):
+            raise ValueError(
+                "uncovered_step_indexes must be required steps"
+            )
+
+        set_ids = [enzyme_set.set_id for enzyme_set in self.sets]
+        if set_ids != list(range(1, len(self.sets) + 1)):
+            raise ValueError("set_id values must be contiguous from 1")
+        set_fingerprints = [
+            enzyme_set.set_fingerprint for enzyme_set in self.sets
+        ]
+        if len(set_fingerprints) != len(set(set_fingerprints)):
+            raise ValueError("set_fingerprint values must be unique")
+
+        for enzyme_set in self.sets:
+            set_steps = set(enzyme_set.covered_step_indexes) | set(
+                enzyme_set.uncovered_step_indexes
+            )
+            if set_steps != required:
+                raise ValueError(
+                    "each set's covered and uncovered steps must partition "
+                    "required_step_indexes"
+                )
+            if any(
+                not set(protein.capable_step_indexes).issubset(required)
+                for protein in enzyme_set.proteins
+            ):
+                raise ValueError(
+                    "protein capable steps must be required route steps"
+                )
+
+        covered_by_any = {
+            step_index
+            for enzyme_set in self.sets
+            for step_index in enzyme_set.covered_step_indexes
+        }
+        expected_uncovered = sorted(required - covered_by_any)
+        if self.uncovered_step_indexes != expected_uncovered:
+            raise ValueError(
+                "uncovered_step_indexes must be steps uncovered by all sets"
+            )
+
+        if self.sets:
+            smallest_reported = min(
+                enzyme_set.protein_count for enzyme_set in self.sets
+            )
+            if (
+                self.minimum_protein_count is None
+                or self.minimum_protein_count > smallest_reported
+            ):
+                raise ValueError(
+                    "minimum_protein_count must not exceed the smallest "
+                    "reported set"
+                )
+        elif self.minimum_protein_count is not None:
+            raise ValueError(
+                "minimum_protein_count must be null when no sets exist"
+            )
+
+        successful = self.status in {"complete", "review_required"}
+        failed = self.status in {
+            "infeasible",
+            "stale_input",
+            "source_unavailable",
+        }
+        if successful and not self.ok:
+            raise ValueError("ok must be true for successful statuses")
+        if successful and self.required_step_indexes and not self.sets:
+            raise ValueError(
+                "successful result with required steps must contain a set"
+            )
+        if successful and self.uncovered_step_indexes:
+            raise ValueError(
+                "successful result cannot contain uncovered required steps"
+            )
+        if failed and self.ok:
+            raise ValueError("ok must be false for failure statuses")
+        if self.status in {"stale_input", "source_unavailable"} and self.sets:
+            raise ValueError(f"{self.status} result must not contain sets")
+        if self.status == "truncated" and self.ok != bool(self.sets):
+            raise ValueError(
+                "truncated results are ok only when partial sets exist"
+            )
+        if self.status == "truncated" and self.search_complete:
+            raise ValueError("truncated status requires search_complete=false")
+        if self.status in {"complete", "review_required", "infeasible"}:
+            if not self.search_complete:
+                raise ValueError(
+                    f"{self.status} status requires search_complete=true"
+                )
+        if (
+            self.status == "complete"
+            and self.sets
+            and self.sets[0].status != "complete"
+        ):
+            raise ValueError("complete result requires a complete top set")
+        if (
+            self.status == "review_required"
+            and self.sets
+            and self.sets[0].status != "review_required"
+        ):
+            raise ValueError(
+                "review_required result requires a review-required top set"
+            )
+        if self.status == "infeasible":
+            if self.sets:
+                raise ValueError("infeasible result must not contain sets")
+            if self.uncovered_step_indexes != self.required_step_indexes:
+                raise ValueError(
+                    "infeasible result must leave every required step "
+                    "uncovered"
+                )
+        return self
+
+
 __all__ = [
     "MAIN_ENZYME_SELECTION_SCHEMA_VERSION",
+    "MAIN_ENZYME_SETS_ALGORITHM_VERSION",
+    "MAIN_ENZYME_SETS_SCHEMA_VERSION",
     "MainEnzymeCandidate",
+    "MainEnzymeSet",
+    "MainEnzymeSetMetrics",
+    "MainEnzymeSetParameters",
+    "MainEnzymeSetProtein",
+    "MainEnzymeSetsResult",
+    "MainEnzymeStepAssignment",
     "MainEnzymeSelectionParameters",
     "MainEnzymeSelectionResult",
 ]

@@ -6,6 +6,9 @@ from typing import Any
 
 import requests
 
+from src.main_protein_selection.build_main_enzyme_sets import (
+    shortlist_decision_fingerprint,
+)
 from src.main_protein_selection.common import (
     PROTEIN_CANDIDATE_COLUMNS,
     STEP_CANDIDATE_COLUMNS,
@@ -729,6 +732,9 @@ def select_main_enzymes(
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
                 fetch_proteins=fetch_proteins,
+            ),
+            shortlist_decision_fingerprint=shortlist_decision_fingerprint(
+                selected_step_rows
             ),
             candidates_by_step=candidates_by_step,
             uncovered_step_indexes=result["uncovered_step_indexes"],
