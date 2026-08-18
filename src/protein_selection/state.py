@@ -20,6 +20,12 @@ ResearchOutcome = Literal[
 ]
 CompletionStatus = Literal["success", "unresolved", "service_error"]
 ValidationField = Literal["uniprot_id", "reaction_id"]
+ReactionScope = Literal["single_step", "multi_step"]
+WholeReactionEvidenceStatus = Literal[
+    "supported",
+    "uncertain",
+    "unavailable",
+]
 ValidationErrorCode = Literal[
     "missing_input",
     "invalid_format",
@@ -28,6 +34,45 @@ ValidationErrorCode = Literal[
     "service_error",
     "invalid_response",
 ]
+
+
+class AssignedReactionStep(TypedDict):
+    """One selected-route step assigned to a main enzyme."""
+
+    step_index: int
+    reaction_id: str
+    reaction_name: str
+    equation: str
+    direction: str
+    precursor_compound_ids: list[str]
+    produced_compound_id: str
+    produced_compound_name: str
+    rhea_ids: list[str]
+
+
+class WholeReactionContext(TypedDict):
+    """Whole-reaction evidence for a single- or multi-step main enzyme."""
+
+    equation: str | None
+    rhea_ids: list[str]
+    start_compound_ids: list[str]
+    end_compound_ids: list[str]
+    intermediate_compound_ids: list[str]
+    evidence_status: WholeReactionEvidenceStatus
+    evidence: list[str]
+
+
+class MainEnzymeResearchUnit(TypedDict):
+    """Serializable research input for one unique main-enzyme accession."""
+
+    accession: str
+    sequence_sha256: str
+    reaction_scope: ReactionScope
+    assigned_step_indexes: list[int]
+    reaction_steps: list[AssignedReactionStep]
+    protein_name: NotRequired[str]
+    organism_name: NotRequired[str]
+    whole_reaction: NotRequired[WholeReactionContext | None]
 
 
 class ValidationIssue(TypedDict):
@@ -86,6 +131,7 @@ class AuxiliaryRequirementAssessment(TypedDict):
 class ProteinSupplyState(ValidationState, total=False):
     """Application state extended with auxiliary-requirement fields."""
 
+    research_unit: MainEnzymeResearchUnit
     uniprot_annotation: dict[str, Any]
     research_context: dict[str, Any]
     preliminary_reaction_match: Literal["matched", "mismatched", "uncertain"]
