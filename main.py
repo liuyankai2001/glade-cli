@@ -116,6 +116,14 @@ main_enzyme_parser.add_argument(
     required=True,
     help="inputs 目录下的输入配置文件名",
 )
+
+main_enzyme_parser.add_argument(
+    "-n",
+    "--top-n",
+    type=int,
+    default=5,
+    help="每个反应最终保留的主酶候选数量，默认 5",
+)
 main_enzyme_parser.set_defaults(func=run_main_protein_selection)
 
 def main():
@@ -132,6 +140,8 @@ def main():
         config.validation_cofactor_mode = args.validation_cofactor_mode
     if args.command in ("solution", "select"):
       config.solution_id = args.solution
+    if args.command == "main-enzyme":
+      config.top_n = args.top_n
 
     args.func(config)
 

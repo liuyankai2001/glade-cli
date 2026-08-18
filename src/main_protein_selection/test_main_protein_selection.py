@@ -204,6 +204,7 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             manifest_output_path=self.manifest_path,
             project_output_path=self.root / "project",
             cache_dir=self.root / "cache_root",
+            top_n=7,
         )
         expected = {"ok": True}
         with patch(
@@ -218,6 +219,7 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             output_dir=config.project_output_path / "main_protein_selection",
             cache_dir=config.cache_dir / "main_protein_selection",
             fetch_proteins=False,
+            top_n=7,
         )
 
     def test_candidate_model_rejects_invalid_or_nonusable_rows(self) -> None:

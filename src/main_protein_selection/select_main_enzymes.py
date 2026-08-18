@@ -758,6 +758,9 @@ def select_main_enzymes(
 def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     """Run main-enzyme selection using this project's ``RunConfig`` paths."""
 
+    if hasattr(config, "top_n"):
+        selection_options.setdefault("top_n", config.top_n)
+
     result = select_main_enzymes(
         manifest_path=Path(config.manifest_output_path),
         output_dir=Path(config.project_output_path) / "main_protein_selection",
