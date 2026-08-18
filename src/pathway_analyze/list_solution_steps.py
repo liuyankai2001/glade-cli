@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
@@ -99,13 +100,26 @@ def _to_int(value: Any, field_name: str) -> int:
 
 
 def list_solution_steps(config: Any) -> dict[str, Any]:
-    """读取 ``config.solution_id`` 对应的候选路径步骤。"""
+    """读取 ``config.solution`` 对应深度的候选路径步骤。"""
 
     target_compound = validate_target_compound_id(config.target_name)
-    selected_solution_id = int(config.solution_id)
+    raw_solution = getattr(
+        config,
+        "solution",
+        getattr(config, "solution_id", None),
+    )
+    if raw_solution is None:
+        raise ValueError("未指定 solution，请使用 info --solution N")
+    selected_solution_id = int(raw_solution)
+    expansion_depth = int(getattr(config, "depth", 0))
+    if expansion_depth < 0:
+        raise ValueError("depth 必须大于等于 0")
     raw_step_index = getattr(config, "step_index", None)
     selected_step_index = int(raw_step_index) if raw_step_index is not None else None
-    gap_dir = Path(config.gap_output_path).expanduser().resolve()
+    gap_dir = gap_depth_output_dir(
+        Path(config.gap_output_path).expanduser().resolve(),
+        expansion_depth,
+    )
     steps_path = gap_dir / "all_solution_steps.csv"
 
     all_rows = _read_csv_rows(steps_path)
@@ -147,8 +161,7 @@ def list_solution_steps(config: Any) -> dict[str, Any]:
     return {
         "运行成功": True,
         "目标化合物": target_compound,
-        "通路分析目录": str(gap_dir),
-        "全部路径步骤文件": str(steps_path),
+        "Gap深度": expansion_depth,
         "路径编号": selected_solution_id,
         "指定步骤编号": selected_step_index,
         "步骤数量": len(rows),
