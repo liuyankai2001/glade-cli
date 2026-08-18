@@ -18,8 +18,8 @@ from src.info_show.chassis_expansion_info import (
 def run_info(config: Any) -> dict[str, Any]:
     """Dispatch the unified ``info`` command."""
 
-    if getattr(config, "show_chassis", False):
-        raw_depth = getattr(config, "info_depth", None)
+    if getattr(config, "chassis", False):
+        raw_depth = getattr(config, "depth", None)
         depth = 0 if raw_depth is None else int(raw_depth)
         if depth < 0:
             raise ValueError("depth 必须大于等于 0")
