@@ -31,6 +31,7 @@ SOLUTION_SUMMARY_FIELDS = (
 
 SOLUTION_STEP_FIELDS = (
     "step_index",
+    "gap_step_index",
     "status",
     "reaction_id",
     "reaction_name",
@@ -85,6 +86,7 @@ ELECTRON_SUMMARY_FIELDS = (
 
 ELECTRON_RISK_STEP_FIELDS = (
     "step_index",
+    "gap_step_index",
     "reaction_id",
     "electron_carrier_ids",
     "electron_requirement_classes",
@@ -160,6 +162,103 @@ def _select_solution_steps(path: Path, solution_id: int) -> list[dict[str, Any]]
     return [_normalize_row(row) for row in rows]
 
 
+def _split_values(value: Any) -> list[str]:
+    return [item.strip() for item in str(value or "").split(";") if item.strip()]
+
+
+def _integer_step_index(value: Any) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"无效的 step_index：{value!r}") from exc
+
+
+def _order_steps_forward(
+    rows: list[dict[str, Any]],
+    target_compound: str,
+) -> list[dict[str, Any]]:
+    """按底盘前体到目标产物的依赖顺序排列路线步骤。"""
+
+    row_by_product: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        product_id = str(row.get("produced_compound_id") or "").strip()
+        if not product_id:
+            raise ValueError(
+                f"路线步骤缺少 produced_compound_id：step {row.get('step_index')}"
+            )
+        if product_id in row_by_product:
+            raise ValueError(f"路线中存在重复产物，无法稳定编号：{product_id}")
+        row_by_product[product_id] = row
+
+    ordered_rows: list[dict[str, Any]] = []
+    visited_products: set[str] = set()
+    active_products: set[str] = set()
+
+    def visit(product_id: str) -> None:
+        if product_id in visited_products:
+            return
+        if product_id in active_products:
+            raise ValueError(f"路线步骤存在循环依赖：{product_id}")
+        row = row_by_product.get(product_id)
+        if row is None:
+            return
+        active_products.add(product_id)
+        for precursor_id in _split_values(row.get("precursor_compound_ids")):
+            visit(precursor_id)
+        active_products.remove(product_id)
+        visited_products.add(product_id)
+        ordered_rows.append(row)
+
+    visit(target_compound)
+    for row in reversed(rows):
+        visit(str(row.get("produced_compound_id") or "").strip())
+    if len(ordered_rows) != len(rows):
+        raise ValueError("路线步骤无法完整转换为正向顺序")
+    return ordered_rows
+
+
+def _renumber_steps_forward(
+    rows: list[dict[str, Any]],
+    target_compound: str,
+) -> tuple[list[dict[str, Any]], dict[int, int]]:
+    """生成正向步骤，并返回 gap 原始编号到正向编号的映射。"""
+
+    forward_rows: list[dict[str, Any]] = []
+    gap_to_forward: dict[int, int] = {}
+    for forward_index, row in enumerate(
+        _order_steps_forward(rows, target_compound),
+        start=1,
+    ):
+        gap_step_index = _integer_step_index(row.get("step_index"))
+        if gap_step_index in gap_to_forward:
+            raise ValueError(f"路线中存在重复 step_index：{gap_step_index}")
+        gap_to_forward[gap_step_index] = forward_index
+        forward_row = dict(row)
+        forward_row["gap_step_index"] = gap_step_index
+        forward_row["step_index"] = forward_index
+        forward_rows.append(forward_row)
+    return forward_rows, gap_to_forward
+
+
+def _remap_electron_steps(
+    rows: list[dict[str, Any]],
+    gap_to_forward: dict[int, int],
+) -> list[dict[str, Any]]:
+    remapped_rows: list[dict[str, Any]] = []
+    for row in rows:
+        gap_step_index = _integer_step_index(row.get("step_index"))
+        if gap_step_index not in gap_to_forward:
+            raise ValueError(
+                f"电子风险步骤引用了不存在的 gap step：{gap_step_index}"
+            )
+        remapped_row = dict(row)
+        remapped_row["gap_step_index"] = gap_step_index
+        remapped_row["step_index"] = gap_to_forward[gap_step_index]
+        remapped_rows.append(remapped_row)
+    remapped_rows.sort(key=lambda row: int(row["step_index"]))
+    return remapped_rows
+
+
 def _select_optional_solution_row(path: Path, solution_id: int) -> dict[str, Any]:
     for row in _read_csv_rows(path, required=False):
         if _row_solution_id(row) == solution_id:
@@ -188,7 +287,19 @@ def _parse_solution_ids(value: Any) -> tuple[int, ...]:
         raise ValueError(f"通量验证文件中的 solution_ids 无效：{value!r}") from exc
 
 
-def _select_passed_validation(path: Path, solution_id: int) -> dict[str, Any]:
+def _select_passed_validation(
+    path: Path,
+    solution_id: int,
+    expansion_depth: int,
+) -> dict[str, Any]:
+    validation_command = (
+        f"validate -i <输入文件> -s {solution_id} -m per -d {expansion_depth}"
+    )
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"solution {solution_id} 尚未进行独立 GEM 验证；请先执行："
+            f"{validation_command}"
+        )
     matches = [
         row
         for row in _read_csv_rows(path)
@@ -198,7 +309,7 @@ def _select_passed_validation(path: Path, solution_id: int) -> dict[str, Any]:
     if not matches:
         raise ValueError(
             f"solution {solution_id} 没有独立通量验证结果；请先执行 "
-            f"validate --solution {solution_id} --validation-mode per-solution"
+            f"{validation_command}"
         )
 
     validation = _normalize_row(matches[-1])
@@ -245,18 +356,26 @@ def write_solution(config: Any) -> dict[str, Any]:
     if summary.get("eligible_for_recommendation") is not True:
         raise ValueError(f"solution {solution_id} 不可作为推荐路径")
 
-    steps = _select_solution_steps(gap_dir / "all_solution_steps.csv", solution_id)
+    gap_steps = _select_solution_steps(
+        gap_dir / "all_solution_steps.csv",
+        solution_id,
+    )
+    steps, gap_to_forward = _renumber_steps_forward(gap_steps, target_compound)
     validation = _select_passed_validation(
         validation_dir / "gem_validation_summary.csv",
         solution_id,
+        expansion_depth,
     )
     electron_summary = _select_optional_solution_row(
         gap_dir / "solution_electron_summary.csv",
         solution_id,
     )
-    electron_steps = _select_optional_solution_rows(
-        gap_dir / "route_electron_requirements.csv",
-        solution_id,
+    electron_steps = _remap_electron_steps(
+        _select_optional_solution_rows(
+            gap_dir / "route_electron_requirements.csv",
+            solution_id,
+        ),
+        gap_to_forward,
     )
 
     solution_payload = {
