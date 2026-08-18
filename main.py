@@ -7,6 +7,7 @@ from src.pathway_analyze.gem_validation import run_validation
 from src.pathway_analyze.list_solution_steps import run_solution_steps
 from src.pathway_analyze.write_solution_to_manifest import run_select_solution
 from src.main_protein_selection import run_main_protein_selection
+from src.info_show import run_info
 
 from src.config.run_config import RunConfig
 from src.config.config import INPUTS_DIR
@@ -126,6 +127,37 @@ main_enzyme_parser.add_argument(
 )
 main_enzyme_parser.set_defaults(func=run_main_protein_selection)
 
+
+# info 信息查看
+info_parser = sub_parser.add_parser('info',help='信息查看')
+info_parser.add_argument(
+    "-i",
+    "--input",
+    required=True,
+    help="inputs 目录下的输入配置文件名",
+)
+info_parser.add_argument(
+    '--chassis',
+    action='store_true',
+    help="查看底盘模型、培养基和可生成代谢物摘要"
+)
+info_parser.set_defaults(func=run_info)
+# info_parser.add_argument(
+#     "-s",
+#     "--solution",
+#     type=int,
+#     help="查看 gap 阶段的指定 solution；不传时查看 manifest 中当前选中路线",
+# )
+# info_parser.add_argument(
+#     "-d",
+#     "--depth",
+#     type=int,
+#     default=0,
+#     help="查看指定深度的 gap 结果，默认 0",
+# )
+
+
+
 def main():
     args = parser.parse_args()
     config_path = INPUTS_DIR / args.input
@@ -142,6 +174,8 @@ def main():
       config.solution_id = args.solution
     if args.command == "main-enzyme":
       config.top_n = args.top_n
+    if args.command == "info":
+      config.show_chassis = args.chassis
 
     args.func(config)
 
