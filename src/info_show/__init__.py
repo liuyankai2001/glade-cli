@@ -14,6 +14,10 @@ from src.info_show.chassis_expansion_info import (
     run_chassis_expansion_info,
 )
 from src.info_show.gap_info import get_gap_info, run_gap_info
+from src.info_show.main_enzyme_candidates_info import (
+    get_main_enzyme_candidates_info,
+    run_main_enzyme_candidates_info,
+)
 from src.info_show.solution_info import get_solution_info, run_solution_info
 
 
@@ -35,9 +39,14 @@ def run_info(config: Any) -> dict[str, Any]:
         return run_chassis_expansion_info(config, depth)
     if getattr(config, "gap", False):
         return run_gap_info(config)
+    if getattr(config, "main_enzyme_candidates", False):
+        return run_main_enzyme_candidates_info(config)
     if getattr(config, "solution", None) is not None:
         return run_solution_info(config)
-    raise ValueError("未指定信息查看类型，请使用 --chassis、--gap 或 --solution")
+    raise ValueError(
+        "未指定信息查看类型，请使用 --chassis、--gap、--solution "
+        "或 --main-enzyme-candidates"
+    )
 
 
 __all__ = [
@@ -45,10 +54,12 @@ __all__ = [
     "get_chassis_expansion_info",
     "get_chassis_info",
     "get_gap_info",
+    "get_main_enzyme_candidates_info",
     "get_solution_info",
     "run_chassis_expansion_info",
     "run_chassis_info",
     "run_gap_info",
+    "run_main_enzyme_candidates_info",
     "run_solution_info",
     "run_info",
 ]
