@@ -99,7 +99,7 @@ def _to_int(value: Any, field_name: str) -> int:
         raise ValueError(f"{field_name} must be an integer-compatible value: {value}") from exc
 
 
-def list_solution_steps(config: Any) -> dict[str, Any]:
+def get_solution_info(config: Any) -> dict[str, Any]:
     """读取 ``config.solution`` 对应深度的候选路径步骤。"""
 
     target_compound = validate_target_compound_id(config.target_name)
@@ -169,9 +169,12 @@ def list_solution_steps(config: Any) -> dict[str, Any]:
     }
 
 
-def run_solution_steps(config: Any) -> dict[str, Any]:
-    """命令行入口；输入 JSON 和 argparse 参数由 ``main.py`` 负责。"""
+def run_solution_info(config: Any) -> dict[str, Any]:
+    """CLI entry point for ``info --solution``."""
 
-    result = list_solution_steps(config)
+    result = get_solution_info(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
+
+
+__all__ = ["get_solution_info", "run_solution_info"]

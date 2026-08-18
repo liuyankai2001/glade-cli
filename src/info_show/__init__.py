@@ -14,7 +14,7 @@ from src.info_show.chassis_expansion_info import (
     run_chassis_expansion_info,
 )
 from src.info_show.gap_info import get_gap_info, run_gap_info
-from src.pathway_analyze.list_solution_steps import run_solution_steps
+from src.info_show.solution_info import get_solution_info, run_solution_info
 
 
 def run_info(config: Any) -> dict[str, Any]:
@@ -31,7 +31,7 @@ def run_info(config: Any) -> dict[str, Any]:
     if getattr(config, "gap", False):
         return run_gap_info(config)
     if getattr(config, "solution", None) is not None:
-        return run_solution_steps(config)
+        return run_solution_info(config)
     raise ValueError("未指定信息查看类型，请使用 --chassis、--gap 或 --solution")
 
 
@@ -40,8 +40,10 @@ __all__ = [
     "get_chassis_expansion_info",
     "get_chassis_info",
     "get_gap_info",
+    "get_solution_info",
     "run_chassis_expansion_info",
     "run_chassis_info",
     "run_gap_info",
+    "run_solution_info",
     "run_info",
 ]
