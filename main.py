@@ -141,6 +141,13 @@ info_parser.add_argument(
     action='store_true',
     help="查看底盘模型、培养基和可生成代谢物摘要"
 )
+info_parser.add_argument(
+    '-d',
+    '--depth',
+    type=int,
+    default=None,
+    help="指定信息查看深度，具体含义由查看类型决定",
+)
 info_parser.set_defaults(func=run_info)
 # info_parser.add_argument(
 #     "-s",
@@ -148,16 +155,6 @@ info_parser.set_defaults(func=run_info)
 #     type=int,
 #     help="查看 gap 阶段的指定 solution；不传时查看 manifest 中当前选中路线",
 # )
-# info_parser.add_argument(
-#     "-d",
-#     "--depth",
-#     type=int,
-#     default=0,
-#     help="查看指定深度的 gap 结果，默认 0",
-# )
-
-
-
 def main():
     args = parser.parse_args()
     config_path = INPUTS_DIR / args.input
@@ -176,6 +173,7 @@ def main():
       config.top_n = args.top_n
     if args.command == "info":
       config.show_chassis = args.chassis
+      config.info_depth = args.depth
 
     args.func(config)
 
