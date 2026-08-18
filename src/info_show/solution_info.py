@@ -131,20 +131,59 @@ def _select_solution_summary(
     )
 
 
-def _step_overview(row: dict[str, Any]) -> dict[str, Any]:
+def _step_overview(
+    row: dict[str, Any],
+    display_step_index: int,
+) -> dict[str, Any]:
     status = row.get("status")
     return {
-        "步骤编号": row.get("step_index"),
+        "步骤编号": display_step_index,
         "反应ID": row.get("reaction_id"),
         "反应类型": FIELD_VALUE_NAMES["status"].get(status, status),
     }
+
+
+def _order_steps_forward(
+    rows: list[dict[str, Any]],
+    target_compound: str,
+) -> list[dict[str, Any]]:
+    """按底盘前体到目标产物的方向排列路线步骤。"""
+
+    row_by_product = {
+        str(row.get("produced_compound_id") or "").strip(): row
+        for row in rows
+        if str(row.get("produced_compound_id") or "").strip()
+    }
+    ordered_rows: list[dict[str, Any]] = []
+    visited_products: set[str] = set()
+    active_products: set[str] = set()
+
+    def visit(product_id: str) -> None:
+        if product_id in visited_products or product_id in active_products:
+            return
+        row = row_by_product.get(product_id)
+        if row is None:
+            return
+        active_products.add(product_id)
+        for precursor_id in _split_values(row.get("precursor_compound_ids")):
+            visit(precursor_id)
+        active_products.remove(product_id)
+        visited_products.add(product_id)
+        ordered_rows.append(row)
+
+    visit(target_compound)
+    for row in reversed(rows):
+        product_id = str(row.get("produced_compound_id") or "").strip()
+        if product_id:
+            visit(product_id)
+    return ordered_rows
 
 
 def _build_path_chain(
     rows: list[dict[str, Any]],
     target_compound: str,
 ) -> str:
-    """按“前体=反应=>产物”格式生成从底盘前体到目标的路线链。"""
+    """按“前体-反应->产物”格式生成从底盘前体到目标的路线链。"""
 
     row_by_product = {
         str(row.get("produced_compound_id") or "").strip(): row
@@ -168,12 +207,12 @@ def _build_path_chain(
         else:
             precursor_text = "+".join(precursor_expressions)
             if len(precursor_expressions) > 1 and any(
-                "=>" in expression for expression in precursor_expressions
+                "->" in expression for expression in precursor_expressions
             ):
                 precursor_text = f"({precursor_text})"
 
         reaction_id = str(row.get("reaction_id") or "未知反应").strip()
-        return f"{precursor_text}={reaction_id}=>{compound_id}"
+        return f"{precursor_text}-{reaction_id}->{compound_id}"
 
     return render(target_compound)
 
@@ -229,6 +268,7 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     rows.sort(key=lambda item: int(item.get("step_index") or 0))
     if not rows:
         raise ValueError(f"路线 {selected_solution_id} 没有反应步骤")
+    forward_rows = _order_steps_forward(rows, target_compound)
 
     common = {
         "运行成功": True,
@@ -237,20 +277,19 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         "路径编号": selected_solution_id,
     }
     if selected_step_index is not None:
-        for row in rows:
-            if _to_int(row.get("step_index"), "step_index") == selected_step_index:
-                return {
-                    **common,
-                    "步骤编号": selected_step_index,
-                    "步骤详情": _translate_row(row),
-                }
-        available_steps = [
-            _to_int(row.get("step_index"), "step_index") for row in rows
-        ]
-        raise ValueError(
-            f"路线 {selected_solution_id} 中没有步骤 {selected_step_index}；"
-            f"可用步骤：{available_steps}"
-        )
+        if selected_step_index > len(forward_rows):
+            raise ValueError(
+                f"路线 {selected_solution_id} 中没有步骤 {selected_step_index}；"
+                f"可用步骤：{list(range(1, len(forward_rows) + 1))}"
+            )
+        selected_row = forward_rows[selected_step_index - 1]
+        step_detail = _translate_row(selected_row)
+        step_detail["步骤编号"] = selected_step_index
+        return {
+            **common,
+            "步骤编号": selected_step_index,
+            "步骤详情": step_detail,
+        }
 
     return {
         **common,
@@ -270,7 +309,10 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             summary.get("requires_downstream_electron_design")
         ),
         "可以推荐": bool(summary.get("eligible_for_recommendation")),
-        "反应步骤": [_step_overview(row) for row in rows],
+        "反应步骤": [
+            _step_overview(row, step_index)
+            for step_index, row in enumerate(forward_rows, start=1)
+        ],
     }
 
 
