@@ -13,6 +13,7 @@ def register(subparsers):
         help="inputs 目录下的输入配置文件名",
     )
     p.add_argument(
+        '-s',
         "--solution",
         type=int,
         required=True,
