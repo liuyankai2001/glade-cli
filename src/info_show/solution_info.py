@@ -31,6 +31,10 @@ STEP_FIELD_NAMES = {
     "resolution_evidence": "反应解析证据",
     "module_ids": "KEGG模块ID",
     "rhea_ids": "Rhea反应ID",
+    "reaction_comment": "反应备注",
+    "step_source": "步骤来源",
+    "expansion_depth": "扩展深度",
+    "expansion_anchor_compounds": "扩展锚点化合物",
 }
 
 FIELD_VALUE_NAMES = {
@@ -57,7 +61,7 @@ FIELD_VALUE_NAMES = {
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
-        raise FileNotFoundError(f"Missing all_solution_steps.csv: {path}")
+        raise FileNotFoundError(f"未找到路线结果文件，请先运行 gap：{path}")
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
 
@@ -99,32 +103,115 @@ def _to_int(value: Any, field_name: str) -> int:
         raise ValueError(f"{field_name} must be an integer-compatible value: {value}") from exc
 
 
+def _split_values(value: Any) -> list[str]:
+    return [item.strip() for item in str(value or "").split(";") if item.strip()]
+
+
+def _risk_name(value: Any) -> str:
+    return {
+        "none": "无",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+    }.get(str(value or "").strip().lower(), str(value or "").strip())
+
+
+def _select_solution_summary(
+    rows: list[dict[str, str]],
+    solution_id: int,
+) -> dict[str, Any]:
+    available_solution_ids: set[int] = set()
+    for row in rows:
+        row_solution_id = _to_int(row.get("solution_id"), "solution_id")
+        available_solution_ids.add(row_solution_id)
+        if row_solution_id == solution_id:
+            return _normalize_row(row)
+    raise ValueError(
+        f"未找到路线 {solution_id}；可用路线：{sorted(available_solution_ids)}"
+    )
+
+
+def _step_overview(row: dict[str, Any]) -> dict[str, Any]:
+    status = row.get("status")
+    return {
+        "步骤编号": row.get("step_index"),
+        "反应ID": row.get("reaction_id"),
+        "反应类型": FIELD_VALUE_NAMES["status"].get(status, status),
+    }
+
+
+def _build_path_chain(
+    rows: list[dict[str, Any]],
+    target_compound: str,
+) -> str:
+    """按“前体=反应=>产物”格式生成从底盘前体到目标的路线链。"""
+
+    row_by_product = {
+        str(row.get("produced_compound_id") or "").strip(): row
+        for row in rows
+        if str(row.get("produced_compound_id") or "").strip()
+    }
+    active_compounds: set[str] = set()
+
+    def render(compound_id: str) -> str:
+        row = row_by_product.get(compound_id)
+        if row is None or compound_id in active_compounds:
+            return compound_id
+
+        active_compounds.add(compound_id)
+        precursor_ids = _split_values(row.get("precursor_compound_ids"))
+        precursor_expressions = [render(item) for item in precursor_ids]
+        active_compounds.remove(compound_id)
+
+        if not precursor_expressions:
+            precursor_text = "未知前体"
+        else:
+            precursor_text = "+".join(precursor_expressions)
+            if len(precursor_expressions) > 1 and any(
+                "=>" in expression for expression in precursor_expressions
+            ):
+                precursor_text = f"({precursor_text})"
+
+        reaction_id = str(row.get("reaction_id") or "未知反应").strip()
+        return f"{precursor_text}={reaction_id}=>{compound_id}"
+
+    return render(target_compound)
+
+
 def get_solution_info(config: Any) -> dict[str, Any]:
-    """读取 ``config.solution`` 对应深度的候选路径步骤。"""
+    """读取路线概要，指定 ``config.step`` 时返回单步详情。"""
 
     target_compound = validate_target_compound_id(config.target_name)
-    raw_solution = getattr(
-        config,
-        "solution",
-        getattr(config, "solution_id", None),
-    )
+    raw_solution = getattr(config, "solution", None)
     if raw_solution is None:
         raise ValueError("未指定 solution，请使用 info --solution N")
     selected_solution_id = int(raw_solution)
+    if selected_solution_id < 1:
+        raise ValueError("solution 必须是正整数")
     expansion_depth = int(getattr(config, "depth", 0))
     if expansion_depth < 0:
         raise ValueError("depth 必须大于等于 0")
-    raw_step_index = getattr(config, "step_index", None)
+    raw_step_index = getattr(config, "step", None)
     selected_step_index = int(raw_step_index) if raw_step_index is not None else None
+    if selected_step_index is not None and selected_step_index < 1:
+        raise ValueError("step 必须是正整数")
     gap_dir = gap_depth_output_dir(
         Path(config.gap_output_path).expanduser().resolve(),
         expansion_depth,
     )
+    summaries_path = gap_dir / "solutions.csv"
     steps_path = gap_dir / "all_solution_steps.csv"
+
+    summary_rows = _read_csv_rows(summaries_path)
+    if not summary_rows:
+        raise ValueError(f"gap 分析没有生成候选路线：{summaries_path}")
+    if "solution_id" not in summary_rows[0]:
+        raise ValueError(f"路线结果缺少 solution_id 字段：{summaries_path}")
+    summary = _select_solution_summary(summary_rows, selected_solution_id)
 
     all_rows = _read_csv_rows(steps_path)
     if not all_rows:
-        raise ValueError(f"Gap analysis produced no solution steps: {steps_path}")
+        raise ValueError(f"gap 分析没有生成路线步骤：{steps_path}")
     required_columns = {"solution_id", "step_index"}
     missing_columns = required_columns.difference(all_rows[0])
     if missing_columns:
@@ -132,40 +219,58 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             f"Missing columns in {steps_path}: {sorted(missing_columns)}"
         )
 
-    rows = []
-    available_solution_ids: set[int] = set()
+    rows: list[dict[str, Any]] = []
     for row in all_rows:
         row_solution_id = _to_int(row.get("solution_id"), "solution_id")
-        available_solution_ids.add(row_solution_id)
         if row_solution_id != selected_solution_id:
-            continue
-        if (
-            selected_step_index is not None
-            and _to_int(row.get("step_index"), "step_index")
-            != selected_step_index
-        ):
             continue
         rows.append(_normalize_row(row))
 
     rows.sort(key=lambda item: int(item.get("step_index") or 0))
     if not rows:
-        if selected_solution_id not in available_solution_ids:
-            raise ValueError(
-                f"solution {selected_solution_id} not found; available solutions: "
-                f"{sorted(available_solution_ids)}"
-            )
-        raise ValueError(
-            f"step {selected_step_index} not found in solution {selected_solution_id}"
-        )
+        raise ValueError(f"路线 {selected_solution_id} 没有反应步骤")
 
-    return {
+    common = {
         "运行成功": True,
         "目标化合物": target_compound,
         "Gap深度": expansion_depth,
         "路径编号": selected_solution_id,
-        "指定步骤编号": selected_step_index,
-        "步骤数量": len(rows),
-        "反应步骤": [_translate_row(row) for row in rows],
+    }
+    if selected_step_index is not None:
+        for row in rows:
+            if _to_int(row.get("step_index"), "step_index") == selected_step_index:
+                return {
+                    **common,
+                    "步骤编号": selected_step_index,
+                    "步骤详情": _translate_row(row),
+                }
+        available_steps = [
+            _to_int(row.get("step_index"), "step_index") for row in rows
+        ]
+        raise ValueError(
+            f"路线 {selected_solution_id} 中没有步骤 {selected_step_index}；"
+            f"可用步骤：{available_steps}"
+        )
+
+    return {
+        **common,
+        "路径链": _build_path_chain(rows, target_compound),
+        "步骤数量": _to_int(summary.get("total_steps") or len(rows), "total_steps"),
+        "异源步骤数": _to_int(
+            summary.get("heterologous_steps")
+            or sum(row.get("status") == "heterologous" for row in rows),
+            "heterologous_steps",
+        ),
+        "可达起始化合物": _split_values(
+            summary.get("reachable_anchor_labels")
+            or summary.get("reachable_anchor_compounds")
+        ),
+        "最大电子风险": _risk_name(summary.get("max_electron_risk_level")),
+        "需要下游电子系统设计": bool(
+            summary.get("requires_downstream_electron_design")
+        ),
+        "可以推荐": bool(summary.get("eligible_for_recommendation")),
+        "反应步骤": [_step_overview(row) for row in rows],
     }
 
 

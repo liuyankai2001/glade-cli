@@ -20,6 +20,11 @@ from src.info_show.solution_info import get_solution_info, run_solution_info
 def run_info(config: Any) -> dict[str, Any]:
     """Dispatch the unified ``info`` command."""
 
+    if (
+        getattr(config, "step", None) is not None
+        and getattr(config, "solution", None) is None
+    ):
+        raise ValueError("--step 必须与 --solution 一起使用")
     if getattr(config, "chassis", False):
         raw_depth = getattr(config, "depth", None)
         depth = 0 if raw_depth is None else int(raw_depth)

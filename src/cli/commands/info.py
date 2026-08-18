@@ -16,6 +16,13 @@ def register(subparsers):
         help="查看指定路线的完整步骤",
     )
 
-    p.add_argument('-d', '--depth',type=int, default=None, help='指定信息查看深度，具体含义由查看类型决定')
+    p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
+    p.add_argument(
+        "--step",
+        type=int,
+        metavar="N",
+        default=None,
+        help="查看路线中的第 N 步，必须与 --solution 一起使用",
+    )
     p.set_defaults(func=run_info)
     return p
