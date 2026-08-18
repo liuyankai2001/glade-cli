@@ -6,6 +6,8 @@ from src.pathway_analyze.kegg_gap_analyze import run_gap
 from src.pathway_analyze.gem_validation import run_validation
 from src.pathway_analyze.list_solution_steps import run_solution_steps
 from src.pathway_analyze.write_solution_to_manifest import run_select_solution
+from src.main_protein_selection import run_main_protein_selection
+
 from src.config.run_config import RunConfig
 from src.config.config import INPUTS_DIR
 
@@ -100,8 +102,21 @@ select_parser = sub_parser.add_parser('select')
 select_parser.add_argument('-i','--input',required=True)
 select_parser.add_argument('-s','--solution',type=int,required=True,help="需要保存的solution ID")
 select_parser.add_argument('-d','--depth',type=int,default=0,help='写入选择的深度')
-
 select_parser.set_defaults(func=run_select_solution)
+
+
+# 主酶候选选择
+main_enzyme_parser = sub_parser.add_parser(
+    "main-enzyme",
+    help="为 manifest 中已选路线检索和排序主酶候选",
+)
+main_enzyme_parser.add_argument(
+    "-i",
+    "--input",
+    required=True,
+    help="inputs 目录下的输入配置文件名",
+)
+main_enzyme_parser.set_defaults(func=run_main_protein_selection)
 
 def main():
     args = parser.parse_args()
