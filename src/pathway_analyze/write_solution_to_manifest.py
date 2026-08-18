@@ -7,6 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from src.pathway_analyze.gem_validation import validation_depth_output_dir
+from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
+
 
 SOLUTION_SUMMARY_FIELDS = (
     "target_compound_id",
@@ -243,6 +246,9 @@ def select_solution(config: Any) -> dict[str, Any]:
     """选择一条已通过独立 GEM 验证的路径，并写入项目 manifest。"""
 
     target_compound = _validate_target_compound_id(config.target_name)
+    expansion_depth = int(getattr(config, "depth", 0))
+    if expansion_depth < 0:
+        raise ValueError("depth must be greater than or equal to 0")
     configured_solution_id = getattr(config, "solution_id", None)
     if configured_solution_id is None:
         raise ValueError("未指定 solution_id，请将 select 命令的 --solution 写入 RunConfig")
@@ -250,8 +256,9 @@ def select_solution(config: Any) -> dict[str, Any]:
     if solution_id < 1:
         raise ValueError("solution_id 必须是正整数")
 
-    gap_dir = Path(config.gap_output_path)
-    validation_dir = Path(config.validation_output_path)
+    gap_root_dir = Path(config.gap_output_path).expanduser().resolve()
+    gap_dir = gap_depth_output_dir(gap_root_dir, expansion_depth)
+    validation_dir = validation_depth_output_dir(gap_root_dir, expansion_depth)
     manifest_path = Path(config.manifest_output_path)
 
     summary = _select_solution_summary(gap_dir / "solutions.csv", solution_id)
@@ -284,6 +291,7 @@ def select_solution(config: Any) -> dict[str, Any]:
 
     solution_payload = {
         "gap_dir": str(gap_dir.resolve()),
+        "expansion_depth": expansion_depth,
         "solution_id": solution_id,
         "summary": _keep_fields(summary, SOLUTION_SUMMARY_FIELDS),
         "steps": [_keep_fields(step, SOLUTION_STEP_FIELDS) for step in steps],
@@ -317,6 +325,7 @@ def select_solution(config: Any) -> dict[str, Any]:
         "运行成功": True,
         "目标化合物": target_compound,
         "路径编号": solution_id,
+        "扩展深度": expansion_depth,
         "步骤数量": len(steps),
         "通量验证状态": validation.get("validation_status"),
         "辅因子模式": validation.get("cofactor_mode"),

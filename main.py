@@ -99,6 +99,8 @@ solution_parser.set_defaults(func=run_solution_steps)
 select_parser = sub_parser.add_parser('select')
 select_parser.add_argument('-i','--input',required=True)
 select_parser.add_argument('-s','--solution',type=int,required=True,help="需要保存的solution ID")
+select_parser.add_argument('-d','--depth',type=int,default=0,help='写入选择的深度')
+
 select_parser.set_defaults(func=run_select_solution)
 
 def main():
@@ -106,7 +108,7 @@ def main():
     config_path = INPUTS_DIR / args.input
     config = load_input(config_path)
 
-    if args.command in ("expand", "gap", "validate"):
+    if args.command in ("expand", "gap", "validate", "select"):
           config.depth = args.depth
 
     if args.command == "validate":
