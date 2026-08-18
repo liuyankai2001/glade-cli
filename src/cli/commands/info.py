@@ -22,6 +22,12 @@ def register(subparsers):
         help="按步骤查看当前已选路线的主酶候选",
     )
 
+    view_group.add_argument(
+        "--main-enzyme-candidate",
+        type=int,
+        metavar="N",
+        help="查看指定 Step 中排名第 N 的主酶候选详情",
+    )
 
     p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
     p.add_argument(
