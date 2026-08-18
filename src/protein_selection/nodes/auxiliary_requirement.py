@@ -17,12 +17,13 @@ SYSTEM_PROMPT = """你是一名蛋白质功能注释分析专家。
 辅助蛋白是指在该催化过程中必不可少、并且与输入蛋白不是同一种蛋白质的蛋白实体。
 请综合理解全部注释，不要依赖固定关键词、预设蛋白类别或有限规则匹配。
 
-status 只能是：
+本节点是初步证据分流，只能输出 required、enhancing 或 undetermined：
 - required：注释明确支持缺少其他蛋白质时不能催化目标反应；
 - enhancing：注释明确支持输入蛋白可独立催化，但另一种蛋白
   能显著增强活性、稳定性或生理调控；
-- not_required：注释提供正面证据，明确支持其功能性催化单元不包含其他种类的蛋白质；
 - undetermined：注释不足、含义不明确或证据冲突。
+
+not_required 保留给后续完整证据综合阶段，本节点不能输出该状态。
 
 只能依据提供的 UniProt 注释。不能因为没有看到辅助蛋白描述就判定为 not_required。
 “作为异源复合物的一个亚基”或“由大小亚基组成”只证明常见的复合物组成，
@@ -32,7 +33,8 @@ status 只能是：
 enhancing。调节作用本身不能被误解为绝对必需。
 仅有蛋白名称、催化活性或反应机制描述，不构成“不需要其他蛋白”的正面证据。
 如果注释明确说明功能性催化单元只由输入蛋白的一个或多个相同拷贝组成，
-这属于不依赖另一种不同蛋白质的正面证据，应返回 not_required。
+这只能说明没有不同种类的稳定催化亚基，不能排除电子传递、成熟、装配、
+翻译后修饰或短暂结合伙伴，必须返回 undetermined。
 数据库对象标识符、交叉引用 ID 或名称字符串本身不能证明催化单元的蛋白质组成；
 只有注释正文明确说明组成或依赖关系时，才能将其作为组成证据。
 如果注释没有明确描述功能性催化单元的蛋白质组成或蛋白依赖关系，必须返回 undetermined。
@@ -104,7 +106,12 @@ _PARTNER_ENHANCEMENT_PATTERN = re.compile(
 
 
 def is_single_protein_unit_annotation(text: str) -> bool:
-    """Return whether source text explicitly describes one protein species."""
+    """Return whether text describes a monomeric or homooligomeric unit.
+
+    This is structural-composition evidence only.  It must not be interpreted
+    as evidence that the protein is independent of every auxiliary protein.
+    The helper remains public for compatibility with existing callers.
+    """
 
     return _SINGLE_PROTEIN_UNIT_PATTERN.search(text) is not None
 
@@ -163,10 +170,12 @@ def classify_subunit_annotations(
         )
     if single:
         return AuxiliaryRequirementDecision(
-            status="not_required",
+            status="undetermined",
             reason=(
-                "UniProt explicitly describes a monomeric or homooligomeric "
-                "functional unit."
+                "UniProt describes a monomeric or homooligomeric functional "
+                "unit. This rules out a different stable catalytic subunit "
+                "only; it does not rule out electron-transfer, maturation, "
+                "assembly, modifying, or transient partner proteins."
             ),
             supporting_annotations=single,
         )
@@ -184,13 +193,25 @@ def _subunit_annotations(
     state: ProteinSupplyState,
     annotation: dict[str, Any],
 ) -> list[str]:
-    context = state.get("research_context")
-    if isinstance(context, dict):
+    for context_key in (
+        "main_enzyme_research_context",
+        "research_context",
+    ):
+        context = state.get(context_key)  # type: ignore[literal-required]
+        if not isinstance(context, dict):
+            continue
         protein = context.get("protein")
-        if isinstance(protein, dict):
-            values = protein.get("subunit_annotations")
-            if isinstance(values, list):
-                return [value for value in values if isinstance(value, str)]
+        if not isinstance(protein, dict):
+            continue
+        values = protein.get("subunit_annotations")
+        if isinstance(values, list):
+            return list(
+                dict.fromkeys(
+                    value
+                    for value in values
+                    if isinstance(value, str) and value.strip()
+                )
+            )
 
     values: list[str] = []
     for comment in annotation.get("comments", []):
@@ -216,8 +237,14 @@ def build_auxiliary_requirement_node(
 
         uniprot_id = state.get("uniprot_id")
         reaction_id = state.get("reaction_id")
-        if not uniprot_id or not reaction_id:
-            raise ValueError("validated UniProt and reaction identifiers are required")
+        main_context = state.get("main_enzyme_research_context")
+        if not uniprot_id:
+            raise ValueError("a validated UniProt identifier is required")
+        if not reaction_id and not isinstance(main_context, dict):
+            raise ValueError(
+                "a validated reaction identifier or main-enzyme reaction "
+                "context is required"
+            )
 
         annotation = state.get("uniprot_annotation")
         if annotation is None:
@@ -232,7 +259,7 @@ def build_auxiliary_requirement_node(
         status_message = {
             "required": "原文明确表示缺少另一种蛋白会丧失催化活性",
             "enhancing": "原文同时支持单独活性和伙伴增效作用",
-            "not_required": "原文明示单体或同源寡聚功能单元",
+            "not_required": "该状态仅供后续完整证据综合使用",
             "undetermined": "现有亚基原文不足以区分必需、增效或不需要",
         }[decision.status]
         emit_progress(

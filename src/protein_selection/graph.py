@@ -10,14 +10,12 @@ from src.protein_selection.nodes.auxiliary_requirement import (
     FullUniProtLookup,
     StructuredOutputChatModel,
     build_auxiliary_requirement_node,
-    is_single_protein_unit_annotation,
 )
 from src.protein_selection.nodes.main_research import (
     MainResearchAgentContextFactory,
     MainResearchAgentFactory,
     MainResearchAgentRunnable,
     build_main_research_node,
-    return_input_protein,
     return_reaction_mismatch,
 )
 from src.protein_selection.nodes.validation import (
@@ -31,7 +29,6 @@ from src.protein_selection.state import ProteinSupplyState
 # 节点名称集中定义，避免条件路由和节点注册使用不一致的字符串。
 VALIDATION_NODE = "validate_input"
 AUXILIARY_REQUIREMENT_NODE = "check_auxiliary_requirement"
-RETURN_INPUT_PROTEIN_NODE = "return_input_protein"
 RETURN_REACTION_MISMATCH_NODE = "return_reaction_mismatch"
 MAIN_RESEARCH_NODE = "main_research_agent"
 END_ROUTE = "end"
@@ -51,7 +48,6 @@ ValidationRoute = Literal[
     "end",
 ]
 RequirementRoute = Literal[
-    "return_input_protein",
     "return_reaction_mismatch",
     "main_research_agent",
     "end",
@@ -86,15 +82,15 @@ def route_after_validation(state: ProteinSupplyState) -> ValidationRoute:
 def route_after_auxiliary_requirement(
     state: ProteinSupplyState,
 ) -> RequirementRoute:
-    """根据辅助蛋白需求的四态判断选择快速路径或研究路径。
+    """根据初步辅助蛋白证据选择不匹配或完整研究路径。
 
     - ``mismatched``：若上游已确定 Rhea 与 EC 均冲突，直接输出不匹配终态。
-    - ``not_required``：只有目标反应已通过精确 Rhea 映射，且来源注释明确描述
-      单体或同源寡聚催化单元时，才直接返回输入蛋白。
     - ``required``：明确需要其他蛋白，交给研究智能体查找具体组分。
     - ``enhancing``：可独立催化但存在增效伙伴，交给研究智能体核验具体蛋白及
       其在大肠杆菌中的可用性。
     - ``undetermined``：现有注释不足，仍交给研究智能体补充数据库和文献证据。
+    - ``not_required``：即使由旧状态或外部调用传入，也必须进入完整研究，不能
+      仅凭亚基组成跳过辅助蛋白证据核验。
     - 缺失或未知状态：保守结束，避免把异常状态误判为成功。
     """
 
@@ -107,28 +103,11 @@ def route_after_auxiliary_requirement(
         return RETURN_REACTION_MISMATCH_NODE
 
     status = state.get("requirement_status")
-    if (
-        status == "not_required"
-        and state.get("preliminary_reaction_match") == "matched"
-        and any(
-            is_single_protein_unit_annotation(annotation)
-            for annotation in state.get("requirement_evidence", [])
-        )
-    ):
-        emit_progress(
-            "routing",
-            "completed",
-            "反应精确匹配且为单体/同源寡聚体，进入快速路径",
-        )
-        return RETURN_INPUT_PROTEIN_NODE
     if status in {"required", "enhancing", "undetermined", "not_required"}:
         emit_progress(
             "routing",
             "info",
-            (
-                f"初步状态={status}，现有证据未满足快速路径，"
-                "进入证据研究流程"
-            ),
+            f"初步状态={status}，进入完整辅助蛋白证据研究流程",
         )
         return MAIN_RESEARCH_NODE
     emit_progress("routing", "error", "辅助需求状态无效，结束工作流")
@@ -170,9 +149,6 @@ def build_protein_supply_graph(
         build_auxiliary_requirement_node(llm, uniprot_client),
     )
 
-    # 快速成功路径：确认不需要辅助蛋白时，只返回用户输入的 UniProt ID。
-    graph.add_node(RETURN_INPUT_PROTEIN_NODE, return_input_protein)
-
     # 确定性不匹配路径：Rhea 与 EC 均明确不相交时直接输出完整裁决。
     graph.add_node(
         RETURN_REACTION_MISMATCH_NODE,
@@ -202,21 +178,19 @@ def build_protein_supply_graph(
         },
     )
 
-    # 需求判断完成后进行核心分流：不需要辅助蛋白时走快速路径；必需、增效或
-    # 无法判断时走研究路径。
+    # 需求判断完成后进行核心分流：除确定性反应不匹配外，全部进入完整研究；
+    # 亚基组成不能单独证明不存在电子传递、成熟、装配或瞬时结合伙伴。
     graph.add_conditional_edges(
         AUXILIARY_REQUIREMENT_NODE,
         route_after_auxiliary_requirement,
         {
-            RETURN_INPUT_PROTEIN_NODE: RETURN_INPUT_PROTEIN_NODE,
             RETURN_REACTION_MISMATCH_NODE: RETURN_REACTION_MISMATCH_NODE,
             MAIN_RESEARCH_NODE: MAIN_RESEARCH_NODE,
             END_ROUTE: END,
         },
     )
 
-    # 三条业务分支都在写入最终状态后结束，不再合流到额外处理节点。
-    graph.add_edge(RETURN_INPUT_PROTEIN_NODE, END)
+    # 两条业务分支都在写入最终状态后结束，不再合流到额外处理节点。
     graph.add_edge(RETURN_REACTION_MISMATCH_NODE, END)
     graph.add_edge(MAIN_RESEARCH_NODE, END)
 
