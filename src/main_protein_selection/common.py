@@ -616,14 +616,6 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
-def file_summary(path: Path) -> dict[str, Any]:
-    return {
-        "path": rel_or_abs(path),
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else 0,
-    }
-
-
 __all__ = [
     "KO_EVIDENCE_FILENAME",
     "MAIN_CANDIDATES_FILENAME",
@@ -637,7 +629,6 @@ __all__ = [
     "STEP_MAIN_CANDIDATES_FILENAME",
     "candidate_rows_for_requirements",
     "evidence_paths",
-    "file_summary",
     "get_solution_steps",
     "heterologous_requirements",
     "is_spontaneous_step",

@@ -8,9 +8,6 @@ from src.main_protein_selection.build_main_enzyme_sets import (
     main_enzyme_selection_fingerprint,
     run_main_enzyme_sets,
 )
-from src.main_protein_selection.get_enzyme_system_context import (
-    get_enzyme_system_context,
-)
 from src.main_protein_selection.models import (
     MainEnzymeCandidate,
     MainEnzymeSet,
@@ -31,7 +28,6 @@ __all__ = [
     "build_main_enzyme_sets",
     "build_main_enzyme_sets_from_rows",
     "candidate_pool_fingerprint_from_rows",
-    "get_enzyme_system_context",
     "main_enzyme_set_paths",
     "main_enzyme_selection_fingerprint",
     "MainEnzymeCandidate",
