@@ -29,6 +29,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 
 STEP_MAIN_CANDIDATES_FILENAME = "step_main_enzyme_candidates.csv"
 MAIN_CANDIDATES_FILENAME = "main_enzyme_candidates.csv"
+MAIN_ENZYME_SELECTION_FILENAME = "main_enzyme_selection.json"
 REACTION_EVIDENCE_FILENAME = "reaction_evidence.json"
 DIRECTION_EVIDENCE_FILENAME = "direction_evidence.json"
 KO_EVIDENCE_FILENAME = "ko_evidence.json"
@@ -90,6 +91,7 @@ def evidence_paths(output_dir: str | Path) -> dict[str, Path]:
     return {
         "step_main_enzyme_candidates_csv": root / STEP_MAIN_CANDIDATES_FILENAME,
         "main_enzyme_candidates_csv": root / MAIN_CANDIDATES_FILENAME,
+        "main_enzyme_selection_json": root / MAIN_ENZYME_SELECTION_FILENAME,
         "reaction_evidence_json": root / REACTION_EVIDENCE_FILENAME,
         "direction_evidence_json": root / DIRECTION_EVIDENCE_FILENAME,
         "ko_evidence_json": root / KO_EVIDENCE_FILENAME,
@@ -363,6 +365,7 @@ def file_summary(path: Path) -> dict[str, Any]:
 __all__ = [
     "KO_EVIDENCE_FILENAME",
     "MAIN_CANDIDATES_FILENAME",
+    "MAIN_ENZYME_SELECTION_FILENAME",
     "PROTEIN_CANDIDATE_COLUMNS",
     "REACTION_EVIDENCE_FILENAME",
     "ROUTE_REPAIR_REQUESTS_FILENAME",

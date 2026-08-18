@@ -43,6 +43,12 @@ from src.main_protein_selection.kegg_ko_retrieval import (
     KeggKOSourceUnavailable,
     retrieve_ko_candidates,
 )
+from src.main_protein_selection.models import (
+    MainEnzymeCandidate,
+    MainEnzymeSelectionParameters,
+    MainEnzymeSelectionResult,
+)
+from src.main_protein_selection.provenance import solution_fingerprint
 from src.main_protein_selection.selenzyme_retrieval import (
     SelenzymeClient,
     SelenzymeSourceUnavailable,
@@ -675,6 +681,52 @@ def select_main_enzymes(
             "selenzyme_evidence_json": rel_or_abs(paths["selenzyme_evidence_json"]),
             "route_repair_requests_json": rel_or_abs(paths["route_repair_requests_json"]),
         }
+        candidates_by_step: dict[int, list[MainEnzymeCandidate]] = {}
+        for row in verified_step_rows:
+            candidate = MainEnzymeCandidate.from_candidate_row(row)
+            candidates_by_step.setdefault(candidate.step_index, []).append(candidate)
+        for candidates in candidates_by_step.values():
+            candidates.sort(key=lambda item: item.candidate_rank)
+
+        solution = manifest.get("solution")
+        expansion_depth = int(
+            solution.get("expansion_depth") or 0
+            if isinstance(solution, dict)
+            else 0
+        )
+        canonical_result = MainEnzymeSelectionResult(
+            ok=result["ok"],
+            status=result["status"],
+            selected_solution_id=solution_id,
+            expansion_depth=expansion_depth,
+            solution_fingerprint=solution_fingerprint(solution_id, steps),
+            chassis_key=chassis_key,
+            parameters=MainEnzymeSelectionParameters(
+                top_n=top_n,
+                max_results=max_results,
+                allow_transmembrane=allow_transmembrane,
+                fetch_proteins=fetch_proteins,
+            ),
+            candidates_by_step=candidates_by_step,
+            uncovered_step_indexes=result["uncovered_step_indexes"],
+            direction_rejected_step_indexes=result[
+                "direction_rejected_step_indexes"
+            ],
+            direction_risk_step_indexes=result["direction_risk_step_indexes"],
+            evidence_files={
+                key: rel_or_abs(path)
+                for key, path in paths.items()
+                if key != "main_enzyme_selection_json"
+            },
+        )
+        write_json_atomic(
+            paths["main_enzyme_selection_json"],
+            canonical_result.model_dump(mode="json"),
+        )
+        result["main_enzyme_selection_json"] = rel_or_abs(
+            paths["main_enzyme_selection_json"]
+        )
+        result["schema_version"] = canonical_result.schema_version
         return result
     except Exception:
         raise

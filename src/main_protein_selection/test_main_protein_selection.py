@@ -8,6 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
+from src.main_protein_selection.models import (
+    MainEnzymeCandidate,
+    MainEnzymeSelectionResult,
+)
 from src.main_protein_selection.reaction_direction_verifier import (
     DIRECTION_UNKNOWN,
     direction_decision_for_candidate,
@@ -91,6 +97,7 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             "ko_evidence.json",
             "selenzyme_evidence.json",
             "route_repair_requests.json",
+            "main_enzyme_selection.json",
         }
         self.assertEqual(
             expected_files,
@@ -100,6 +107,13 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             (self.output_dir / "direction_evidence.json").read_text("utf-8")
         )
         self.assertEqual("disabled_deterministic", direction["agent"]["status"])
+        canonical = MainEnzymeSelectionResult.model_validate_json(
+            (self.output_dir / "main_enzyme_selection.json").read_text("utf-8")
+        )
+        self.assertEqual("main_enzyme_selection.v1", canonical.schema_version)
+        self.assertEqual(0, canonical.expansion_depth)
+        self.assertEqual({}, canonical.candidates_by_step)
+        self.assertEqual(64, len(canonical.solution_fingerprint))
 
     def test_selenzyme_configuration_failure_preserves_existing_candidates(self) -> None:
         self.write_manifest(
@@ -153,6 +167,14 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(["P12345"], [row["accession"] for row in rows])
         self.assertEqual([2], result["uncovered_step_indexes"])
+        canonical = MainEnzymeSelectionResult.model_validate_json(
+            (self.output_dir / "main_enzyme_selection.json").read_text("utf-8")
+        )
+        self.assertEqual("source_unavailable", canonical.status)
+        self.assertEqual(
+            ["P12345"],
+            [item.accession for item in canonical.candidates_by_step[1]],
+        )
 
     def test_direction_agent_payload_cannot_override_unknown(self) -> None:
         requirement = {
@@ -195,6 +217,28 @@ class MainProteinSelectionRuntimeTests(unittest.TestCase):
             cache_dir=config.cache_dir / "main_protein_selection",
             fetch_proteins=False,
         )
+
+    def test_candidate_model_rejects_invalid_or_nonusable_rows(self) -> None:
+        valid = {
+            "step_index": 1,
+            "reaction_id": "R00001",
+            "accession": "P12345",
+            "reviewed": True,
+            "candidate_rank": 1,
+            "protein_score": 90.0,
+            "reaction_fit_status": "verified",
+            "reaction_fit_score": 100.0,
+        }
+        with self.assertRaises(ValidationError):
+            MainEnzymeCandidate.model_validate({**valid, "accession": ""})
+        with self.assertRaises(ValidationError):
+            MainEnzymeCandidate.model_validate({**valid, "candidate_rank": 0})
+        with self.assertRaises(ValidationError):
+            MainEnzymeCandidate.model_validate(
+                {**valid, "reaction_fit_status": "rejected"}
+            )
+        with self.assertRaises(ValidationError):
+            MainEnzymeCandidate.model_validate({**valid, "unexpected": True})
 
 
 if __name__ == "__main__":
