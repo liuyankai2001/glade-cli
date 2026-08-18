@@ -8,11 +8,18 @@ contains no model calls and deliberately treats missing annotations as
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.protein_selection.state import (
+    AssignedReactionStep,
+    MainEnzymeResearchUnit,
+    ReactionScope,
+    WholeReactionEvidenceStatus,
+)
 
 
 ReactionMatch = Literal["matched", "mismatched", "uncertain"]
@@ -116,6 +123,46 @@ class ResearchContext(BaseModel):
     preliminary_reaction_match_reason: str = Field(min_length=1)
 
 
+class ReactionStepResearchContext(BaseModel):
+    """One route-assigned Step plus its official reaction identity."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    step_index: int = Field(ge=1)
+    route_step: AssignedReactionStep
+    reaction: ReactionResearchIdentity
+    preliminary_reaction_match: ReactionMatch
+    preliminary_reaction_match_reason: str = Field(min_length=1)
+
+
+class WholeReactionResearchContext(BaseModel):
+    """Structured evidence describing one main enzyme's whole reaction."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    equation: str | None = None
+    rhea_ids: list[str] = Field(default_factory=list)
+    start_compound_ids: list[str] = Field(default_factory=list)
+    end_compound_ids: list[str] = Field(default_factory=list)
+    intermediate_compound_ids: list[str] = Field(default_factory=list)
+    evidence_status: WholeReactionEvidenceStatus
+    evidence: list[str] = Field(default_factory=list)
+
+
+class MainEnzymeResearchContext(BaseModel):
+    """Auditable protein context spanning one or more selected-route Steps."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    protein: ProteinResearchIdentity
+    reaction_scope: ReactionScope
+    assigned_step_indexes: list[int]
+    reaction_steps: list[ReactionStepResearchContext]
+    whole_reaction: WholeReactionResearchContext | None = None
+    preliminary_reaction_match: ReactionMatch
+    preliminary_reaction_match_reason: str = Field(min_length=1)
+
+
 def build_research_context(
     uniprot_annotation: Mapping[str, Any],
     reaction_record: Mapping[str, Any],
@@ -130,6 +177,207 @@ def build_research_context(
         reaction=reaction,
         preliminary_reaction_match=status,
         preliminary_reaction_match_reason=reason,
+    )
+
+
+def build_main_enzyme_research_context(
+    uniprot_annotation: Mapping[str, Any],
+    research_unit: MainEnzymeResearchUnit,
+    reaction_records: Mapping[str, Mapping[str, Any]],
+) -> MainEnzymeResearchContext:
+    """Build one context for a main enzyme assigned to one or more Steps."""
+
+    protein = _extract_protein_identity(uniprot_annotation)
+    accession = _required_string(
+        research_unit.get("accession"),
+        "research_unit.accession",
+    ).upper()
+    if protein.primary_accession.upper() != accession:
+        raise ValueError(
+            "UniProt annotation accession does not match the main-enzyme "
+            f"research unit: {protein.primary_accession} != {accession}"
+        )
+
+    reaction_scope = research_unit.get("reaction_scope")
+    if reaction_scope not in {"single_step", "multi_step"}:
+        raise ValueError("research_unit.reaction_scope is invalid")
+    assigned_step_indexes = _validated_step_indexes(
+        research_unit.get("assigned_step_indexes"),
+        "research_unit.assigned_step_indexes",
+    )
+    raw_steps = research_unit.get("reaction_steps")
+    if not isinstance(raw_steps, list) or any(
+        not isinstance(step, Mapping) for step in raw_steps
+    ):
+        raise ValueError("research_unit.reaction_steps must be a list")
+    if reaction_scope == "single_step" and len(assigned_step_indexes) != 1:
+        raise ValueError("single_step research units must contain one Step")
+    if reaction_scope == "multi_step" and len(assigned_step_indexes) < 2:
+        raise ValueError("multi_step research units must contain multiple Steps")
+
+    normalized_records: dict[str, Mapping[str, Any]] = {}
+    for key, record in reaction_records.items():
+        normalized_key = str(key or "").strip().upper()
+        if not normalized_key:
+            raise ValueError("reaction_records contains an empty reaction ID")
+        if normalized_key in normalized_records:
+            raise ValueError(
+                f"reaction_records contains duplicate ID {normalized_key}"
+            )
+        if not isinstance(record, Mapping):
+            raise ValueError(
+                f"reaction_records[{normalized_key}] must be an object"
+            )
+        normalized_records[normalized_key] = record
+
+    steps_by_index: dict[int, Mapping[str, Any]] = {}
+    for raw_step in raw_steps:
+        step_index = _positive_integer(
+            raw_step.get("step_index"),
+            "research_unit.reaction_steps[].step_index",
+        )
+        if step_index in steps_by_index:
+            raise ValueError(
+                f"research_unit contains duplicate Step {step_index}"
+            )
+        steps_by_index[step_index] = raw_step
+    if sorted(steps_by_index) != assigned_step_indexes:
+        raise ValueError(
+            "research_unit assigned_step_indexes and reaction_steps do not "
+            "describe the same Steps"
+        )
+
+    reaction_steps: list[ReactionStepResearchContext] = []
+    for step_index in assigned_step_indexes:
+        raw_step = steps_by_index[step_index]
+        reaction_id = _required_string(
+            raw_step.get("reaction_id"),
+            f"research_unit Step {step_index} reaction_id",
+        ).upper()
+        raw_record = normalized_records.get(reaction_id)
+        if raw_record is None:
+            raise ValueError(
+                f"reaction_records is missing {reaction_id} for Step "
+                f"{step_index}"
+            )
+        reaction = _extract_reaction_identity(raw_record)
+        if reaction.reaction_id.upper() != reaction_id:
+            raise ValueError(
+                f"reaction_records[{reaction_id}] contains "
+                f"{reaction.reaction_id}"
+            )
+        status, reason = assess_preliminary_reaction_match(
+            protein,
+            reaction,
+        )
+        route_step = AssignedReactionStep(**dict(raw_step))
+        reaction_steps.append(
+            ReactionStepResearchContext(
+                step_index=step_index,
+                route_step=route_step,
+                reaction=reaction,
+                preliminary_reaction_match=status,
+                preliminary_reaction_match_reason=reason,
+            )
+        )
+
+    raw_whole_reaction = research_unit.get("whole_reaction")
+    if raw_whole_reaction is not None and not isinstance(
+        raw_whole_reaction,
+        Mapping,
+    ):
+        raise ValueError("research_unit.whole_reaction must be an object or null")
+    whole_reaction = (
+        WholeReactionResearchContext.model_validate(raw_whole_reaction)
+        if isinstance(raw_whole_reaction, Mapping)
+        else None
+    )
+    overall_status, overall_reason = assess_main_enzyme_reaction_match(
+        protein,
+        reaction_scope,
+        reaction_steps,
+        whole_reaction,
+    )
+    return MainEnzymeResearchContext(
+        protein=protein,
+        reaction_scope=reaction_scope,
+        assigned_step_indexes=assigned_step_indexes,
+        reaction_steps=reaction_steps,
+        whole_reaction=whole_reaction,
+        preliminary_reaction_match=overall_status,
+        preliminary_reaction_match_reason=overall_reason,
+    )
+
+
+def assess_main_enzyme_reaction_match(
+    protein: ProteinResearchIdentity,
+    reaction_scope: ReactionScope,
+    reaction_steps: Sequence[ReactionStepResearchContext],
+    whole_reaction: WholeReactionResearchContext | None,
+) -> tuple[ReactionMatch, str]:
+    """Conservatively assess one protein against its complete route scope."""
+
+    if reaction_scope == "single_step":
+        if len(reaction_steps) != 1:
+            raise ValueError("single_step context must contain exactly one Step")
+        step = reaction_steps[0]
+        return (
+            step.preliminary_reaction_match,
+            "Single-step main-enzyme context: "
+            + step.preliminary_reaction_match_reason,
+        )
+    if reaction_scope != "multi_step":
+        raise ValueError(f"unsupported reaction_scope: {reaction_scope}")
+    if len(reaction_steps) < 2:
+        raise ValueError("multi_step context must contain at least two Steps")
+
+    if whole_reaction is not None and whole_reaction.evidence_status == "supported":
+        protein_rhea_ids = {
+            numeric_id
+            for activity in protein.catalytic_activities
+            for rhea_id in activity.rhea_ids
+            if (numeric_id := _parse_rhea_numeric_id(rhea_id)) is not None
+        }
+        whole_rhea_ids = {
+            numeric_id
+            for rhea_id in whole_reaction.rhea_ids
+            if (numeric_id := _parse_rhea_numeric_id(rhea_id)) is not None
+        }
+        common_rhea_ids = sorted(protein_rhea_ids & whole_rhea_ids)
+        if common_rhea_ids:
+            return (
+                "matched",
+                "The supported whole-reaction context and UniProt catalytic "
+                "activity share exact Rhea ID(s): "
+                + ", ".join(f"RHEA:{value}" for value in common_rhea_ids),
+            )
+        if whole_reaction.evidence:
+            return (
+                "matched",
+                "The structured whole-reaction context is marked supported "
+                "and contains explicit source evidence for the selected "
+                "multi-step enzyme.",
+            )
+
+    matched_count = sum(
+        step.preliminary_reaction_match == "matched"
+        for step in reaction_steps
+    )
+    uncertain_count = sum(
+        step.preliminary_reaction_match == "uncertain"
+        for step in reaction_steps
+    )
+    mismatched_count = sum(
+        step.preliminary_reaction_match == "mismatched"
+        for step in reaction_steps
+    )
+    return (
+        "uncertain",
+        "The main enzyme spans multiple decomposed route Steps, but no "
+        "supported whole-reaction evidence has been established. Step-level "
+        f"results are matched={matched_count}, uncertain={uncertain_count}, "
+        f"mismatched={mismatched_count}; decomposed Step agreement or "
+        "disagreement alone cannot resolve the whole enzyme reaction.",
     )
 
 
@@ -609,6 +857,38 @@ def _reference_title_mentions_gene_root(title: str, root: str) -> bool:
             re.IGNORECASE,
         )
     )
+
+
+def _required_string(value: Any, field_name: str) -> str:
+    normalized = _as_nonempty_string(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return normalized
+
+
+def _positive_integer(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{field_name} must be a positive integer"
+        ) from exc
+    if normalized < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return normalized
+
+
+def _validated_step_indexes(value: Any, field_name: str) -> list[int]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    result = [_positive_integer(item, field_name) for item in value]
+    if result != sorted(set(result)):
+        raise ValueError(f"{field_name} must be sorted and unique")
+    if not result:
+        raise ValueError(f"{field_name} must not be empty")
+    return result
 
 
 def _append_name_value(target: list[str], raw: Any) -> None:
