@@ -28,6 +28,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 
 
 STEP_MAIN_CANDIDATES_FILENAME = "step_main_enzyme_candidates.csv"
+STEP_MAIN_CANDIDATE_AUDIT_FILENAME = "step_main_enzyme_candidate_audit.csv"
 MAIN_CANDIDATES_FILENAME = "main_enzyme_candidates.csv"
 MAIN_ENZYME_SELECTION_FILENAME = "main_enzyme_selection.json"
 REACTION_EVIDENCE_FILENAME = "reaction_evidence.json"
@@ -90,6 +91,9 @@ def evidence_paths(output_dir: str | Path) -> dict[str, Path]:
     root = output_root(output_dir)
     return {
         "step_main_enzyme_candidates_csv": root / STEP_MAIN_CANDIDATES_FILENAME,
+        "step_main_enzyme_candidate_audit_csv": (
+            root / STEP_MAIN_CANDIDATE_AUDIT_FILENAME
+        ),
         "main_enzyme_candidates_csv": root / MAIN_CANDIDATES_FILENAME,
         "main_enzyme_selection_json": root / MAIN_ENZYME_SELECTION_FILENAME,
         "reaction_evidence_json": root / REACTION_EVIDENCE_FILENAME,
@@ -174,12 +178,21 @@ def candidate_rows_for_requirements(
     requirements: list[dict[str, Any]],
     candidates_by_ec: dict[str, list[ProteinCandidate]],
     candidates_by_step: dict[int, list[ProteinCandidate]] | None = None,
+    *,
+    top_n: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Project catalytic-main candidates for each heterologous step."""
+    """Project, deduplicate and rank catalytic-main candidates per step.
+
+    A UniProt accession identifies a protein.  The same accession retrieved by
+    multiple EC, Rhea, KO or Selenzyme queries therefore remains one candidate
+    for a route step, with all retrieval evidence retained on that row.
+    """
+
+    if top_n is not None and top_n < 1:
+        raise ValueError("top_n must be at least 1")
 
     by_step = candidates_by_step or {}
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[int, str, str, str]] = set()
     for requirement in requirements:
         candidates: list[tuple[str, ProteinCandidate]] = []
         for ec_number in requirement.get("ec_numbers", []):
@@ -191,10 +204,6 @@ def candidate_rows_for_requirements(
         for ec_number, candidate in candidates:
             if str(candidate.candidate_role or "catalytic_main") != "catalytic_main":
                 continue
-            key = (step_index, candidate.accession, ec_number, candidate.retrieval_strategy)
-            if key in seen:
-                continue
-            seen.add(key)
             row = _step_candidate_row(requirement, ec_number, candidate)
             direction = direction_decision_for_candidate(requirement, row)
             row.update({
@@ -216,6 +225,26 @@ def candidate_rows_for_requirements(
                 "reaction_fit_evidence": " | ".join(fit["evidence"]),
             })
             rows.append(row)
+
+        step_rows = [
+            row for row in rows if _int(row.get("step_index")) == step_index
+        ]
+        rows = [
+            row for row in rows if _int(row.get("step_index")) != step_index
+        ]
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in step_rows:
+            accession = str(row.get("accession") or "").strip().upper()
+            if not accession:
+                raise ValueError(
+                    f"Main-enzyme candidate for step {step_index} has no accession"
+                )
+            groups.setdefault(accession, []).append(row)
+        rows.extend(
+            _merge_step_accession_rows(requirement, matches)
+            for matches in groups.values()
+        )
+
     status_priority = {
         "verified": 0,
         "verified_with_risk": 1,
@@ -230,12 +259,244 @@ def candidate_rows_for_requirements(
         0 if str(row.get("reviewed") or "").lower() in {"true", "1"} else 1,
         str(row.get("accession") or ""),
     ))
-    ranks: dict[int, int] = {}
+    evaluation_ranks: dict[int, int] = {}
+    candidate_ranks: dict[int, int] = {}
     for row in rows:
         step_index = _int(row.get("step_index"))
-        ranks[step_index] = ranks.get(step_index, 0) + 1
-        row["candidate_rank"] = ranks[step_index]
+        evaluation_ranks[step_index] = evaluation_ranks.get(step_index, 0) + 1
+        row["evaluation_rank"] = evaluation_ranks[step_index]
+        status = str(row.get("reaction_fit_status") or "")
+        if status in {"verified", "verified_with_risk"}:
+            next_rank = candidate_ranks.get(step_index, 0) + 1
+            candidate_ranks[step_index] = next_rank
+            if top_n is None or next_rank <= top_n:
+                row["candidate_rank"] = next_rank
+                row["selection_status"] = "selected"
+            else:
+                row["candidate_rank"] = ""
+                row["selection_status"] = "eligible_not_selected"
+        else:
+            row["candidate_rank"] = ""
+            row["selection_status"] = (
+                "manual_review" if status == "manual_review" else "rejected"
+            )
     return rows
+
+
+_MERGED_LIST_FIELDS = (
+    "ec_numbers",
+    "retrieval_strategy",
+    "retrieval_query_id",
+    "matched_rhea_ids",
+    "matched_ko_ids",
+    "kegg_gene_ids",
+    "direction_evidence_source_ids",
+    "direction_evidence",
+    "required_rhea_direction_ids",
+    "reaction_confidence",
+    "selenzyme_risk_status",
+    "selenzyme_matched_reaction_id",
+    "selenzyme_direction_used",
+    "selenzyme_direction_preferred",
+    "gene_names",
+    "catalytic_activities",
+    "cofactors",
+    "subunit",
+    "function_comments",
+    "ptm_comments",
+    "feature_annotations",
+    "domain_ids",
+    "keywords",
+    "aliases",
+    "publication_ids",
+    "cross_references",
+    "subcellular_locations",
+    "rhea_ids",
+    "reasons",
+    "warnings",
+)
+
+
+def _values_from_rows(
+    rows: list[dict[str, Any]],
+    field: str,
+) -> list[str]:
+    return _unique([
+        value
+        for row in rows
+        for value in _split_list_field(row.get(field))
+    ])
+
+
+def _normalized_sequence(value: Any) -> str:
+    return "".join(str(value or "").split()).upper()
+
+
+def _validate_duplicate_sequences(
+    step_index: int,
+    accession: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    sequences = {
+        sequence
+        for row in rows
+        if (sequence := _normalized_sequence(row.get("sequence")))
+    }
+    hashes = {
+        str(row.get("sequence_sha256") or "").strip().lower()
+        for row in rows
+        if str(row.get("sequence_sha256") or "").strip()
+    }
+    if len(sequences) > 1 or len(hashes) > 1:
+        raise ValueError(
+            "Conflicting sequence evidence for main-enzyme candidate "
+            f"{accession} at step {step_index}"
+        )
+
+
+def _merge_step_accession_rows(
+    requirement: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge all evidence for one accession on one route step."""
+
+    step_index = _int(requirement.get("step_index"))
+    accession = str(rows[0].get("accession") or "").strip().upper()
+    _validate_duplicate_sequences(step_index, accession, rows)
+
+    best = max(
+        rows,
+        key=lambda row: (
+            _float(row.get("score")),
+            1 if str(row.get("reviewed") or "").lower() in {"true", "1"} else 0,
+        ),
+    )
+    merged = dict(best)
+    merged["accession"] = accession
+    merged["score"] = max(_float(row.get("score")) for row in rows)
+    merged["reviewed"] = any(
+        str(row.get("reviewed") or "").lower() in {"true", "1"}
+        for row in rows
+    )
+    merged["ec_number"] = _join(_unique([
+        value
+        for row in rows
+        for value in _split_list_field(row.get("ec_number"))
+    ]))
+    for field in _MERGED_LIST_FIELDS:
+        merged[field] = _join(_values_from_rows(rows, field))
+
+    for field in ("sequence", "sequence_sha256"):
+        merged[field] = next(
+            (
+                row.get(field)
+                for row in rows
+                if str(row.get(field) or "").strip()
+            ),
+            "",
+        )
+    sequence_versions = [
+        _int(row.get("sequence_version"))
+        for row in rows
+        if _int(row.get("sequence_version"))
+    ]
+    merged["sequence_version"] = max(sequence_versions) if sequence_versions else ""
+
+    direction_priority = {"contradicted": 0, "supported": 1, "unknown": 2, "": 3}
+    direction_verdict = min(
+        (str(row.get("direction_verdict") or "").strip().lower() for row in rows),
+        key=lambda value: direction_priority.get(value, 4),
+    )
+    direction_rows = [
+        row
+        for row in rows
+        if str(row.get("direction_verdict") or "").strip().lower()
+        == direction_verdict
+    ]
+    confidence_priority = {"high": 0, "medium": 1, "low": 2, "": 3}
+    merged["direction_support"] = direction_verdict
+    merged["direction_verdict"] = direction_verdict
+    merged["direction_confidence"] = min(
+        (
+            str(row.get("direction_confidence") or "").strip().lower()
+            for row in direction_rows
+        ),
+        key=lambda value: confidence_priority.get(value, 4),
+        default="",
+    )
+    merged["direction_evidence_level"] = _join(
+        _values_from_rows(direction_rows, "direction_evidence_level")
+    )
+
+    ranks = [
+        _int(row.get("selenzyme_rank"))
+        for row in rows
+        if _int(row.get("selenzyme_rank"))
+    ]
+    merged["selenzyme_rank"] = min(ranks) if ranks else ""
+    for field in (
+        "selenzyme_score",
+        "selenzyme_sim_rf",
+        "selenzyme_sim_2018",
+        "selenzyme_reaction_similarity",
+    ):
+        values = [
+            _float(row.get(field))
+            for row in rows
+            if str(row.get(field) or "").strip()
+        ]
+        merged[field] = max(values) if values else ""
+    distances = [
+        _float(row.get("selenzyme_taxonomic_distance"))
+        for row in rows
+        if str(row.get("selenzyme_taxonomic_distance") or "").strip()
+    ]
+    merged["selenzyme_taxonomic_distance"] = min(distances) if distances else ""
+
+    fit = evaluate_candidate_reaction_fit(requirement, merged)
+    fit_options = [
+        {
+            "status": str(row.get("reaction_fit_status") or ""),
+            "score": _float(row.get("reaction_fit_score")),
+        }
+        for row in rows
+    ]
+    fit_options.append(fit)
+    if direction_verdict == "contradicted":
+        selected_fit = fit
+    else:
+        fit_priority = {
+            "verified": 0,
+            "verified_with_risk": 1,
+            "manual_review": 2,
+            "rejected": 3,
+        }
+        selected_fit = min(
+            fit_options,
+            key=lambda value: (
+                fit_priority.get(str(value.get("status") or ""), 4),
+                -_float(value.get("score")),
+            ),
+        )
+    merged["reaction_fit_status"] = selected_fit["status"]
+    merged["reaction_fit_score"] = selected_fit["score"]
+    merged["reaction_fit_rule_ids"] = _join(_unique([
+        *(
+            value
+            for row in rows
+            for value in _split_list_field(row.get("reaction_fit_rule_ids"))
+        ),
+        *(str(value) for value in fit["rule_ids"]),
+    ]))
+    merged["reaction_fit_evidence"] = " | ".join(_unique([
+        *(
+            value
+            for row in rows
+            for value in _split_list_field(row.get("reaction_fit_evidence"))
+        ),
+        *(str(value) for value in fit["evidence"]),
+    ]))
+    return merged
 
 
 def _float(value: Any) -> float:
@@ -371,6 +632,7 @@ __all__ = [
     "ROUTE_REPAIR_REQUESTS_FILENAME",
     "SELENZYME_EVIDENCE_FILENAME",
     "STEP_CANDIDATE_COLUMNS",
+    "STEP_MAIN_CANDIDATE_AUDIT_FILENAME",
     "STEP_MAIN_CANDIDATES_FILENAME",
     "candidate_rows_for_requirements",
     "evidence_paths",

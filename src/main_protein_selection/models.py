@@ -157,8 +157,12 @@ class MainEnzymeSelectionResult(BaseModel):
             if any(item.step_index != step_index for item in candidates):
                 raise ValueError("candidate does not match its step group")
             ranks = [item.candidate_rank for item in candidates]
-            if ranks != sorted(ranks) or len(ranks) != len(set(ranks)):
-                raise ValueError("candidate ranks must be unique and sorted per step")
+            if ranks != list(range(1, len(candidates) + 1)):
+                raise ValueError(
+                    "candidate ranks must be contiguous from 1 within each step"
+                )
+            if len(candidates) > self.parameters.top_n:
+                raise ValueError("candidate count exceeds parameters.top_n")
         return self
 
 

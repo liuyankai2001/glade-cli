@@ -194,6 +194,8 @@ def select_main_enzymes(
     """
 
     try:
+        if top_n < 1:
+            raise ValueError("top_n must be at least 1")
         output_path = Path(output_dir).expanduser().resolve()
         cache_path = Path(cache_dir).expanduser().resolve()
         paths = evidence_paths(output_path)
@@ -547,16 +549,33 @@ def select_main_enzymes(
             requirements,
             candidates_by_ec,
             candidates_by_step,
+            top_n=top_n,
         )
-        verified_step_rows = [row for row in step_rows if candidate_is_reaction_verified(row)]
-        merged_rows = merge_step_candidates(verified_step_rows)
+        verified_step_rows = [
+            row for row in step_rows if candidate_is_reaction_verified(row)
+        ]
+        selected_step_rows = [
+            row
+            for row in step_rows
+            if str(row.get("selection_status") or "") == "selected"
+        ]
+        merged_rows = merge_step_candidates(selected_step_rows)
         route_repair_requests = _route_repair_requests_v2(
             requirements,
             step_rows,
             solution_id,
             source_unavailable=selenzyme_source_unavailable,
         )
-        write_csv(paths["step_main_enzyme_candidates_csv"], step_rows, STEP_CANDIDATE_COLUMNS)
+        write_csv(
+            paths["step_main_enzyme_candidates_csv"],
+            selected_step_rows,
+            STEP_CANDIDATE_COLUMNS,
+        )
+        write_csv(
+            paths["step_main_enzyme_candidate_audit_csv"],
+            step_rows,
+            STEP_CANDIDATE_COLUMNS,
+        )
         write_csv(paths["main_enzyme_candidates_csv"], merged_rows, PROTEIN_CANDIDATE_COLUMNS)
         write_json_atomic(paths["reaction_evidence_json"], {
             "schema_version": "reaction_evidence.v1",
@@ -617,7 +636,7 @@ def select_main_enzymes(
             int(requirement.get("step_index") or 0) for requirement in requirements
         }
         rank_one_rows = [
-            row for row in verified_step_rows
+            row for row in selected_step_rows
             if int(row.get("candidate_rank") or 0) == 1
         ]
         result = {
@@ -632,7 +651,8 @@ def select_main_enzymes(
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
             "heterologous_step_count": len(requirements),
-            "step_candidate_count": len(step_rows),
+            "step_candidate_count": len(selected_step_rows),
+            "evaluated_step_candidate_count": len(step_rows),
             "verified_step_candidate_count": len(verified_step_rows),
             "rejected_or_review_step_candidate_count": len(step_rows) - len(verified_step_rows),
             "protein_candidate_count": len(merged_rows),
@@ -674,6 +694,9 @@ def select_main_enzymes(
             "query_errors": query_errors,
             "ko_query_errors": ko_query_errors,
             "step_main_enzyme_candidates_csv": rel_or_abs(paths["step_main_enzyme_candidates_csv"]),
+            "step_main_enzyme_candidate_audit_csv": rel_or_abs(
+                paths["step_main_enzyme_candidate_audit_csv"]
+            ),
             "main_enzyme_candidates_csv": rel_or_abs(paths["main_enzyme_candidates_csv"]),
             "reaction_evidence_json": rel_or_abs(paths["reaction_evidence_json"]),
             "direction_evidence_json": rel_or_abs(paths["direction_evidence_json"]),
@@ -682,7 +705,7 @@ def select_main_enzymes(
             "route_repair_requests_json": rel_or_abs(paths["route_repair_requests_json"]),
         }
         candidates_by_step: dict[int, list[MainEnzymeCandidate]] = {}
-        for row in verified_step_rows:
+        for row in selected_step_rows:
             candidate = MainEnzymeCandidate.from_candidate_row(row)
             candidates_by_step.setdefault(candidate.step_index, []).append(candidate)
         for candidates in candidates_by_step.values():
