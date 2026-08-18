@@ -1138,6 +1138,25 @@ def _candidate_pool_fingerprint(
     )
 
 
+def candidate_pool_fingerprint_from_rows(
+    *,
+    solution_fingerprint_value: str,
+    chassis_key: str,
+    required_steps: Sequence[Mapping[str, Any]],
+    candidate_rows: Sequence[Mapping[str, Any]],
+    electron_inference: Mapping[str, Any] | None,
+) -> str:
+    """Return the path-independent semantic fingerprint used by set results."""
+
+    return _candidate_pool_fingerprint(
+        solution_fingerprint_value=solution_fingerprint_value,
+        chassis_key=chassis_key,
+        required_steps=_canonical_required_steps(required_steps),
+        candidate_rows=candidate_rows,
+        electron_inference=dict(electron_inference or {}),
+    )
+
+
 def _input_fingerprint(
     candidate_pool_fingerprint: str,
     *,
@@ -1375,6 +1394,14 @@ def _selection_projection(selection: MainEnzymeSelectionResult) -> dict[str, Any
         ),
         "direction_risk_step_indexes": selection.direction_risk_step_indexes,
     }
+
+
+def main_enzyme_selection_fingerprint(
+    selection: MainEnzymeSelectionResult,
+) -> str:
+    """Fingerprint a validated candidate selection without absolute paths."""
+
+    return stable_json_hash(_selection_projection(selection))
 
 
 def _validate_selection_csv(
@@ -1837,8 +1864,8 @@ def build_main_enzyme_sets(
         result["output_files"] = _write_set_outputs(output_dir, result)
         return result
 
-    source_artifacts["candidate_selection_fingerprint"] = stable_json_hash(
-        _selection_projection(selection)
+    source_artifacts["candidate_selection_fingerprint"] = (
+        main_enzyme_selection_fingerprint(selection)
     )
     source_artifacts["candidate_detail_fingerprint"] = detail_fingerprint
     result = build_main_enzyme_sets_from_rows(
@@ -1896,6 +1923,8 @@ __all__ = [
     "MAIN_ENZYME_SET_MEMBERS_FILENAME",
     "build_main_enzyme_sets",
     "build_main_enzyme_sets_from_rows",
+    "candidate_pool_fingerprint_from_rows",
+    "main_enzyme_selection_fingerprint",
     "main_enzyme_set_paths",
     "run_main_enzyme_sets",
     "shortlist_decision_fingerprint",

@@ -29,6 +29,20 @@ def register(subparsers):
         help="查看指定 Step 中排名第 N 的主酶候选详情",
     )
 
+
+    view_group.add_argument(
+        "--main-enzyme-sets",
+        action="store_true",
+        help="查看当前路线的主酶组合列表",
+    )
+
+    view_group.add_argument(
+        "--main-enzyme-set",
+        type=int,
+        metavar="N",
+        help="查看排名第 N 的主酶组合详情",
+    )
+
     p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
     p.add_argument(
         "--step",
