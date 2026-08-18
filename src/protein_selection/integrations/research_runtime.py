@@ -8,12 +8,12 @@ from types import TracebackType
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.tools import load_mcp_tools
 
-from src.integrations.open_websearch import (
+from src.protein_selection.integrations.open_websearch import (
     OPEN_WEBSEARCH_SERVER_NAME,
     OpenWebSearchConfig,
     build_open_websearch_client,
 )
-from src.integrations.tooluniverse import (
+from src.protein_selection.integrations.tooluniverse import (
     TOOLUNIVERSE_SERVER_NAME,
     ToolUniverseConfig,
     build_tooluniverse_client,

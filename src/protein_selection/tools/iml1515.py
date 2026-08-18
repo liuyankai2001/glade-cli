@@ -8,10 +8,10 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from src.config.config import GEM_DIR
 
-DEFAULT_IML1515_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "iML1515.json"
-)
+
+DEFAULT_IML1515_PATH = GEM_DIR / "iML1515.json"
 IML1515_TOOL_NAMES = (
     "find_iml1515_reactions",
     "get_iml1515_gene",

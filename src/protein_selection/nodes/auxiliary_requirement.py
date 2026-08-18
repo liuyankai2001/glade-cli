@@ -6,8 +6,8 @@ from typing import Any, Protocol
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, ConfigDict
 
-from src.progress import emit_progress
-from src.state import ProteinSupplyState, RequirementStatus
+from src.protein_selection.progress import emit_progress
+from src.protein_selection.state import ProteinSupplyState, RequirementStatus
 
 
 SYSTEM_PROMPT = """你是一名蛋白质功能注释分析专家。

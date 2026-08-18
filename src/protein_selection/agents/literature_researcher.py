@@ -10,11 +10,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.agents.dependency_evidence import (
+from src.protein_selection.agents.dependency_evidence import (
     DependencyEvidenceAtom,
     DependencyEvidenceSynthesis,
 )
-from src.integrations.tooluniverse import (
+from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
 )

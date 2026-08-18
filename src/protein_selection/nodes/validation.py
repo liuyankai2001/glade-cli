@@ -3,10 +3,10 @@
 import re
 from typing import Any, Protocol
 
-from src.research_context import build_research_context
-from src.progress import emit_progress
-from src.services.errors import DatabaseLookupError, LookupErrorKind
-from src.state import (
+from src.protein_selection.research_context import build_research_context
+from src.protein_selection.progress import emit_progress
+from src.protein_selection.services.errors import DatabaseLookupError, LookupErrorKind
+from src.protein_selection.state import (
     ReactionRecord,
     UniProtRecord,
     ValidationField,

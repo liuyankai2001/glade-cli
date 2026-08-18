@@ -5,14 +5,14 @@ from typing import Literal, Protocol
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from src.progress import emit_progress
-from src.nodes.auxiliary_requirement import (
+from src.protein_selection.progress import emit_progress
+from src.protein_selection.nodes.auxiliary_requirement import (
     FullUniProtLookup,
     StructuredOutputChatModel,
     build_auxiliary_requirement_node,
     is_single_protein_unit_annotation,
 )
-from src.nodes.main_research import (
+from src.protein_selection.nodes.main_research import (
     MainResearchAgentContextFactory,
     MainResearchAgentFactory,
     MainResearchAgentRunnable,
@@ -20,8 +20,12 @@ from src.nodes.main_research import (
     return_input_protein,
     return_reaction_mismatch,
 )
-from src.nodes.validation import ReactionLookup, UniProtLookup, validate_input
-from src.state import ProteinSupplyState
+from src.protein_selection.nodes.validation import (
+    ReactionLookup,
+    UniProtLookup,
+    validate_input,
+)
+from src.protein_selection.state import ProteinSupplyState
 
 
 # 节点名称集中定义，避免条件路由和节点注册使用不一致的字符串。

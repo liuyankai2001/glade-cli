@@ -6,9 +6,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol
 
-from src.agents.main_research_agent import MainResearchResult
-from src.progress import emit_progress
-from src.state import ProteinSupplyState
+from src.protein_selection.agents.main_research_agent import MainResearchResult
+from src.protein_selection.progress import emit_progress
+from src.protein_selection.state import ProteinSupplyState
 
 
 class MainResearchAgentRunnable(Protocol):

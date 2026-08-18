@@ -9,7 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.integrations.open_websearch import (
+from src.protein_selection.integrations.open_websearch import (
     OpenWebSearchConfig,
     load_open_websearch_tools,
 )

@@ -24,12 +24,12 @@ from pydantic import (
     model_validator,
 )
 
-from src.agents.bio_database_researcher import (
+from src.protein_selection.agents.bio_database_researcher import (
     BIO_DATABASE_RESEARCHER_TOOL_NAMES,
     BioDatabaseResearchResult,
     build_bio_database_researcher_subagent,
 )
-from src.agents.dependency_evidence import (
+from src.protein_selection.agents.dependency_evidence import (
     CuratedDependencyAssertion,
     CuratedDependencyAssertionExtractionResult,
     DependencyEvidenceAtom,
@@ -42,12 +42,12 @@ from src.agents.dependency_evidence import (
     source_text_occurs,
     validate_relation_span_grounding,
 )
-from src.agents.host_compatibility_researcher import (
+from src.protein_selection.agents.host_compatibility_researcher import (
     HOST_COMPATIBILITY_RESEARCHER_TOOL_NAMES,
     HostCompatibilityResearchResult,
     build_host_compatibility_researcher_subagent,
 )
-from src.agents.evidence_pipeline import (
+from src.protein_selection.agents.evidence_pipeline import (
     RawResearchEvidence,
     ResearchEvidenceLedger,
     ResearchToolRunner,
@@ -77,33 +77,36 @@ from src.agents.evidence_pipeline import (
     verified_candidate_hints,
     web_fetch_calls,
 )
-from src.agents.literature_researcher import (
+from src.protein_selection.agents.literature_researcher import (
     LITERATURE_RESEARCHER_TOOL_NAMES,
     LiteraturePaper,
     LiteratureResearchResult,
     build_literature_researcher_subagent,
 )
-from src.agents.research_policy import (
+from src.protein_selection.agents.research_policy import (
     ResearchMode,
     build_budget_middleware,
     get_research_policy,
 )
-from src.agents.web_researcher import (
+from src.protein_selection.agents.web_researcher import (
     WEB_RESEARCHER_TOOL_NAMES,
     WebResearchResult,
     build_web_researcher_subagent,
 )
-from src.integrations.open_websearch import OpenWebSearchConfig
-from src.integrations.research_runtime import (
+from src.protein_selection.integrations.open_websearch import OpenWebSearchConfig
+from src.protein_selection.integrations.research_runtime import (
     ResearchMCPRuntime,
     ResearchMCPTools,
     ResearchToolNames,
 )
-from src.integrations.tooluniverse import ToolUniverseConfig
-from src.progress import emit_progress, progress_heartbeat
-from src.tools.iml1515 import DEFAULT_IML1515_PATH
-from src.research_context import ResearchContext, normalize_rhea_family_id
-from src.services.cache import PersistentTTLCache, RetrievalStats
+from src.protein_selection.integrations.tooluniverse import ToolUniverseConfig
+from src.protein_selection.progress import emit_progress, progress_heartbeat
+from src.protein_selection.tools.iml1515 import DEFAULT_IML1515_PATH
+from src.protein_selection.research_context import (
+    ResearchContext,
+    normalize_rhea_family_id,
+)
+from src.protein_selection.services.cache import PersistentTTLCache, RetrievalStats
 
 
 MAIN_RESEARCH_AGENT_NAME = "main_research_agent"

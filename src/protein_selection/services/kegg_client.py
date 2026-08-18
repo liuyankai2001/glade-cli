@@ -7,14 +7,14 @@ import time
 
 import httpx
 
-from src.services.errors import DatabaseLookupError, LookupErrorKind
-from src.services.cache import (
+from src.protein_selection.services.errors import DatabaseLookupError, LookupErrorKind
+from src.protein_selection.services.cache import (
     CURATED_RECORD_TTL_SECONDS,
     PersistentTTLCache,
     RetrievalStats,
 )
-from src.services.http import get_with_retry
-from src.state import ReactionRecord
+from src.protein_selection.services.http import get_with_retry
+from src.protein_selection.state import ReactionRecord
 
 
 class KeggClient:

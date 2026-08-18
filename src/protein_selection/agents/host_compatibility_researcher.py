@@ -11,11 +11,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.integrations.tooluniverse import (
+from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
 )
-from src.tools.iml1515 import (
+from src.protein_selection.tools.iml1515 import (
     DEFAULT_IML1515_PATH,
     IML1515_TOOL_NAMES,
     build_iml1515_tools,

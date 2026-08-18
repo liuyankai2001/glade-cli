@@ -7,14 +7,14 @@ from typing import Any
 
 import httpx
 
-from src.services.errors import DatabaseLookupError, LookupErrorKind
-from src.services.cache import (
+from src.protein_selection.services.errors import DatabaseLookupError, LookupErrorKind
+from src.protein_selection.services.cache import (
     CURATED_RECORD_TTL_SECONDS,
     PersistentTTLCache,
     RetrievalStats,
 )
-from src.services.http import get_with_retry
-from src.state import UniProtRecord
+from src.protein_selection.services.http import get_with_retry
+from src.protein_selection.state import UniProtRecord
 
 
 class UniProtClient:

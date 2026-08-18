@@ -13,10 +13,12 @@ from typing import Any, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.agents.bio_database_researcher import BioDatabaseResearchResult
-from src.agents.research_policy import ResearchMode, ResearchPolicy
-from src.research_context import ResearchContext
-from src.services.cache import (
+from src.protein_selection.agents.bio_database_researcher import (
+    BioDatabaseResearchResult,
+)
+from src.protein_selection.agents.research_policy import ResearchMode, ResearchPolicy
+from src.protein_selection.research_context import ResearchContext
+from src.protein_selection.services.cache import (
     PersistentTTLCache,
     RetrievalStats,
     ttl_for_tool,
