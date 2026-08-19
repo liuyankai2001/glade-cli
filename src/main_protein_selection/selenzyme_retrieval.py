@@ -26,6 +26,10 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 
 EXACT_SIMILARITY_TOLERANCE = 1e-6
 COMPLETE_EC_PATTERN = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+EC_RELATION_EXACT = "exact_current_uniprot_ec"
+EC_RELATION_SHARED_REACTION = "shared_reaction_ec_overlap"
+EC_RELATION_UNANNOTATED = "unannotated_current_uniprot_ec"
+EC_RELATION_CONTRADICTED = "contradicted_ec"
 
 
 class SelenzymeSourceUnavailable(RuntimeError):
@@ -117,6 +121,26 @@ def _ec_numbers(value: Any) -> set[str]:
         for item in values
         if COMPLETE_EC_PATTERN.fullmatch(str(item).strip())
     }
+
+
+def classify_selenzyme_ec_relation(
+    *,
+    required_ecs: Any,
+    candidate_ecs: Any,
+    reported_ecs: Any,
+) -> str:
+    """Classify protein EC evidence without confusing reaction and protein annotations."""
+
+    required = _ec_numbers(required_ecs)
+    candidate = _ec_numbers(candidate_ecs)
+    reported = _ec_numbers(reported_ecs)
+    if candidate & required:
+        return EC_RELATION_EXACT
+    if not candidate:
+        return EC_RELATION_UNANNOTATED
+    if candidate & reported and required & reported:
+        return EC_RELATION_SHARED_REACTION
+    return EC_RELATION_CONTRADICTED
 
 
 def _normalize_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
@@ -466,12 +490,25 @@ def retrieve_selenzyme_candidates(
         candidate.retrieval_strategy = retrieval_strategy
         candidate.retrieval_query_id = str(query_result.get("query_id") or "")
         candidate_ecs = set(candidate.ec_numbers)
-        if is_ec_query and candidate_ecs and not (candidate_ecs & required_ecs):
+        reported_ecs = _ec_numbers(row.get("ec_number"))
+        ec_relation = (
+            classify_selenzyme_ec_relation(
+                required_ecs=required_ecs,
+                candidate_ecs=candidate_ecs,
+                reported_ecs=reported_ecs,
+            )
+            if is_ec_query
+            else ""
+        )
+        if is_ec_query:
+            row["ec_relation"] = ec_relation
+            row["candidate_ec_numbers"] = sorted(candidate_ecs)
+            row["required_ec_numbers"] = sorted(required_ecs)
+            row["reported_ec_numbers"] = sorted(reported_ecs)
+        if is_ec_query and ec_relation == EC_RELATION_CONTRADICTED:
             row["rejection_reasons"] = [
                 "selenzyme_candidate_ec_contradicts_requirement"
             ]
-            row["candidate_ec_numbers"] = sorted(candidate_ecs)
-            row["required_ec_numbers"] = sorted(required_ecs)
             audit_rows.append(row)
             continue
         candidate.reaction_confidence = (
@@ -496,23 +533,37 @@ def retrieve_selenzyme_candidates(
             row.get("direction_preferred") or ""
         )
         if is_ec_query:
-            current_ec_confirmed = bool(candidate_ecs & required_ecs)
-            candidate.selenzyme_risk_status = (
-                "ec_query_target_reaction_specificity_unverified"
-                if current_ec_confirmed
-                else "ec_query_unconfirmed_by_current_uniprot"
+            candidate.selenzyme_risk_status = ec_relation
+            relation_warning = {
+                EC_RELATION_EXACT: (
+                    "Current UniProt annotation contains the queried EC, but the locked substrate/product specificity remains unverified"
+                ),
+                EC_RELATION_SHARED_REACTION: (
+                    "Current UniProt EC and the queried EC overlap only through the same Selenzyme reaction record; the locked substrate/product specificity remains unverified"
+                ),
+                EC_RELATION_UNANNOTATED: (
+                    "SelenzymeRF EC association is not confirmed by the current UniProt EC annotation"
+                ),
+            }[ec_relation]
+            current_activity = (
+                f"Current UniProt catalytic activity: {candidate.catalytic_activities[0]}"
+                if candidate.catalytic_activities
+                else ""
             )
+            candidate.reasons = list(dict.fromkeys(
+                candidate.reasons
+                + [
+                    f"selenzyme_ec_relation:{ec_relation}",
+                    "selenzyme_reported_ec_numbers:"
+                    + ";".join(sorted(reported_ecs)),
+                ]
+            ))
             candidate.warnings = list(dict.fromkeys(
                 candidate.warnings
                 + [
                     "SelenzymeRF EC association does not establish the locked substrate/product reaction",
-                    *(
-                        []
-                        if current_ec_confirmed
-                        else [
-                            "SelenzymeRF EC association is not confirmed by the current UniProt EC annotation"
-                        ]
-                    ),
+                    relation_warning,
+                    *([current_activity] if current_activity else []),
                 ]
             ))
         else:
@@ -540,11 +591,16 @@ def retrieve_selenzyme_candidates(
 
 __all__ = [
     "COMPLETE_EC_PATTERN",
+    "EC_RELATION_CONTRADICTED",
+    "EC_RELATION_EXACT",
+    "EC_RELATION_SHARED_REACTION",
+    "EC_RELATION_UNANNOTATED",
     "EXACT_SIMILARITY_TOLERANCE",
     "SelenzymeClient",
     "SelenzymeSourceUnavailable",
     "_decode_selenzyme_rows",
     "chassis_host_taxon_id",
+    "classify_selenzyme_ec_relation",
     "retrieve_selenzyme_candidates",
     "selenzyme_match_type",
     "selenzyme_target_count",

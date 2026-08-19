@@ -789,7 +789,7 @@ def select_main_enzymes(
             )),
         })
         write_json_atomic(paths["selenzyme_evidence_json"], {
-            "schema_version": "selenzyme_evidence.v3",
+            "schema_version": "selenzyme_evidence.v4",
             "selected_solution_id": solution_id,
             "policy": {
                 "ec_scope": "all_steps_without_verified_ec_rhea_ko_or_literature_candidate",
@@ -801,8 +801,9 @@ def select_main_enzymes(
                 "ec_query_policy": {
                     "candidate_status": "verified_with_risk",
                     "current_uniprot_ec_match_score": 69.0,
-                    "missing_current_uniprot_ec_score": 60.0,
-                    "incompatible_current_uniprot_ec": "rejected",
+                    "shared_reaction_ec_overlap_score": 60.0,
+                    "missing_current_uniprot_ec_score": 55.0,
+                    "unrelated_current_uniprot_ec": "rejected",
                     "unit_similarity_is_not_locked_reaction_exactness": True,
                 },
                 "no_msa": True,

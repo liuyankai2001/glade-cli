@@ -119,6 +119,10 @@ def evaluate_candidate_reaction_fit(
         "selenzyme_ec_risk" in retrieval_strategies
         and "selenzyme_ec_risk" in reaction_confidence
     )
+    selenzyme_ec_relations = set(_split(candidate.get("selenzyme_risk_status")))
+    shared_reaction_ec_overlap = (
+        "shared_reaction_ec_overlap" in selenzyme_ec_relations
+    )
     literature_grade = (
         "a"
         if "literature_grade_a" in reaction_confidence
@@ -186,6 +190,7 @@ def evaluate_candidate_reaction_fit(
         and candidate_declared_ecs
         and requirement_declared_ecs
         and not (candidate_declared_ecs & requirement_declared_ecs)
+        and not (ec_selenzyme_match and shared_reaction_ec_overlap)
     ):
         return {
             "status": REACTION_FIT_REJECTED,
@@ -313,25 +318,48 @@ def evaluate_candidate_reaction_fit(
         current_uniprot_ec_confirmed = bool(
             candidate_declared_ecs & requirement_declared_ecs
         )
+        if current_uniprot_ec_confirmed:
+            ec_relation = "exact_current_uniprot_ec"
+        elif shared_reaction_ec_overlap:
+            ec_relation = "shared_reaction_ec_overlap"
+        elif not candidate_declared_ecs:
+            ec_relation = "unannotated_current_uniprot_ec"
+        else:
+            return {
+                "status": REACTION_FIT_REJECTED,
+                "score": 0.0,
+                "rule_ids": ["selenzyme_candidate_ec_contradicts_requirement"],
+                "evidence": [
+                    "Candidate EC has no exact or shared-reaction relationship with the locked EC"
+                ],
+            }
+        score = {
+            "exact_current_uniprot_ec": 69.0,
+            "shared_reaction_ec_overlap": 60.0,
+            "unannotated_current_uniprot_ec": 55.0,
+        }[ec_relation]
+        relation_evidence = {
+            "exact_current_uniprot_ec": (
+                "Current UniProt annotation contains the locked EC"
+            ),
+            "shared_reaction_ec_overlap": (
+                "Candidate and locked EC numbers are both attached to the same Selenzyme reaction record"
+            ),
+            "unannotated_current_uniprot_ec": (
+                "Current UniProt annotation has no EC number confirming the Selenzyme association"
+            ),
+        }[ec_relation]
         return direction_checked({
             "status": REACTION_FIT_VERIFIED_WITH_RISK,
-            "score": 69.0 if current_uniprot_ec_confirmed else 60.0,
+            "score": score,
             "rule_ids": [
                 "selenzyme_ec_association_requires_target_reaction_review",
-                *(
-                    ["selenzyme_ec_confirmed_by_current_uniprot"]
-                    if current_uniprot_ec_confirmed
-                    else ["selenzyme_ec_unconfirmed_by_current_uniprot"]
-                ),
+                f"selenzyme_ec_relation_{ec_relation}",
             ],
             "evidence": [
                 "SelenzymeRF associates the protein with the locked complete EC",
                 "The EC query uses a representative EC reaction and does not establish the locked substrate/product specificity",
-                *(
-                    ["Current UniProt annotation contains the locked EC"]
-                    if current_uniprot_ec_confirmed
-                    else ["Current UniProt annotation does not contain an EC number confirming the association"]
-                ),
+                relation_evidence,
             ],
         }, supported_rule="selenzyme_ec_candidate_direction_supported")
 
