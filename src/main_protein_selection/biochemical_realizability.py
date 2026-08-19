@@ -115,6 +115,10 @@ def evaluate_candidate_reaction_fit(
         "selenzyme_kegg_risk" in retrieval_strategies
         and "selenzyme_risk" in reaction_confidence
     )
+    ec_selenzyme_match = (
+        "selenzyme_ec_risk" in retrieval_strategies
+        and "selenzyme_ec_risk" in reaction_confidence
+    )
     literature_grade = (
         "a"
         if "literature_grade_a" in reaction_confidence
@@ -126,9 +130,12 @@ def evaluate_candidate_reaction_fit(
         "literature_experimental_activity" in retrieval_strategies
         and bool(literature_grade)
     )
-    candidate_declared_ecs = set(
-        _normalized_ecs(candidate.get("ec_numbers") or candidate.get("ec_number"))
+    candidate_ec_value = (
+        candidate.get("ec_numbers")
+        if "ec_numbers" in candidate
+        else candidate.get("ec_number")
     )
+    candidate_declared_ecs = set(_normalized_ecs(candidate_ec_value))
     requirement_declared_ecs = set(_requirement_ecs(requirement))
     exact_ec_match = (
         status == "complete"
@@ -146,6 +153,7 @@ def evaluate_candidate_reaction_fit(
         and not exact_ko_match
         and not literature_activity_match
         and not exact_selenzyme_match
+        and not ec_selenzyme_match
         and not risk_selenzyme_match
     ):
         return {
@@ -174,7 +182,7 @@ def evaluate_candidate_reaction_fit(
 
     if (
         status == "complete"
-        and (exact_selenzyme_match or risk_selenzyme_match)
+        and (exact_selenzyme_match or ec_selenzyme_match or risk_selenzyme_match)
         and candidate_declared_ecs
         and requirement_declared_ecs
         and not (candidate_declared_ecs & requirement_declared_ecs)
@@ -300,6 +308,32 @@ def evaluate_candidate_reaction_fit(
                 "Candidate has a unit-similarity SelenzymeRF match to the locked KEGG reaction",
             ],
         }, supported_rule="selenzyme_candidate_direction_supported")
+
+    if ec_selenzyme_match:
+        current_uniprot_ec_confirmed = bool(
+            candidate_declared_ecs & requirement_declared_ecs
+        )
+        return direction_checked({
+            "status": REACTION_FIT_VERIFIED_WITH_RISK,
+            "score": 69.0 if current_uniprot_ec_confirmed else 60.0,
+            "rule_ids": [
+                "selenzyme_ec_association_requires_target_reaction_review",
+                *(
+                    ["selenzyme_ec_confirmed_by_current_uniprot"]
+                    if current_uniprot_ec_confirmed
+                    else ["selenzyme_ec_unconfirmed_by_current_uniprot"]
+                ),
+            ],
+            "evidence": [
+                "SelenzymeRF associates the protein with the locked complete EC",
+                "The EC query uses a representative EC reaction and does not establish the locked substrate/product specificity",
+                *(
+                    ["Current UniProt annotation contains the locked EC"]
+                    if current_uniprot_ec_confirmed
+                    else ["Current UniProt annotation does not contain an EC number confirming the association"]
+                ),
+            ],
+        }, supported_rule="selenzyme_ec_candidate_direction_supported")
 
     if risk_selenzyme_match:
         try:

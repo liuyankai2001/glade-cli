@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 
 
 EXACT_SIMILARITY_TOLERANCE = 1e-6
+COMPLETE_EC_PATTERN = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 
 
 class SelenzymeSourceUnavailable(RuntimeError):
@@ -103,6 +105,18 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ec_numbers(value: Any) -> set[str]:
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = str(value or "").replace("|", ";").split(";")
+    return {
+        str(item).strip()
+        for item in values
+        if COMPLETE_EC_PATTERN.fullmatch(str(item).strip())
+    }
 
 
 def _normalize_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
@@ -190,18 +204,21 @@ class SelenzymeClient:
             else f"{self.rest_url}/Query"
         )
 
-    def query_kegg_reaction(
+    def _query_identifier(
         self,
-        reaction_id: str,
+        identifier: str,
         *,
+        database: str,
+        query_type: str,
+        result_field: str,
         host_taxon_id: int,
         targets: int,
     ) -> dict[str, Any]:
-        normalized = str(reaction_id or "").strip().upper()
+        normalized = str(identifier or "").strip()
         if not normalized:
-            raise ValueError("Selenzyme query requires a KEGG reaction ID")
+            raise ValueError(f"Selenzyme {database} query requires an identifier")
         payload = {
-            "db": "kegg",
+            "db": database,
             "rxnid": normalized,
             "targets": int(targets),
             "host": str(int(host_taxon_id)),
@@ -211,14 +228,14 @@ class SelenzymeClient:
         cache_key = hashlib.sha256(
             json.dumps(
                 {
-                    "cache_schema": "selenzyme_client.v2",
+                    "cache_schema": "selenzyme_client.v3",
                     "url": self.query_url,
                     "payload": payload,
                 },
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()[:20]
-        query_id = f"selenzyme_kegg_{normalized}_{cache_key}"
+        query_id = f"selenzyme_{database}_{normalized}_{cache_key}"
         cache_path = self.cache_root / f"{_safe_token(query_id)}.json"
         if cache_path.exists():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -252,10 +269,12 @@ class SelenzymeClient:
                     sort_keys=True,
                 )
                 result = {
-                    "cache_schema": "selenzyme_client.v2",
+                    "cache_schema": "selenzyme_client.v3",
                     "query_id": query_id,
-                    "query_type": "selenzyme_by_kegg_reaction",
-                    "reaction_id": normalized,
+                    "query_type": query_type,
+                    "query_database": database,
+                    "query_value": normalized,
+                    result_field: normalized,
                     "status": "ok" if rows else "no_hit",
                     "request": {"url": self.query_url, "payload": payload},
                     "app": str(envelope.get("app") or ""),
@@ -274,6 +293,46 @@ class SelenzymeClient:
                     time.sleep(SELENZYME_HTTP_CONFIG.sleep_seconds * (2**attempt))
         raise SelenzymeSourceUnavailable(
             f"Selenzyme query failed for {normalized}: {last_error or 'unknown error'}"
+        )
+
+    def query_kegg_reaction(
+        self,
+        reaction_id: str,
+        *,
+        host_taxon_id: int,
+        targets: int,
+    ) -> dict[str, Any]:
+        normalized = str(reaction_id or "").strip().upper()
+        if not normalized:
+            raise ValueError("Selenzyme query requires a KEGG reaction ID")
+        return self._query_identifier(
+            normalized,
+            database="kegg",
+            query_type="selenzyme_by_kegg_reaction",
+            result_field="reaction_id",
+            host_taxon_id=host_taxon_id,
+            targets=targets,
+        )
+
+    def query_ec_number(
+        self,
+        ec_number: str,
+        *,
+        host_taxon_id: int,
+        targets: int,
+    ) -> dict[str, Any]:
+        normalized = str(ec_number or "").strip()
+        if not COMPLETE_EC_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "Selenzyme EC query requires a complete four-level EC number"
+            )
+        return self._query_identifier(
+            normalized,
+            database="ec",
+            query_type="selenzyme_by_ec_number",
+            result_field="ec_number",
+            host_taxon_id=host_taxon_id,
+            targets=targets,
         )
 
 
@@ -295,6 +354,14 @@ def retrieve_selenzyme_candidates(
     query_ids: list[str] = []
     errors: dict[str, str] = {}
     seen_accessions: set[str] = set()
+    query_type = str(query_result.get("query_type") or "")
+    is_ec_query = query_type == "selenzyme_by_ec_number"
+    queried_ec = str(query_result.get("ec_number") or "").strip()
+    required_ecs = _ec_numbers(
+        requirement.get("ec_numbers")
+        or requirement.get("locked_ec_numbers")
+        or requirement.get("locked_enzyme_ecs")
+    )
 
     source_rows = [
         row
@@ -317,6 +384,12 @@ def retrieve_selenzyme_candidates(
         row["rejection_reasons"] = []
         if row["match_type"] == "invalid":
             row["rejection_reasons"] = ["missing_or_invalid_combined_reaction_similarity"]
+            audit_rows.append(row)
+            continue
+        if is_ec_query and queried_ec not in _ec_numbers(row.get("ec_number")):
+            row["rejection_reasons"] = [
+                "selenzyme_ec_query_row_missing_requested_ec"
+            ]
             audit_rows.append(row)
             continue
         if not accession:
@@ -366,15 +439,22 @@ def retrieve_selenzyme_candidates(
             continue
 
         match_type = str(row["match_type"])
+        retrieval_strategy = (
+            "selenzyme_ec_risk"
+            if is_ec_query
+            else f"selenzyme_kegg_{match_type}"
+        )
         candidate = candidate_from_reaction_entry(
             entry,
             chassis_key,
-            retrieval_strategy=f"selenzyme_kegg_{match_type}",
+            retrieval_strategy=retrieval_strategy,
             retrieval_query_id=str(query_result.get("query_id") or ""),
             matched_rhea_ids=[],
             allow_transmembrane=allow_transmembrane,
             function_evidence_reason=(
-                "function: exact SelenzymeRF reaction match"
+                "function: SelenzymeRF EC association; locked substrate specificity unverified"
+                if is_ec_query
+                else "function: exact SelenzymeRF reaction match"
                 if match_type == "exact"
                 else "function: SelenzymeRF similar-reaction candidate"
             ),
@@ -383,8 +463,23 @@ def retrieve_selenzyme_candidates(
             row["rejection_reasons"] = ["uniprot_sequence_safety_filter_failed"]
             audit_rows.append(row)
             continue
+        candidate.retrieval_strategy = retrieval_strategy
+        candidate.retrieval_query_id = str(query_result.get("query_id") or "")
+        candidate_ecs = set(candidate.ec_numbers)
+        if is_ec_query and candidate_ecs and not (candidate_ecs & required_ecs):
+            row["rejection_reasons"] = [
+                "selenzyme_candidate_ec_contradicts_requirement"
+            ]
+            row["candidate_ec_numbers"] = sorted(candidate_ecs)
+            row["required_ec_numbers"] = sorted(required_ecs)
+            audit_rows.append(row)
+            continue
         candidate.reaction_confidence = (
-            "selenzyme_exact" if match_type == "exact" else "selenzyme_risk"
+            "selenzyme_ec_risk"
+            if is_ec_query
+            else "selenzyme_exact"
+            if match_type == "exact"
+            else "selenzyme_risk"
         )
         candidate.direction_support = "selenzyme_direction_neutral_no_known_conflict"
         candidate.selenzyme_rank = int(row.get("rank") or 0) or None
@@ -400,10 +495,31 @@ def retrieve_selenzyme_candidates(
         candidate.selenzyme_direction_preferred = str(
             row.get("direction_preferred") or ""
         )
-        candidate.selenzyme_risk_status = (
-            "" if match_type == "exact" else "combined_reaction_similarity_below_1"
-        )
-        if match_type != "exact":
+        if is_ec_query:
+            current_ec_confirmed = bool(candidate_ecs & required_ecs)
+            candidate.selenzyme_risk_status = (
+                "ec_query_target_reaction_specificity_unverified"
+                if current_ec_confirmed
+                else "ec_query_unconfirmed_by_current_uniprot"
+            )
+            candidate.warnings = list(dict.fromkeys(
+                candidate.warnings
+                + [
+                    "SelenzymeRF EC association does not establish the locked substrate/product reaction",
+                    *(
+                        []
+                        if current_ec_confirmed
+                        else [
+                            "SelenzymeRF EC association is not confirmed by the current UniProt EC annotation"
+                        ]
+                    ),
+                ]
+            ))
+        else:
+            candidate.selenzyme_risk_status = (
+                "" if match_type == "exact" else "combined_reaction_similarity_below_1"
+            )
+        if not is_ec_query and match_type != "exact":
             similarity = float(row["reaction_similarity"])
             candidate.warnings = list(dict.fromkeys(
                 candidate.warnings
@@ -423,6 +539,7 @@ def retrieve_selenzyme_candidates(
 
 
 __all__ = [
+    "COMPLETE_EC_PATTERN",
     "EXACT_SIMILARITY_TOLERANCE",
     "SelenzymeClient",
     "SelenzymeSourceUnavailable",

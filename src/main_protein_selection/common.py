@@ -285,9 +285,13 @@ def candidate_rows_for_requirements(
             if "literature_grade_b" in confidence:
                 return 2
             return 2
-        if any(value.startswith("selenzyme_") for value in strategies):
+        if "selenzyme_kegg_exact" in strategies:
             return 3
-        return 4
+        if "selenzyme_ec_risk" in strategies:
+            return 4
+        if any(value.startswith("selenzyme_") for value in strategies):
+            return 5
+        return 6
 
     rows.sort(key=lambda row: (
         _int(row.get("step_index")),

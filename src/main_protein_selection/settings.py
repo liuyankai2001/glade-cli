@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import dotenv_values
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,12 +28,18 @@ KEGG_REST_BASE_URL = "https://rest.kegg.jp"
 
 GLADE_CONTACT_EMAIL_ENV = "GLADE_CONTACT_EMAIL"
 SELENZYME_REST_URL_ENV = "SELENZYME_REST_URL"
+DEFAULT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
 def env_value(name: str) -> str:
-    """Return one stripped environment value without hidden dotenv loading."""
+    """Return an environment value, falling back to the repository ``.env``."""
 
-    return str(os.getenv(name) or "").strip()
+    process_value = str(os.getenv(name) or "").strip()
+    if process_value:
+        return process_value
+    if not DEFAULT_ENV_PATH.is_file():
+        return ""
+    return str(dotenv_values(DEFAULT_ENV_PATH).get(name) or "").strip()
 
 
 def get_selenzyme_rest_url() -> str:
@@ -45,6 +54,7 @@ def get_selenzyme_rest_url() -> str:
 
 
 __all__ = [
+    "DEFAULT_ENV_PATH",
     "GLADE_CONTACT_EMAIL_ENV",
     "HttpConfig",
     "KEGG_HTTP_CONFIG",

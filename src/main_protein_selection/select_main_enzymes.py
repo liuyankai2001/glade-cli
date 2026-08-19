@@ -57,6 +57,7 @@ from src.main_protein_selection.models import (
 )
 from src.main_protein_selection.provenance import solution_fingerprint
 from src.main_protein_selection.selenzyme_retrieval import (
+    COMPLETE_EC_PATTERN,
     SelenzymeClient,
     SelenzymeSourceUnavailable,
     chassis_host_taxon_id,
@@ -77,6 +78,42 @@ def _ko_requirements_for_retrieval(
         if requirement.get("ko_ids")
         and int(requirement.get("step_index") or 0) not in verified_step_indexes
     ]
+
+
+def _selenzyme_query_specs(requirement: dict[str, Any]) -> list[dict[str, str]]:
+    """Build deterministic KEGG-reaction and complete-EC fallback queries."""
+
+    reaction_id = str(requirement.get("reaction_id") or "").strip().upper()
+    specs: list[dict[str, str]] = []
+    if reaction_id:
+        specs.append({
+            "query_type": "selenzyme_by_kegg_reaction",
+            "query_database": "kegg",
+            "query_value": reaction_id,
+            "reaction_id": reaction_id,
+            "ec_number": "",
+        })
+    if ec_status(requirement) == "complete":
+        seen: set[str] = set()
+        for ec_number in (
+            requirement.get("ec_numbers")
+            or requirement.get("locked_ec_numbers")
+            or []
+        ):
+            normalized = str(ec_number or "").strip()
+            if (
+                COMPLETE_EC_PATTERN.fullmatch(normalized)
+                and normalized not in seen
+            ):
+                seen.add(normalized)
+                specs.append({
+                    "query_type": "selenzyme_by_ec_number",
+                    "query_database": "ec",
+                    "query_value": normalized,
+                    "reaction_id": reaction_id,
+                    "ec_number": normalized,
+                })
+    return specs
 
 
 def _candidates_for_direction_analysis(
@@ -254,7 +291,7 @@ def select_main_enzymes(
         literature_candidate_count = 0
         selenzyme_evidence: list[dict] = []
         selenzyme_query_ids: list[str] = []
-        selenzyme_results_by_reaction: dict[str, dict] = {}
+        selenzyme_results_by_query: dict[tuple[str, str], dict] = {}
         uniprot_entry_cache: dict[str, dict | None] = {}
         selenzyme_source_unavailable = False
         selenzyme_circuit_error = ""
@@ -502,91 +539,149 @@ def select_main_enzymes(
                 step_index = int(requirement.get("step_index") or 0)
                 annotation_status = ec_status(requirement)
                 reaction_id = str(requirement.get("reaction_id") or "").strip().upper()
-                if selenzyme_source_unavailable:
+                query_specs = _selenzyme_query_specs(requirement)
+                if not query_specs:
                     selenzyme_evidence.append({
                         "step_index": step_index,
                         "reaction_id": reaction_id,
+                        "ec_number": "",
                         "ec_status": annotation_status,
-                        "source_status": "source_unavailable",
-                        "query_id": f"selenzyme_kegg_{reaction_id}",
-                        "rows": [],
-                        "error": selenzyme_circuit_error,
-                        "circuit_open": True,
-                    })
-                    continue
-                if not reaction_id:
-                    selenzyme_evidence.append({
-                        "step_index": step_index,
-                        "reaction_id": "",
-                        "ec_status": annotation_status,
-                        "source_status": "no_reaction_id",
+                        "query_type": "",
+                        "query_database": "",
+                        "query_value": "",
+                        "source_status": "no_query_input",
                         "query_id": "",
                         "rows": [],
-                        "error": "Missing KEGG reaction ID",
+                        "error": "Missing KEGG reaction ID and complete EC number",
                         "circuit_open": False,
                     })
                     continue
-                try:
-                    if selenzyme_client is None:
-                        raise SelenzymeSourceUnavailable(
-                            selenzyme_circuit_error
-                            or "Selenzyme client is unavailable"
+                if selenzyme_source_unavailable:
+                    for spec in query_specs:
+                        selenzyme_evidence.append({
+                            "step_index": step_index,
+                            "reaction_id": reaction_id,
+                            "ec_number": spec["ec_number"],
+                            "ec_status": annotation_status,
+                            "query_type": spec["query_type"],
+                            "query_database": spec["query_database"],
+                            "query_value": spec["query_value"],
+                            "source_status": "source_unavailable",
+                            "query_id": (
+                                f"selenzyme_{spec['query_database']}_"
+                                f"{spec['query_value']}"
+                            ),
+                            "rows": [],
+                            "error": selenzyme_circuit_error,
+                            "circuit_open": True,
+                        })
+                    continue
+                for spec in query_specs:
+                    if selenzyme_source_unavailable:
+                        selenzyme_evidence.append({
+                            "step_index": step_index,
+                            "reaction_id": reaction_id,
+                            "ec_number": spec["ec_number"],
+                            "ec_status": annotation_status,
+                            "query_type": spec["query_type"],
+                            "query_database": spec["query_database"],
+                            "query_value": spec["query_value"],
+                            "source_status": "source_unavailable",
+                            "query_id": (
+                                f"selenzyme_{spec['query_database']}_"
+                                f"{spec['query_value']}"
+                            ),
+                            "rows": [],
+                            "error": selenzyme_circuit_error,
+                            "circuit_open": True,
+                        })
+                        continue
+                    try:
+                        if selenzyme_client is None:
+                            raise SelenzymeSourceUnavailable(
+                                selenzyme_circuit_error
+                                or "Selenzyme client is unavailable"
+                            )
+                        query_key = (
+                            spec["query_database"],
+                            spec["query_value"],
                         )
-                    if reaction_id not in selenzyme_results_by_reaction:
-                        selenzyme_results_by_reaction[reaction_id] = (
-                            selenzyme_client.query_kegg_reaction(
-                                reaction_id,
-                                host_taxon_id=host_taxon_id,
-                                targets=targets,
+                        if query_key not in selenzyme_results_by_query:
+                            if spec["query_database"] == "ec":
+                                query_result = selenzyme_client.query_ec_number(
+                                    spec["query_value"],
+                                    host_taxon_id=host_taxon_id,
+                                    targets=targets,
+                                )
+                            else:
+                                query_result = selenzyme_client.query_kegg_reaction(
+                                    spec["query_value"],
+                                    host_taxon_id=host_taxon_id,
+                                    targets=targets,
+                                )
+                            selenzyme_results_by_query[query_key] = query_result
+                        query_result = selenzyme_results_by_query[query_key]
+                        reaction_candidates, audit_rows, query_ids, errors = (
+                            retrieve_selenzyme_candidates(
+                                requirement,
+                                query_result,
+                                chassis_key,
+                                top_n=top_n,
+                                allow_transmembrane=allow_transmembrane,
+                                session=session,
+                                entry_cache=uniprot_entry_cache,
                             )
                         )
-                    query_result = selenzyme_results_by_reaction[reaction_id]
-                    reaction_candidates, audit_rows, query_ids, errors = (
-                        retrieve_selenzyme_candidates(
-                            requirement,
-                            query_result,
-                            chassis_key,
-                            top_n=top_n,
-                            allow_transmembrane=allow_transmembrane,
-                            session=session,
-                            entry_cache=uniprot_entry_cache,
+                        candidates_by_step[step_index].extend(reaction_candidates)
+                        selenzyme_query_ids.append(
+                            str(query_result.get("query_id") or "")
                         )
-                    )
-                    candidates_by_step[step_index].extend(reaction_candidates)
-                    selenzyme_query_ids.append(str(query_result.get("query_id") or ""))
-                    selenzyme_query_ids.extend(query_ids)
-                    query_errors.update(errors)
-                    selenzyme_evidence.append({
-                        "step_index": step_index,
-                        "reaction_id": reaction_id,
-                        "direction": str(requirement.get("direction") or ""),
-                        "ec_status": annotation_status,
-                        "source_status": str(query_result.get("status") or ""),
-                        "query_id": str(query_result.get("query_id") or ""),
-                        "app": str(query_result.get("app") or ""),
-                        "version": str(query_result.get("version") or ""),
-                        "cache_hit": bool(query_result.get("cache_hit")),
-                        "response_sha256": str(query_result.get("response_sha256") or ""),
-                        "rows": audit_rows,
-                        "error": "",
-                        "circuit_open": False,
-                    })
-                except SelenzymeSourceUnavailable as exc:
-                    selenzyme_source_unavailable = True
-                    selenzyme_circuit_error = str(exc)
-                    query_id = f"selenzyme_kegg_{reaction_id}"
-                    query_errors[query_id] = str(exc)
-                    selenzyme_evidence.append({
-                        "step_index": step_index,
-                        "reaction_id": reaction_id,
-                        "direction": str(requirement.get("direction") or ""),
-                        "ec_status": annotation_status,
-                        "source_status": "source_unavailable",
-                        "query_id": query_id,
-                        "rows": [],
-                        "error": str(exc),
-                        "circuit_open": True,
-                    })
+                        selenzyme_query_ids.extend(query_ids)
+                        query_errors.update(errors)
+                        selenzyme_evidence.append({
+                            "step_index": step_index,
+                            "reaction_id": reaction_id,
+                            "ec_number": spec["ec_number"],
+                            "direction": str(requirement.get("direction") or ""),
+                            "ec_status": annotation_status,
+                            "query_type": spec["query_type"],
+                            "query_database": spec["query_database"],
+                            "query_value": spec["query_value"],
+                            "source_status": str(query_result.get("status") or ""),
+                            "query_id": str(query_result.get("query_id") or ""),
+                            "app": str(query_result.get("app") or ""),
+                            "version": str(query_result.get("version") or ""),
+                            "cache_hit": bool(query_result.get("cache_hit")),
+                            "response_sha256": str(
+                                query_result.get("response_sha256") or ""
+                            ),
+                            "rows": audit_rows,
+                            "error": "",
+                            "circuit_open": False,
+                        })
+                    except SelenzymeSourceUnavailable as exc:
+                        selenzyme_source_unavailable = True
+                        selenzyme_circuit_error = str(exc)
+                        query_id = (
+                            f"selenzyme_{spec['query_database']}_"
+                            f"{spec['query_value']}"
+                        )
+                        query_errors[query_id] = str(exc)
+                        selenzyme_evidence.append({
+                            "step_index": step_index,
+                            "reaction_id": reaction_id,
+                            "ec_number": spec["ec_number"],
+                            "direction": str(requirement.get("direction") or ""),
+                            "ec_status": annotation_status,
+                            "query_type": spec["query_type"],
+                            "query_database": spec["query_database"],
+                            "query_value": spec["query_value"],
+                            "source_status": "source_unavailable",
+                            "query_id": query_id,
+                            "rows": [],
+                            "error": str(exc),
+                            "circuit_open": True,
+                        })
         else:
             literature_result = run_literature_activity_search(
                 requirements,
@@ -694,15 +789,22 @@ def select_main_enzymes(
             )),
         })
         write_json_atomic(paths["selenzyme_evidence_json"], {
-            "schema_version": "selenzyme_evidence.v2",
+            "schema_version": "selenzyme_evidence.v3",
             "selected_solution_id": solution_id,
             "policy": {
                 "ec_scope": "all_steps_without_verified_ec_rhea_ko_or_literature_candidate",
-                "auto_accept": "valid_combined_reaction_similarity",
-                "exact_match": "combined_reaction_similarity_equal_1",
-                "risk_fallback": "combined_reaction_similarity_below_1_no_floor",
+                "auto_accept": "kegg_query_valid_combined_reaction_similarity",
+                "exact_match": "kegg_query_combined_reaction_similarity_equal_1",
+                "risk_fallback": "kegg_similarity_or_complete_ec_association_requires_review",
                 "exact_similarity_tolerance": 1e-6,
-                "query_input": "kegg_reaction_id_only",
+                "query_input": "kegg_reaction_id_and_complete_ec_numbers",
+                "ec_query_policy": {
+                    "candidate_status": "verified_with_risk",
+                    "current_uniprot_ec_match_score": 69.0,
+                    "missing_current_uniprot_ec_score": 60.0,
+                    "incompatible_current_uniprot_ec": "rejected",
+                    "unit_similarity_is_not_locked_reaction_exactness": True,
+                },
                 "no_msa": True,
             },
             "evidence": selenzyme_evidence,
@@ -764,7 +866,14 @@ def select_main_enzymes(
             "selenzyme_risk_candidate_count": sum(
                 1
                 for row in step_rows
-                if str(row.get("reaction_confidence") or "") == "selenzyme_risk"
+                if str(row.get("reaction_confidence") or "")
+                in {"selenzyme_risk", "selenzyme_ec_risk"}
+            ),
+            "selenzyme_ec_risk_candidate_count": sum(
+                1
+                for row in step_rows
+                if str(row.get("reaction_confidence") or "")
+                == "selenzyme_ec_risk"
             ),
             "route_repair_request_count": len(route_repair_requests),
             "uncovered_step_indexes": sorted(expected_steps - covered_steps),
