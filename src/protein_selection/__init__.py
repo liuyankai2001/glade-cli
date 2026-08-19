@@ -35,6 +35,10 @@ _PUBLIC_EXPORTS = {
         "src.protein_selection.pipeline",
         "auxiliary_protein_result_path",
     ),
+    "auxiliary_protein_input_fingerprint": (
+        "src.protein_selection.pipeline",
+        "auxiliary_protein_input_fingerprint",
+    ),
     "execute_research_units": (
         "src.protein_selection.pipeline",
         "execute_research_units",

@@ -186,7 +186,7 @@ def _unit_result_from_state(
         )
 
 
-def _input_fingerprint(
+def auxiliary_protein_input_fingerprint(
     manifest: Mapping[str, Any],
     units: list[MainEnzymeResearchUnit],
     research_mode: ResearchMode,
@@ -359,7 +359,11 @@ def _combination_result(
         "main_enzyme_selection",
     )
     source = _mapping(selection.get("source"), "main_enzyme_selection.source")
-    input_fingerprint = _input_fingerprint(manifest, units, research_mode)
+    input_fingerprint = auxiliary_protein_input_fingerprint(
+        manifest,
+        units,
+        research_mode,
+    )
     aggregate = _aggregate_accessions(unit_results)
     main_accessions = [item.accession for item in unit_results]
     status = _combination_status(unit_results)
@@ -804,6 +808,7 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
 __all__ = [
     "AUXILIARY_PROTEIN_RESULT_FILENAME",
     "UnitResearchRunner",
+    "auxiliary_protein_input_fingerprint",
     "auxiliary_protein_result_path",
     "execute_research_units",
     "run_auxiliary_protein_pipeline",

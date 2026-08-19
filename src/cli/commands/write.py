@@ -1,8 +1,14 @@
+from src.write_manifest.auxiliary_protein import (
+    run_write_auxiliary_protein_research,
+)
 from src.write_manifest.main_enzyme import run_write_main_enzyme_set
 from src.write_manifest.solution import run_write_solution
 
 
 def run_write(config):
+    if bool(getattr(config, "auxiliary_protein", False)):
+        return run_write_auxiliary_protein_research(config)
+
     if getattr(config, "main_enzyme_set", None) is not None:
         return run_write_main_enzyme_set(config)
 
@@ -22,6 +28,11 @@ def register(subparsers):
 
     action.add_argument("--solution", type=int, metavar="N")
     action.add_argument("--main-enzyme-set", type=int, metavar="N")
+    action.add_argument(
+        "--auxiliary-protein",
+        action="store_true",
+        help="将当前主酶组合的全部辅助蛋白研究结果写入manifest",
+    )
 
     p.add_argument("-i", "--input", required=True)
     p.add_argument("-d", "--depth", type=int, default=0)
