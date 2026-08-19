@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 import json
@@ -46,6 +47,29 @@ UnitResearchRunner = Callable[
     [MainEnzymeResearchUnit],
     Awaitable[Mapping[str, Any]],
 ]
+
+
+def _research_mode_from_config(config: Any) -> ResearchMode:
+    value = str(getattr(config, "research_mode", "balanced") or "").strip()
+    normalized = value.lower()
+    if normalized not in {"balanced", "deep"}:
+        raise ValueError(
+            "research_mode must be 'balanced' or 'deep', got "
+            f"{value or 'empty'}"
+        )
+    return normalized  # type: ignore[return-value]
+
+
+def _build_cli_model(root_dir: str | Path) -> BaseChatModel:
+    """Load optional CLI model dependencies only when research is requested."""
+
+    from src.protein_selection.config import (
+        build_chat_model,
+        load_model_settings,
+    )
+
+    env_path = Path(root_dir).expanduser().resolve(strict=False) / ".env"
+    return build_chat_model(load_model_settings(env_path))
 
 
 def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
@@ -579,11 +603,63 @@ async def run_auxiliary_protein_pipeline(
     return result
 
 
+def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
+    """Synchronously adapt the async pipeline to this project's CLI config."""
+
+    research_mode = _research_mode_from_config(config)
+    manifest_path = Path(config.manifest_output_path)
+    output_dir = Path(config.project_output_path) / "protein_selection"
+    cache_dir = Path(config.cache_dir) / "protein_selection"
+    model = _build_cli_model(config.root_dir)
+    result = asyncio.run(
+        run_auxiliary_protein_pipeline(
+            manifest_path,
+            model=model,
+            cache_dir=cache_dir,
+            output_dir=output_dir,
+            research_mode=research_mode,
+            iml1515_path=Path(config.model_path),
+            refresh_cache=bool(getattr(config, "refresh_cache", False)),
+        )
+    )
+    status_counts = {
+        status: sum(
+            item.status == status for item in result.main_enzyme_results
+        )
+        for status in (
+            "complete",
+            "review_required",
+            "blocked",
+            "service_error",
+        )
+    }
+    summary = {
+        "运行成功": result.status != "service_error",
+        "整体状态": result.status,
+        "研究结果完整": result.can_advance,
+        "主酶研究数量": len(result.main_enzyme_results),
+        "完整结论数量": status_counts["complete"],
+        "待复核数量": status_counts["review_required"],
+        "阻断数量": status_counts["blocked"],
+        "服务失败数量": status_counts["service_error"],
+        "必需辅助蛋白": result.required_auxiliary_protein_accessions,
+        "推荐辅助蛋白": result.recommended_auxiliary_protein_accessions,
+        "需要导入的辅助蛋白": result.auxiliary_proteins_to_introduce,
+        "阻断原因": result.blocking_reasons,
+        "结果文件": str(
+            auxiliary_protein_result_path(manifest_path, output_dir)
+        ),
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return result.model_dump(mode="json")
+
+
 __all__ = [
     "AUXILIARY_PROTEIN_RESULT_FILENAME",
     "UnitResearchRunner",
     "auxiliary_protein_result_path",
     "execute_research_units",
     "run_auxiliary_protein_pipeline",
+    "run_auxiliary_protein_research",
     "write_auxiliary_protein_result",
 ]

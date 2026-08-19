@@ -35,6 +35,10 @@ _PUBLIC_EXPORTS = {
         "src.protein_selection.pipeline",
         "run_auxiliary_protein_pipeline",
     ),
+    "run_auxiliary_protein_research": (
+        "src.protein_selection.pipeline",
+        "run_auxiliary_protein_research",
+    ),
     "write_auxiliary_protein_result": (
         "src.protein_selection.pipeline",
         "write_auxiliary_protein_result",
