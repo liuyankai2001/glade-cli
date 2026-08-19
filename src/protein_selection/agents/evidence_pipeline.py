@@ -320,6 +320,8 @@ class ResearchToolRunner:
             await self._ledger.complete(cache_key, cached)
             if self._stats is not None:
                 self._stats.cache_hits += 1
+                if _content_is_explicit_empty(call.tool_name, cached.content):
+                    self._stats.empty_results += 1
             return cached
 
         timeout_seconds = self._timeout_for(call)
@@ -357,6 +359,11 @@ class ResearchToolRunner:
                     call.tool_name,
                     content,
                 )
+                if (
+                    self._stats is not None
+                    and _content_is_explicit_empty(call.tool_name, content)
+                ):
+                    self._stats.empty_results += 1
                 original_char_count = len(content)
                 truncated = original_char_count > self._max_content_chars
                 bounded_content = content[: self._max_content_chars]
@@ -413,8 +420,13 @@ class ResearchToolRunner:
                 "tool retry loop ended unexpectedly",
                 attempt_count=self._max_attempts,
             )
-        if record.status in {"error", "timeout"} and self._stats is not None:
-            self._stats.failed_calls += 1
+        if self._stats is not None:
+            if record.status == "timeout":
+                self._stats.failed_calls += 1
+                self._stats.timeout_calls += 1
+            elif record.status == "error":
+                self._stats.failed_calls += 1
+                self._stats.source_error_calls += 1
 
         await self._ledger.complete(cache_key, record)
         return record
@@ -3040,6 +3052,7 @@ def _is_explicit_not_found(message: str) -> bool:
     return bool(
         re.search(
             r"(?:\bnot found\b|\bno results?(?: found)?\b|"
+            r"\bno\s+[a-z0-9_.-]+\s+mapping\s+found\b|"
             r"\bno such (?:entry|record|identifier)\b|"
             r"\bunknown (?:accession|identifier)\b|\b404\b)",
             message,
@@ -3109,6 +3122,8 @@ def _verified_hint_from_exact_record(
 
 
 def _content_is_explicit_empty(tool_name: str, content: str) -> bool:
+    if _is_explicit_empty_tool_message(tool_name, content):
+        return True
     payload = _json_value(content)
     if payload is None:
         return False
@@ -3528,14 +3543,7 @@ def _tool_result_error(
     Such values must never enter the ledger as successful biological evidence.
     """
 
-    if (
-        tool_name == "KEGG_link_entries"
-        and re.search(
-            r"\bno\s+[a-z0-9_]+\s+entries\s+linked\s+to\s+ko:K\d{5}\b",
-            content,
-            re.IGNORECASE,
-        )
-    ):
+    if _is_explicit_empty_tool_message(tool_name, content):
         # ToolUniverse 1.4.1 reports a genuine empty KEGG mapping with an
         # error-shaped envelope.  It is a successful, auditable empty result,
         # unlike connection/SSL/server failures.
@@ -3593,6 +3601,31 @@ def _tool_result_error(
     ):
         return content
     return None
+
+
+def _is_explicit_empty_tool_message(
+    tool_name: str | None,
+    content: str,
+) -> bool:
+    """Recognize narrowly defined empty lookups returned as MCP errors."""
+
+    if tool_name == "KEGG_link_entries":
+        return bool(
+            re.search(
+                r"\bno\s+[a-z0-9_]+\s+entries\s+linked\s+to\s+ko:K\d{5}\b",
+                content,
+                re.IGNORECASE,
+            )
+        )
+    if tool_name == "KEGG_convert_ids":
+        return bool(
+            re.search(
+                r"\bno\s+uniprot\s+mapping\s+found\s+for\b",
+                content,
+                re.IGNORECASE,
+            )
+        )
+    return False
 
 
 def _extract_urls(content: str) -> list[str]:

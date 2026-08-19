@@ -962,14 +962,22 @@ class BalancedResearchAgent:
                 self._database_agent,
                 database_task,
                 BioDatabaseResearchResult,
-                timeout_seconds=100,
+                timeout_seconds=self._policy.analysis_timeout_for(
+                    "bio_database"
+                ),
+                max_attempts=self._policy.analysis_max_attempts,
+                stats=self._retrieval_stats,
             ),
             _invoke_bounded_researcher(
                 "literature_researcher",
                 self._literature_agent,
                 literature_task,
                 LiteratureResearchResult,
-                timeout_seconds=100,
+                timeout_seconds=self._policy.analysis_timeout_for(
+                    "literature"
+                ),
+                max_attempts=self._policy.analysis_max_attempts,
+                stats=self._retrieval_stats,
             ),
         )
 
@@ -1003,7 +1011,11 @@ class BalancedResearchAgent:
                             "只解析仍未解决的官方标识符或来源冲突，不重复宽泛检索。",
                         ),
                         WebResearchResult,
-                        timeout_seconds=60,
+                        timeout_seconds=self._policy.analysis_timeout_for(
+                            "web"
+                        ),
+                        max_attempts=self._policy.analysis_max_attempts,
+                        stats=self._retrieval_stats,
                     ),
                 )
             )
@@ -1026,7 +1038,11 @@ class BalancedResearchAgent:
                             "只核验给定依赖角色在 MG1655 中是否已有兼容蛋白。",
                         ),
                         HostCompatibilityResearchResult,
-                        timeout_seconds=100,
+                        timeout_seconds=self._policy.analysis_timeout_for(
+                            "host_compatibility"
+                        ),
+                        max_attempts=self._policy.analysis_max_attempts,
+                        stats=self._retrieval_stats,
                     ),
                 )
             )
@@ -1679,9 +1695,11 @@ class BalancedResearchAgent:
                         ),
                     ),
                     LiteratureResearchResult,
-                    timeout_seconds=(
-                        45 if self._research_mode == "balanced" else 75
+                    timeout_seconds=self._policy.analysis_timeout_for(
+                        "literature"
                     ),
+                    max_attempts=self._policy.analysis_max_attempts,
+                    stats=self._retrieval_stats,
                 )
         literature_run = _ground_researcher_run(
             literature_run,
@@ -1764,7 +1782,9 @@ class BalancedResearchAgent:
                     "只解决仍未确认的标识符或来源冲突；普通网页只能作为线索。",
                 ),
                 WebResearchResult,
-                timeout_seconds=45 if self._research_mode == "balanced" else 90,
+                timeout_seconds=self._policy.analysis_timeout_for("web"),
+                max_attempts=self._policy.analysis_max_attempts,
+                stats=self._retrieval_stats,
             )
             followup_results["web"] = _ground_researcher_run(
                 web_run,
@@ -1882,9 +1902,11 @@ class BalancedResearchAgent:
                         "只核验给定角色在 MG1655 中是否有兼容蛋白。",
                     ),
                     HostCompatibilityResearchResult,
-                    timeout_seconds=(
-                        60 if self._research_mode == "balanced" else 120
+                    timeout_seconds=self._policy.analysis_timeout_for(
+                        "host_compatibility"
                     ),
+                    max_attempts=self._policy.analysis_max_attempts,
+                    stats=self._retrieval_stats,
                 )
             followup_results["host"] = _ground_researcher_run(
                 host_run,
@@ -2027,42 +2049,65 @@ class BalancedResearchAgent:
         }
         stage_started = time.perf_counter()
         try:
-            final_timeout = 60 if self._research_mode == "balanced" else 100
+            final_timeout = self._policy.analysis_timeout_for("supervisor")
             emit_progress(
                 "final_synthesis",
                 "started",
                 "现有报告需要结构化模型完成最终兜底裁决",
             )
-            async with progress_heartbeat(
-                "final_synthesis",
-                "最终模型仍在处理",
-                timeout_seconds=final_timeout,
-            ):
-                final_raw = await asyncio.wait_for(
-                    self._finalizer.ainvoke(
-                        {
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        "请依据以下只读证据包完成裁决。不得补充证据。\n\n"
-                                        + json.dumps(
-                                            bundle,
-                                            ensure_ascii=False,
-                                        )
-                                    ),
-                                }
-                            ]
-                        }
-                    ),
-                    timeout=final_timeout,
+            final_input = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "请依据以下只读证据包完成裁决。不得补充证据。\n\n"
+                            + json.dumps(bundle, ensure_ascii=False)
+                        ),
+                    }
+                ]
+            }
+            structured: MainResearchResult | None = None
+            last_error: Exception | None = None
+            for attempt in range(1, self._policy.analysis_max_attempts + 1):
+                try:
+                    async with progress_heartbeat(
+                        "final_synthesis",
+                        "最终模型仍在处理",
+                        timeout_seconds=final_timeout,
+                    ):
+                        final_raw = await asyncio.wait_for(
+                            self._finalizer.ainvoke(final_input),
+                            timeout=final_timeout,
+                        )
+                    if not isinstance(final_raw, Mapping):
+                        raise TypeError(
+                            "finalizer returned a non-mapping result"
+                        )
+                    structured = _extract_structured_response(
+                        final_raw,
+                        MainResearchResult,
+                    )
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if (
+                        _is_retryable_researcher_error(exc)
+                        and attempt < self._policy.analysis_max_attempts
+                    ):
+                        self._retrieval_stats.analysis_retries += 1
+                        emit_progress(
+                            "final_synthesis",
+                            "warning",
+                            "最终模型未产生有效结构，正在进行一次有限重试",
+                        )
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                    self._retrieval_stats.analysis_failures += 1
+                    raise
+            if structured is None:
+                raise last_error or RuntimeError(
+                    "finalizer retry loop ended unexpectedly"
                 )
-            if not isinstance(final_raw, Mapping):
-                raise TypeError("finalizer returned a non-mapping result")
-            structured = _extract_structured_response(
-                final_raw,
-                MainResearchResult,
-            )
             require_exact_reaction_scope(
                 structured.reaction_ids,
                 context_reaction_ids(context),
@@ -6747,6 +6792,8 @@ async def _invoke_bounded_researcher(
     schema: type[Any],
     *,
     timeout_seconds: float,
+    max_attempts: int = 1,
+    stats: RetrievalStats | None = None,
 ) -> dict[str, Any]:
     progress_stage = _researcher_progress_stage(researcher)
     display_name = {
@@ -6760,43 +6807,86 @@ async def _invoke_bounded_researcher(
         "started",
         f"正在运行{display_name}结构化分析",
     )
-    try:
-        async with progress_heartbeat(
-            progress_stage,
-            f"{display_name}结构化分析仍在处理",
-            timeout_seconds=timeout_seconds,
-        ):
-            raw = await asyncio.wait_for(
-                agent.ainvoke(task_input),
-                timeout=timeout_seconds,
+    attempts = max(1, int(max_attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            async with progress_heartbeat(
+                progress_stage,
+                f"{display_name}结构化分析仍在处理",
+                timeout_seconds=timeout_seconds,
+            ):
+                raw = await asyncio.wait_for(
+                    agent.ainvoke(task_input),
+                    timeout=timeout_seconds,
+                )
+            if not isinstance(raw, Mapping):
+                raise TypeError("researcher returned a non-mapping result")
+            report = _extract_structured_response(raw, schema)
+            emit_progress(
+                progress_stage,
+                "completed",
+                f"{display_name}结构化分析完成",
             )
-        if not isinstance(raw, Mapping):
-            raise TypeError("researcher returned a non-mapping result")
-        report = _extract_structured_response(raw, schema)
-        emit_progress(
-            progress_stage,
-            "completed",
-            f"{display_name}结构化分析完成",
+            return {"researcher": researcher, "report": report, "error": None}
+        except Exception as exc:
+            retryable = _is_retryable_researcher_error(exc)
+            if retryable and attempt < attempts:
+                if stats is not None:
+                    stats.analysis_retries += 1
+                emit_progress(
+                    progress_stage,
+                    "warning",
+                    (
+                        f"{display_name}结构化分析第 {attempt} 次失败，"
+                        "正在进行一次有限重试"
+                    ),
+                )
+                await asyncio.sleep(0.5 * attempt)
+                continue
+
+            if stats is not None:
+                stats.analysis_failures += 1
+            if isinstance(exc, TimeoutError):
+                error = f"timed out after {timeout_seconds:g} seconds"
+                message = (
+                    f"{display_name}分析达到 {timeout_seconds:g} 秒上限，"
+                    "使用已有证据继续"
+                )
+            else:
+                error = str(exc)
+                message = (
+                    f"{display_name}分析未产生有效结构："
+                    f"{type(exc).__name__}"
+                )
+            emit_progress(progress_stage, "warning", message)
+            return {"researcher": researcher, "report": None, "error": error}
+
+    raise RuntimeError("researcher retry loop ended unexpectedly")
+
+
+def _is_retryable_researcher_error(exc: Exception) -> bool:
+    """Retry only transient transport or malformed model-output failures."""
+
+    if isinstance(exc, (TimeoutError, TypeError, ValueError)):
+        return True
+    error_name = type(exc).__name__.casefold()
+    message = str(exc).casefold()
+    return any(
+        marker in error_name or marker in message
+        for marker in (
+            "connection",
+            "timeout",
+            "rate limit",
+            "ratelimit",
+            "temporar",
+            "service unavailable",
+            "server error",
+            "429",
+            "502",
+            "503",
+            "504",
         )
-        return {"researcher": researcher, "report": report, "error": None}
-    except TimeoutError:
-        emit_progress(
-            progress_stage,
-            "warning",
-            f"{display_name}分析达到 {timeout_seconds:g} 秒上限，使用已有证据继续",
-        )
-        return {
-            "researcher": researcher,
-            "report": None,
-            "error": f"timed out after {timeout_seconds:g} seconds",
-        }
-    except Exception as exc:
-        emit_progress(
-            progress_stage,
-            "warning",
-            f"{display_name}分析未产生有效结构：{type(exc).__name__}",
-        )
-        return {"researcher": researcher, "report": None, "error": str(exc)}
+    )
 
 
 def _extract_structured_response(
@@ -8673,18 +8763,13 @@ def _deduplicate_retrieval_tools(
 
 
 @asynccontextmanager
-async def open_main_research_agent(
+async def open_main_research_tools(
     *,
-    model: str | BaseChatModel,
-    subagent_model: str | BaseChatModel | None = None,
     tooluniverse_config: ToolUniverseConfig | None = None,
     web_config: OpenWebSearchConfig | None = None,
-    iml1515_path: str | Path = DEFAULT_IML1515_PATH,
     research_mode: ResearchMode = "balanced",
-    response_cache: PersistentTTLCache | None = None,
-    retrieval_stats: RetrievalStats | None = None,
-) -> AsyncIterator[CompiledStateGraph | BalancedResearchAgent]:
-    """Keep both MCP sessions alive while one research query runs."""
+) -> AsyncIterator[ResearchMCPTools]:
+    """Open one reusable MCP runtime for an entire research task."""
 
     policy = get_research_policy(research_mode)
     effective_web_config = web_config or OpenWebSearchConfig(
@@ -8716,23 +8801,45 @@ async def open_main_research_agent(
             "completed",
             "检索服务已就绪",
         )
+        try:
+            yield research_tools
+        finally:
+            emit_progress(
+                "research_init",
+                "info",
+                "正在关闭本次任务的检索会话",
+                verbose_only=True,
+            )
+
+
+@asynccontextmanager
+async def open_main_research_agent(
+    *,
+    model: str | BaseChatModel,
+    subagent_model: str | BaseChatModel | None = None,
+    tooluniverse_config: ToolUniverseConfig | None = None,
+    web_config: OpenWebSearchConfig | None = None,
+    iml1515_path: str | Path = DEFAULT_IML1515_PATH,
+    research_mode: ResearchMode = "balanced",
+    response_cache: PersistentTTLCache | None = None,
+    retrieval_stats: RetrievalStats | None = None,
+) -> AsyncIterator[CompiledStateGraph | BalancedResearchAgent]:
+    """Keep both MCP sessions alive while one research query runs."""
+
+    async with open_main_research_tools(
+        tooluniverse_config=tooluniverse_config,
+        web_config=web_config,
+        research_mode=research_mode,
+    ) as research_tools:
         agent = await build_main_research_agent(
             model=model,
             subagent_model=subagent_model,
             tooluniverse_config=tooluniverse_config,
-            web_config=effective_web_config,
+            web_config=web_config,
             iml1515_path=iml1515_path,
             research_tools=research_tools,
             research_mode=research_mode,
             response_cache=response_cache,
             retrieval_stats=retrieval_stats,
         )
-        try:
-            yield agent
-        finally:
-            emit_progress(
-                "research_init",
-                "info",
-                "正在关闭本次查询的检索会话",
-                verbose_only=True,
-            )
+        yield agent

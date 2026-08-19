@@ -51,6 +51,10 @@ class ResearchPolicy:
     web_search_mode: Literal["request", "auto", "playwright"]
     playwright_navigation_timeout_ms: int
     budgets: Mapping[ResearcherRole, ResearchBudget] | None
+    analysis_timeouts: Mapping[ResearcherRole, float] = field(
+        default_factory=dict
+    )
+    analysis_max_attempts: int = 1
 
     def budget_for(self, role: ResearcherRole) -> ResearchBudget | None:
         """Return the role budget, or no budget in deep mode."""
@@ -59,13 +63,18 @@ class ResearchPolicy:
             return None
         return self.budgets[role]
 
+    def analysis_timeout_for(self, role: ResearcherRole) -> float:
+        """Return the bounded structured-analysis timeout for one role."""
+
+        return self.analysis_timeouts.get(role, self.model_timeout_seconds)
+
 
 BALANCED_RESEARCH_POLICY = ResearchPolicy(
     mode="balanced",
     workflow_timeout_seconds=300,
     supervisor_max_tokens=4096,
     worker_max_tokens=3200,
-    model_timeout_seconds=60,
+    model_timeout_seconds=90,
     web_search_mode="request",
     playwright_navigation_timeout_ms=8000,
     budgets={
@@ -86,6 +95,8 @@ BALANCED_RESEARCH_POLICY = ResearchPolicy(
             per_tool_timeouts={
                 "intact_search_interactions": 12,
                 "intact_get_interactions": 12,
+                "ComplexPortal_search_complexes": 30,
+                "ComplexPortal_get_complex": 30,
             },
             grouped_tool_limits=(
                 (
@@ -135,6 +146,14 @@ BALANCED_RESEARCH_POLICY = ResearchPolicy(
             default_tool_timeout_seconds=30,
         ),
     },
+    analysis_timeouts={
+        "supervisor": 90,
+        "bio_database": 90,
+        "literature": 90,
+        "web": 60,
+        "host_compatibility": 90,
+    },
+    analysis_max_attempts=2,
 )
 
 
@@ -143,13 +162,21 @@ DEEP_RESEARCH_POLICY = ResearchPolicy(
     workflow_timeout_seconds=900,
     supervisor_max_tokens=4096,
     worker_max_tokens=4096,
-    model_timeout_seconds=90,
+    model_timeout_seconds=120,
     # Deep mode broadens sources and query depth, but ordinary primary-source
     # pages do not require a browser engine. Request mode avoids paying a
     # Playwright startup cost on every query-scoped research session.
     web_search_mode="request",
     playwright_navigation_timeout_ms=8000,
     budgets=None,
+    analysis_timeouts={
+        "supervisor": 120,
+        "bio_database": 120,
+        "literature": 120,
+        "web": 90,
+        "host_compatibility": 120,
+    },
+    analysis_max_attempts=2,
 )
 
 

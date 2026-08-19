@@ -17,8 +17,10 @@ from langchain_core.language_models import BaseChatModel
 from src.main_protein_selection.provenance import stable_json_hash
 from src.protein_selection.agents.main_research_agent import (
     MainResearchResult,
-    open_main_research_agent,
+    build_main_research_agent,
+    open_main_research_tools,
 )
+from src.protein_selection.agents.research_policy import get_research_policy
 from src.protein_selection.graph import build_protein_supply_graph
 from src.protein_selection.manifest_adapter import (
     build_main_enzyme_research_units,
@@ -60,7 +62,11 @@ def _research_mode_from_config(config: Any) -> ResearchMode:
     return normalized  # type: ignore[return-value]
 
 
-def _build_cli_model(root_dir: str | Path) -> BaseChatModel:
+def _build_cli_model(
+    root_dir: str | Path,
+    *,
+    timeout_seconds: float = 90,
+) -> BaseChatModel:
     """Load optional CLI model dependencies only when research is requested."""
 
     from src.protein_selection.config import (
@@ -69,7 +75,10 @@ def _build_cli_model(root_dir: str | Path) -> BaseChatModel:
     )
 
     env_path = Path(root_dir).expanduser().resolve(strict=False) / ".env"
-    return build_chat_model(load_model_settings(env_path))
+    return build_chat_model(
+        load_model_settings(env_path),
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
@@ -553,53 +562,77 @@ async def run_auxiliary_protein_pipeline(
     async def run_with_client(
         client: httpx.Client,
     ) -> AuxiliaryProteinCombinationResult:
-        async def unit_runner(
-            unit: MainEnzymeResearchUnit,
-        ) -> Mapping[str, Any]:
-            stats = RetrievalStats()
-            uniprot_client = UniProtClient(
-                client,
-                cache=cache,
-                stats=stats,
-            )
-            kegg_client = KeggClient(
-                client,
-                cache=cache,
-                stats=stats,
-            )
+        result: AuxiliaryProteinCombinationResult | None = None
+        try:
+            async with open_main_research_tools(
+                research_mode=research_mode,
+            ) as research_tools:
+                async def unit_runner(
+                    unit: MainEnzymeResearchUnit,
+                ) -> Mapping[str, Any]:
+                    stats = RetrievalStats()
+                    uniprot_client = UniProtClient(
+                        client,
+                        cache=cache,
+                        stats=stats,
+                    )
+                    kegg_client = KeggClient(
+                        client,
+                        cache=cache,
+                        stats=stats,
+                    )
+                    research_agent = await build_main_research_agent(
+                        model=model,
+                        subagent_model=subagent_model,
+                        iml1515_path=iml1515_path,
+                        research_mode=research_mode,
+                        research_tools=research_tools,
+                        response_cache=cache,
+                        retrieval_stats=stats,
+                    )
+                    graph = build_protein_supply_graph(
+                        llm=model,
+                        uniprot_client=uniprot_client,
+                        kegg_client=kegg_client,
+                        research_agent=research_agent,
+                    )
+                    return await graph.ainvoke(
+                        {
+                            "research_unit": unit,
+                            "research_mode": research_mode,
+                        }
+                    )
 
-            def research_agent_context_factory():
-                return open_main_research_agent(
-                    model=model,
-                    subagent_model=subagent_model,
-                    iml1515_path=iml1515_path,
+                result = await _execute_validated_units(
+                    manifest,
+                    units,
+                    unit_runner,
                     research_mode=research_mode,
-                    response_cache=cache,
-                    retrieval_stats=stats,
+                    source_manifest=str(path),
+                )
+        except Exception as exc:
+            if result is not None:
+                return result
+
+            async def unavailable_runner(
+                unit: MainEnzymeResearchUnit,
+            ) -> Mapping[str, Any]:
+                raise RuntimeError(
+                    "research runtime initialization failed: "
+                    f"{type(exc).__name__}: {exc}"
                 )
 
-            graph = build_protein_supply_graph(
-                llm=model,
-                uniprot_client=uniprot_client,
-                kegg_client=kegg_client,
-                research_agent_context_factory=(
-                    research_agent_context_factory
-                ),
-            )
-            return await graph.ainvoke(
-                {
-                    "research_unit": unit,
-                    "research_mode": research_mode,
-                }
+            return await _execute_validated_units(
+                manifest,
+                units,
+                unavailable_runner,
+                research_mode=research_mode,
+                source_manifest=str(path),
             )
 
-        return await _execute_validated_units(
-            manifest,
-            units,
-            unit_runner,
-            research_mode=research_mode,
-            source_manifest=str(path),
-        )
+        if result is None:
+            raise RuntimeError("research workflow produced no result")
+        return result
 
     if http_client is None:
         with httpx.Client(timeout=http_timeout_seconds) as owned_client:
@@ -621,7 +654,10 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
     manifest_path = Path(config.manifest_output_path)
     output_dir = Path(config.project_output_path) / "protein_selection"
     cache_dir = Path(config.cache_dir) / "protein_selection"
-    model = _build_cli_model(config.root_dir)
+    model = _build_cli_model(
+        config.root_dir,
+        timeout_seconds=get_research_policy(research_mode).model_timeout_seconds,
+    )
     result = asyncio.run(
         run_auxiliary_protein_pipeline(
             manifest_path,
@@ -669,12 +705,48 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
         for item in result.main_enzyme_results
         if item.research_result is not None
     )
+    empty_result_count = sum(
+        int(item.research_result.retrieval_stats.get("empty_results", 0))
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
+    timeout_call_count = sum(
+        int(item.research_result.retrieval_stats.get("timeout_calls", 0))
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
+    source_error_call_count = sum(
+        int(
+            item.research_result.retrieval_stats.get(
+                "source_error_calls",
+                0,
+            )
+        )
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
+    analysis_retry_count = sum(
+        int(item.research_result.retrieval_stats.get("analysis_retries", 0))
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
+    analysis_failure_count = sum(
+        int(item.research_result.retrieval_stats.get("analysis_failures", 0))
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
     partial_failure_accessions = [
         item.accession
         for item in result.main_enzyme_results
         if item.research_result is not None
         and (
             int(item.research_result.retrieval_stats.get("failed_calls", 0)) > 0
+            or int(
+                item.research_result.retrieval_stats.get(
+                    "analysis_failures",
+                    0,
+                )
+            ) > 0
             or any(
                 marker in limitation.lower()
                 for limitation in item.research_result.limitations
@@ -699,6 +771,11 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
         "完全证据不足的主酶": evidence_unresolved,
         "研究单元失败数量": status_counts["service_error"],
         "检索调用失败数量": retrieval_failure_count,
+        "正常空结果数量": empty_result_count,
+        "检索超时数量": timeout_call_count,
+        "检索服务错误数量": source_error_call_count,
+        "结构化分析重试数量": analysis_retry_count,
+        "结构化分析失败数量": analysis_failure_count,
         "存在部分检索失败的主酶": partial_failure_accessions,
         "必需辅助蛋白": result.required_auxiliary_protein_accessions,
         "推荐辅助蛋白": result.recommended_auxiliary_protein_accessions,

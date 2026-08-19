@@ -27,6 +27,11 @@ class RetrievalStats:
     live_calls: int = 0
     retries: int = 0
     failed_calls: int = 0
+    empty_results: int = 0
+    timeout_calls: int = 0
+    source_error_calls: int = 0
+    analysis_retries: int = 0
+    analysis_failures: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -34,6 +39,11 @@ class RetrievalStats:
             "live_calls": self.live_calls,
             "retries": self.retries,
             "failed_calls": self.failed_calls,
+            "empty_results": self.empty_results,
+            "timeout_calls": self.timeout_calls,
+            "source_error_calls": self.source_error_calls,
+            "analysis_retries": self.analysis_retries,
+            "analysis_failures": self.analysis_failures,
         }
 
 
