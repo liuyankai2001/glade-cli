@@ -30,6 +30,9 @@ from src.main_protein_selection.models import (
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
+from src.main_protein_selection.literature_activity.storage import (
+    artifact_fingerprint as literature_artifact_fingerprint,
+)
 from src.main_protein_selection.provenance import (
     solution_fingerprint,
     stable_json_hash,
@@ -42,6 +45,8 @@ from src.write_manifest.store import (
 
 
 MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v1"
+LITERATURE_SCHEMA_VERSION = "literature_activity_evidence.v1"
+LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
 
 MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "protein_selection",
@@ -76,6 +81,200 @@ def _candidate_selection_path(config: Any) -> Path:
 
 def _candidate_csv_path(config: Any) -> Path:
     return _selection_dir(config) / "step_main_enzyme_candidates.csv"
+
+
+def _literature_artifact_path(config: Any) -> Path:
+    return _selection_dir(config) / "literature_activity_evidence.json"
+
+
+def _read_literature_artifact(
+    config: Any,
+) -> tuple[Path, dict[str, Any]] | None:
+    path = _literature_artifact_path(config)
+    if not path.is_file():
+        return None
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"文献酶活证据文件不是有效 JSON：{path}") from exc
+    if not isinstance(artifact, dict):
+        raise ValueError(f"文献酶活证据文件根节点必须是对象：{path}")
+    if artifact.get("schema_version") != LITERATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "不支持的文献酶活证据格式："
+            f"{artifact.get('schema_version')!r}"
+        )
+    evidence = artifact.get("evidence")
+    if not isinstance(evidence, list) or any(
+        not isinstance(item, dict) for item in evidence
+    ):
+        raise ValueError("文献酶活证据文件的 evidence 必须是对象数组")
+
+    stored_fingerprint = str(
+        artifact.get("artifact_fingerprint") or ""
+    ).strip()
+    computed_fingerprint = literature_artifact_fingerprint(artifact)
+    if not stored_fingerprint or stored_fingerprint != computed_fingerprint:
+        raise ValueError(
+            "文献酶活证据文件指纹校验失败，请重新运行 main-enzyme"
+        )
+    return path, artifact
+
+
+def _publication_ids(record: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field, prefix in (
+        ("doi", "DOI"),
+        ("pmid", "PubMed"),
+        ("pmcid", "PMC"),
+    ):
+        value = str(record.get(field) or "").strip()
+        if not value:
+            continue
+        if value.upper().startswith(f"{prefix}:".upper()):
+            values.append(value)
+        else:
+            values.append(f"{prefix}:{value}")
+    return values
+
+
+def _selected_literature_provenance(
+    config: Any,
+    selected: MainEnzymeSet,
+    selection: MainEnzymeSelectionResult,
+) -> dict[str, Any] | None:
+    selected_candidates: list[tuple[Any, Any]] = []
+    for assignment in selected.step_assignments:
+        matches = [
+            candidate
+            for candidate in selection.candidates_by_step.get(
+                assignment.step_index,
+                [],
+            )
+            if candidate.accession == assignment.accession
+            and candidate.candidate_rank == assignment.candidate_rank
+            and candidate.reaction_id == assignment.reaction_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"主酶候选结果中 Step {assignment.step_index}、"
+                f"{assignment.accession}、排名 {assignment.candidate_rank} "
+                "的记录不唯一，请重新运行 main-enzyme"
+            )
+        candidate = matches[0]
+        if LITERATURE_RETRIEVAL_STRATEGY in candidate.retrieval_strategies:
+            selected_candidates.append((assignment, candidate))
+    if not selected_candidates:
+        return None
+
+    loaded = _read_literature_artifact(config)
+    if loaded is None:
+        raise FileNotFoundError(
+            "选中的主酶使用了文献非标准酶活证据，但缺少 "
+            f"{_literature_artifact_path(config)}；请重新运行 main-enzyme"
+        )
+    _, artifact = loaded
+    evidence_records = list(artifact.get("evidence") or [])
+    evidence_by_id = {
+        str(item.get("evidence_id") or "").strip(): item
+        for item in evidence_records
+        if str(item.get("evidence_id") or "").strip()
+    }
+
+    references: list[dict[str, Any]] = []
+    for assignment, candidate in selected_candidates:
+        expected_artifact_reason = (
+            "literature_artifact_sha256:"
+            f"{artifact['artifact_fingerprint']}"
+        )
+        if expected_artifact_reason not in candidate.reasons:
+            raise ValueError(
+                "文献酶活证据文件与主酶候选绑定的指纹不一致；"
+                "请重新运行 main-enzyme 和 main-enzyme-sets"
+            )
+        evidence_ids = list(candidate.retrieval_query_ids)
+        if not evidence_ids:
+            raise ValueError(
+                f"文献酶活证据文件中缺少 Step {assignment.step_index} "
+                f"候选 {assignment.accession} 的关联证据"
+            )
+        missing_evidence_ids = sorted(
+            set(evidence_ids) - set(evidence_by_id)
+        )
+        if missing_evidence_ids:
+            raise ValueError(
+                "文献酶活证据文件缺少主酶候选引用的证据："
+                f"{missing_evidence_ids}；请重新运行 main-enzyme"
+            )
+
+        assignment_levels: list[str] = []
+        for evidence_id in sorted(set(evidence_ids)):
+            record = evidence_by_id[evidence_id]
+            identity = (
+                int(record.get("step_index") or 0),
+                str(record.get("reaction_id") or "").strip().upper(),
+                str(record.get("resolved_accession") or "").strip().upper(),
+            )
+            expected = (
+                assignment.step_index,
+                assignment.reaction_id.upper(),
+                assignment.accession.upper(),
+            )
+            if identity != expected:
+                raise ValueError(
+                    f"文献证据 {evidence_id} 与选中主酶的身份不一致"
+                )
+            level = str(record.get("evidence_level") or "").strip()
+            fit_status = str(record.get("fit_status") or "").strip()
+            review_status = str(
+                record.get("review_status") or ""
+            ).strip()
+            if level not in {"A", "B"} or fit_status != "verified_with_risk":
+                raise ValueError(
+                    f"文献证据 {evidence_id} 不满足进入主酶组合的条件"
+                )
+            if review_status != "pending":
+                raise ValueError(
+                    f"文献证据 {evidence_id} 的审核状态不允许写入"
+                )
+            assignment_levels.append(level)
+
+            publications = _publication_ids(record)
+            references.append({
+                "evidence_id": evidence_id,
+                "step_index": assignment.step_index,
+                "reaction_id": assignment.reaction_id,
+                "accession": assignment.accession,
+                "evidence_level": level,
+                "assay_type": str(record.get("assay_type") or ""),
+                "fit_status": fit_status,
+                "review_status": review_status,
+                "doi": str(record.get("doi") or ""),
+                "pmid": str(record.get("pmid") or ""),
+                "pmcid": str(record.get("pmcid") or ""),
+                "publication_ids": publications,
+                "limitations": list(record.get("limitations") or []),
+            })
+
+        highest_level = "A" if "A" in assignment_levels else "B"
+        expected_confidence = f"literature_grade_{highest_level.lower()}"
+        if candidate.reaction_confidence != expected_confidence:
+            raise ValueError(
+                f"Step {assignment.step_index} 的最高文献证据等级"
+                "与主酶候选不一致；请重新运行 main-enzyme 和 "
+                "main-enzyme-sets"
+            )
+
+    return {
+        "artifact": (
+            "main_protein_selection/literature_activity_evidence.json"
+        ),
+        "artifact_schema_version": artifact["schema_version"],
+        "algorithm_version": artifact.get("algorithm_version"),
+        "artifact_fingerprint": artifact["artifact_fingerprint"],
+        "review_status": "pending",
+        "evidence": references,
+    }
 
 
 def _read_sets(path: Path) -> MainEnzymeSetsResult:
@@ -402,8 +601,26 @@ def _review_items(
 def _manifest_payload(
     result: MainEnzymeSetsResult,
     selected: MainEnzymeSet,
+    literature_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     unresolved_reviews = _review_items(result, selected)
+    literature_references = (
+        list(literature_provenance.get("evidence") or [])
+        if literature_provenance
+        else []
+    )
+    pending_literature_steps = sorted({
+        int(item["step_index"])
+        for item in literature_references
+        if item.get("review_status") == "pending"
+    })
+    if pending_literature_steps:
+        unresolved_reviews.append({
+            "review_type": "literature_activity",
+            "status": "pending",
+            "step_indexes": pending_literature_steps,
+            "reason": "选中的非标准酶活来自论文抽取，仍需人工复核",
+        })
     selection_status = (
         "user_selected_pending_review"
         if unresolved_reviews
@@ -413,7 +630,51 @@ def _manifest_payload(
         dict.fromkeys([*result.warnings, *selected.warnings])
     )
 
-    return {
+    protein_payloads: list[dict[str, Any]] = []
+    for protein in selected.proteins:
+        payload = {
+            "accession": protein.accession,
+            "protein_name": protein.protein_name,
+            "organism_name": protein.organism_name,
+            "reviewed": protein.reviewed,
+            "sequence_sha256": protein.sequence_sha256,
+            "cofactors": protein.cofactors,
+            "capable_step_indexes": protein.capable_step_indexes,
+            "assigned_step_indexes": protein.assigned_step_indexes,
+        }
+        evidence_ids = sorted({
+            str(item["evidence_id"])
+            for item in literature_references
+            if item.get("accession") == protein.accession
+        })
+        if evidence_ids:
+            payload["literature_evidence_ids"] = evidence_ids
+        protein_payloads.append(payload)
+
+    assignment_payloads: list[dict[str, Any]] = []
+    for assignment in selected.step_assignments:
+        payload = assignment.model_dump(mode="json")
+        related = [
+            item
+            for item in literature_references
+            if item.get("step_index") == assignment.step_index
+            and item.get("accession") == assignment.accession
+        ]
+        if related:
+            payload.update({
+                "literature_evidence_ids": sorted({
+                    str(item["evidence_id"]) for item in related
+                }),
+                "literature_publication_ids": sorted({
+                    publication_id
+                    for item in related
+                    for publication_id in item.get("publication_ids", [])
+                }),
+                "literature_review_status": "pending",
+            })
+        assignment_payloads.append(payload)
+
+    manifest_payload = {
         "schema_version": MAIN_ENZYME_MANIFEST_SCHEMA_VERSION,
         "selection_status": selection_status,
         "selected_set_id": selected.set_id,
@@ -448,23 +709,8 @@ def _manifest_payload(
             "required_step_indexes": result.required_step_indexes,
             "covered_step_indexes": selected.covered_step_indexes,
         },
-        "proteins": [
-            {
-                "accession": protein.accession,
-                "protein_name": protein.protein_name,
-                "organism_name": protein.organism_name,
-                "reviewed": protein.reviewed,
-                "sequence_sha256": protein.sequence_sha256,
-                "cofactors": protein.cofactors,
-                "capable_step_indexes": protein.capable_step_indexes,
-                "assigned_step_indexes": protein.assigned_step_indexes,
-            }
-            for protein in selected.proteins
-        ],
-        "step_assignments": [
-            assignment.model_dump(mode="json")
-            for assignment in selected.step_assignments
-        ],
+        "proteins": protein_payloads,
+        "step_assignments": assignment_payloads,
         "evaluation": {
             "set_status": selected.status,
             "search_complete": result.search_complete,
@@ -475,6 +721,15 @@ def _manifest_payload(
         "unresolved_reviews": unresolved_reviews,
         "warnings": warnings,
     }
+    if literature_provenance is not None:
+        manifest_payload["literature_activity"] = literature_provenance
+        manifest_payload["source"].update({
+            "literature_activity_artifact": literature_provenance["artifact"],
+            "literature_activity_artifact_fingerprint": (
+                literature_provenance["artifact_fingerprint"]
+            ),
+        })
+    return manifest_payload
 
 
 def _step_ranges(step_indexes: list[int]) -> str:
@@ -556,7 +811,16 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
 
     selected = _select_set(result, set_id)
     _validate_selected_set(result, selected, required_steps)
-    payload = _manifest_payload(result, selected)
+    literature_provenance = _selected_literature_provenance(
+        config,
+        selected,
+        selection,
+    )
+    payload = _manifest_payload(
+        result,
+        selected,
+        literature_provenance,
+    )
 
     current_selection = manifest.get("main_enzyme_selection")
     unchanged = (
@@ -565,6 +829,8 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         == MAIN_ENZYME_MANIFEST_SCHEMA_VERSION
         and current_selection.get("selected_set_fingerprint")
         == selected.set_fingerprint
+        and current_selection.get("literature_activity")
+        == payload.get("literature_activity")
     )
     if unchanged:
         updated_manifest = manifest

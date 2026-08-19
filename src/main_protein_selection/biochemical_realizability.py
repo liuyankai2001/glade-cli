@@ -93,29 +93,58 @@ def evaluate_candidate_reaction_fit(
     exact_rhea_match = bool(candidate_rhea & requirement_rhea)
     candidate_ko = set(_normalized_ecs(candidate.get("matched_ko_ids")))
     requirement_ko = set(_normalized_ecs(requirement.get("ko_ids")))
-    retrieval_strategies = set(_split(candidate.get("retrieval_strategy"))) | set(
-        _split(candidate.get("retrieval_strategies"))
-    )
+    retrieval_strategies = {
+        value.lower()
+        for value in (
+            _split(candidate.get("retrieval_strategy"))
+            + _split(candidate.get("retrieval_strategies"))
+        )
+    }
     exact_ko_match = (
         bool(candidate_ko & requirement_ko)
         and "kegg_ko_exact" in retrieval_strategies
     )
+    reaction_confidence = {
+        value.lower() for value in _split(candidate.get("reaction_confidence"))
+    }
     exact_selenzyme_match = (
         "selenzyme_kegg_exact" in retrieval_strategies
-        and "selenzyme_exact" in set(_split(candidate.get("reaction_confidence")))
+        and "selenzyme_exact" in reaction_confidence
     )
     risk_selenzyme_match = (
         "selenzyme_kegg_risk" in retrieval_strategies
-        and "selenzyme_risk" in set(_split(candidate.get("reaction_confidence")))
+        and "selenzyme_risk" in reaction_confidence
+    )
+    literature_grade = (
+        "a"
+        if "literature_grade_a" in reaction_confidence
+        else "b"
+        if "literature_grade_b" in reaction_confidence
+        else ""
+    )
+    literature_activity_match = (
+        "literature_experimental_activity" in retrieval_strategies
+        and bool(literature_grade)
     )
     candidate_declared_ecs = set(
         _normalized_ecs(candidate.get("ec_numbers") or candidate.get("ec_number"))
     )
     requirement_declared_ecs = set(_requirement_ecs(requirement))
+    exact_ec_match = (
+        status == "complete"
+        and (
+            "ec_exact" in retrieval_strategies
+            or (
+                not retrieval_strategies
+                and bool(candidate_declared_ecs & requirement_declared_ecs)
+            )
+        )
+    )
     if (
         status != "complete"
         and not exact_rhea_match
         and not exact_ko_match
+        and not literature_activity_match
         and not exact_selenzyme_match
         and not risk_selenzyme_match
     ):
@@ -230,6 +259,38 @@ def evaluate_candidate_reaction_fit(
             ],
         }, supported_rule="ko_candidate_direction_supported")
 
+    if exact_ec_match:
+        catalytic = str(candidate.get("catalytic_activities") or "").strip()
+        rhea_ids = _split(candidate.get("rhea_ids"))
+        evidence = ["Exact complete EC with no known direction/mechanism contradiction"]
+        score = 70.0
+        if catalytic:
+            evidence.append("UniProt catalytic activity annotation is present")
+            score += 15.0
+        if rhea_ids:
+            evidence.append("Candidate has a Rhea reaction cross-reference")
+            score += 15.0
+        return direction_checked({
+            "status": REACTION_FIT_VERIFIED,
+            "score": min(score, 100.0),
+            "rule_ids": ["exact_ec_no_direction_contradiction"],
+            "evidence": evidence,
+        }, supported_rule="ec_candidate_direction_supported")
+
+    if literature_activity_match:
+        level = literature_grade.upper()
+        return direction_checked({
+            "status": REACTION_FIT_VERIFIED_WITH_RISK,
+            "score": 90.0 if literature_grade == "a" else 80.0,
+            "rule_ids": [
+                f"literature_experimental_activity_grade_{literature_grade}"
+            ],
+            "evidence": [
+                f"Literature Grade {level} experimental activity supports the locked reaction",
+                "Literature-derived non-standard activity requires human review",
+            ],
+        }, supported_rule="literature_candidate_direction_supported")
+
     if exact_selenzyme_match:
         return direction_checked({
             "status": REACTION_FIT_VERIFIED,
@@ -264,22 +325,14 @@ def evaluate_candidate_reaction_fit(
             ],
         }, supported_rule="selenzyme_candidate_direction_supported")
 
-    catalytic = str(candidate.get("catalytic_activities") or "").strip()
-    rhea_ids = _split(candidate.get("rhea_ids"))
-    evidence = ["Exact complete EC with no known direction/mechanism contradiction"]
-    score = 70.0
-    if catalytic:
-        evidence.append("UniProt catalytic activity annotation is present")
-        score += 15.0
-    if rhea_ids:
-        evidence.append("Candidate has a Rhea reaction cross-reference")
-        score += 15.0
-    return direction_checked({
-        "status": REACTION_FIT_VERIFIED,
-        "score": min(score, 100.0),
-        "rule_ids": ["exact_ec_no_direction_contradiction"],
-        "evidence": evidence,
-    }, supported_rule="ec_candidate_direction_supported")
+    return {
+        "status": REACTION_FIT_MANUAL_REVIEW,
+        "score": 0.0,
+        "rule_ids": ["candidate_lacks_supported_reaction_evidence"],
+        "evidence": [
+            "Candidate lacks exact EC/Rhea/KO, Grade A/B literature, or Selenzyme reaction evidence"
+        ],
+    }
 
 
 def candidate_is_reaction_verified(row: dict[str, Any]) -> bool:

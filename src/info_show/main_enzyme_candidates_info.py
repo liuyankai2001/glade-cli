@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from src.main_protein_selection.common import get_solution_steps, read_manifest
+from src.main_protein_selection.literature_activity.storage import (
+    artifact_fingerprint as literature_artifact_fingerprint,
+)
 from src.main_protein_selection.models import MainEnzymeSelectionResult
 from src.main_protein_selection.provenance import solution_fingerprint
 
@@ -29,6 +32,42 @@ CONFIDENCE_NAMES = {
     "low": "低",
 }
 
+LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
+LITERATURE_SCHEMA_VERSION = "literature_activity_evidence.v1"
+
+EVIDENCE_LEVEL_NAMES = {
+    "A": "A级（纯化蛋白直接实验证据）",
+    "B": "B级（整细胞或遗传干预实验证据）",
+    "C": "C级（间接证据，仅供审计）",
+    "Reject": "已拒绝",
+}
+
+LITERATURE_FIT_STATUS_NAMES = {
+    "verified_with_risk": "实验支持，但需要人工复核",
+    "audit_only": "仅供审计，不参与自动选择",
+    "rejected": "已拒绝",
+}
+
+LITERATURE_REVIEW_STATUS_NAMES = {
+    "pending": "待人工复核",
+    "approved": "已审核通过",
+    "rejected": "已拒绝",
+}
+
+ASSAY_TYPE_NAMES = {
+    "purified_enzyme": "纯化蛋白实验",
+    "biochemical_reconstitution": "生化重构实验",
+    "whole_cell_overexpression": "整细胞过表达实验",
+    "engineered_whole_cell": "工程化整细胞实验",
+    "genetic_knockout": "基因敲除实验",
+    "genetic_complementation": "遗传互补实验",
+    "cell_free_extract": "无细胞提取物实验",
+    "review_statement": "综述陈述",
+    "homology_inference": "同源性推断",
+    "computational_prediction": "计算预测",
+    "unknown": "未说明",
+}
+
 
 def _selection_path(config: Any) -> Path:
     return (
@@ -44,6 +83,168 @@ def _candidate_csv_path(config: Any) -> Path:
         / "main_protein_selection"
         / "step_main_enzyme_candidates.csv"
     )
+
+
+def _literature_artifact_path(config: Any) -> Path:
+    return (
+        Path(config.project_output_path).expanduser().resolve()
+        / "main_protein_selection"
+        / "literature_activity_evidence.json"
+    )
+
+
+def _read_literature_artifact(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"文献酶活证据文件不是有效 JSON：{path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"文献酶活证据文件根节点必须是对象：{path}")
+    schema_version = str(value.get("schema_version") or "").strip()
+    if schema_version != LITERATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "不支持的文献酶活证据格式："
+            f"{schema_version or '缺失 schema_version'}"
+        )
+    evidence = value.get("evidence")
+    if not isinstance(evidence, list) or any(
+        not isinstance(item, dict) for item in evidence
+    ):
+        raise ValueError("文献酶活证据文件的 evidence 必须是对象数组")
+    stored_fingerprint = str(
+        value.get("artifact_fingerprint") or ""
+    ).strip()
+    if (
+        not stored_fingerprint
+        or stored_fingerprint != literature_artifact_fingerprint(value)
+    ):
+        raise ValueError(
+            "文献酶活证据文件指纹校验失败，请重新运行 main-enzyme"
+        )
+    return value
+
+
+def _literature_evidence_view(
+    config: Any,
+    *,
+    candidate: Any,
+    detail: dict[str, str],
+    step_index: int,
+    reaction_id: str,
+) -> dict[str, Any] | None:
+    strategies = {
+        *candidate.retrieval_strategies,
+        *_split_values(detail.get("retrieval_strategy")),
+    }
+    if LITERATURE_RETRIEVAL_STRATEGY not in strategies:
+        return None
+
+    path = _literature_artifact_path(config)
+    artifact = _read_literature_artifact(path)
+    if artifact is None:
+        return {
+            "关联状态": "证据文件缺失",
+            "证据文件": str(path),
+            "证据文件指纹": None,
+            "关联证据": [],
+        }
+
+    expected_artifact_reason = (
+        "literature_artifact_sha256:"
+        f"{artifact['artifact_fingerprint']}"
+    )
+    if expected_artifact_reason not in candidate.reasons:
+        raise ValueError(
+            "文献酶活证据文件与主酶候选绑定的指纹不一致；"
+            "请重新运行 main-enzyme"
+        )
+
+    query_ids = {
+        *candidate.retrieval_query_ids,
+        *_split_values(detail.get("retrieval_query_id")),
+    }
+    records = list(artifact.get("evidence") or [])
+    known_evidence_ids = {
+        str(item.get("evidence_id") or "").strip()
+        for item in records
+    }
+    missing_evidence_ids = sorted(query_ids - known_evidence_ids)
+    if missing_evidence_ids:
+        raise ValueError(
+            "文献酶活证据文件缺少主酶候选引用的证据："
+            f"{missing_evidence_ids}；请重新运行 main-enzyme"
+        )
+    matched = [
+        item
+        for item in records
+        if str(item.get("evidence_id") or "").strip() in query_ids
+    ]
+    if not matched and not query_ids:
+        matched = [
+            item
+            for item in records
+            if _as_int(item.get("step_index")) == step_index
+            and str(item.get("reaction_id") or "").strip().upper()
+            == reaction_id.upper()
+            and str(item.get("resolved_accession") or "").strip().upper()
+            == candidate.accession.upper()
+        ]
+
+    for item in matched:
+        identity = (
+            _as_int(item.get("step_index")),
+            str(item.get("reaction_id") or "").strip().upper(),
+            str(item.get("resolved_accession") or "").strip().upper(),
+        )
+        expected = (step_index, reaction_id.upper(), candidate.accession.upper())
+        if identity != expected:
+            raise ValueError(
+                "文献证据与候选的步骤、反应或 UniProt 身份不一致；"
+                "请重新运行 main-enzyme"
+            )
+
+    associated = []
+    for item in sorted(
+        matched,
+        key=lambda value: str(value.get("evidence_id") or ""),
+    ):
+        level = str(item.get("evidence_level") or "").strip()
+        fit_status = str(item.get("fit_status") or "").strip()
+        review_status = str(item.get("review_status") or "").strip()
+        assay_type = str(
+            item.get("assay_type")
+            or item.get("evidence_type")
+            or ""
+        ).strip()
+        associated.append({
+            "证据ID": item.get("evidence_id"),
+            "证据级别": EVIDENCE_LEVEL_NAMES.get(level, level),
+            "实验类型": ASSAY_TYPE_NAMES.get(assay_type, assay_type),
+            "审核状态": LITERATURE_REVIEW_STATUS_NAMES.get(
+                review_status,
+                review_status,
+            ),
+            "匹配状态": LITERATURE_FIT_STATUS_NAMES.get(
+                fit_status,
+                fit_status,
+            ),
+            "DOI": item.get("doi"),
+            "PMID": item.get("pmid"),
+            "PMCID": item.get("pmcid"),
+            "论文题目": item.get("title"),
+            "证据位置": item.get("source_locator"),
+            "证据摘要": item.get("evidence_summary"),
+            "局限": list(item.get("limitations") or []),
+        })
+
+    return {
+        "关联状态": "已关联" if associated else "未找到关联证据",
+        "证据文件": str(path),
+        "证据文件指纹": artifact.get("artifact_fingerprint"),
+        "关联证据": associated,
+    }
 
 
 def _read_selection(path: Path) -> MainEnzymeSelectionResult:
@@ -383,6 +584,23 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
                 })
                 break
 
+    literature_view = _literature_evidence_view(
+        config,
+        candidate=candidate,
+        detail=detail,
+        step_index=step_index,
+        reaction_id=str(step.get("reaction_id") or ""),
+    )
+    literature_and_databases: dict[str, Any] = {
+        "文献": list(dict.fromkeys([
+            *candidate.publication_ids,
+            *_split_values(detail.get("publication_ids")),
+        ])),
+        "交叉引用": _split_values(detail.get("cross_references")),
+    }
+    if literature_view is not None:
+        literature_and_databases["非标准酶活证据"] = literature_view
+
     return {
         "运行成功": True,
         "目标化合物": str(config.target_name),
@@ -501,10 +719,7 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
             "复合物证据类型": detail.get("complex_evidence_type"),
             "组分计量": _json_object(detail.get("component_stoichiometry")),
         },
-        "文献与数据库": {
-            "文献": _split_values(detail.get("publication_ids")),
-            "交叉引用": _split_values(detail.get("cross_references")),
-        },
+        "文献与数据库": literature_and_databases,
         "序列信息": {
             "长度": candidate.length,
             "序列版本": candidate.sequence_version,

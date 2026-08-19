@@ -56,6 +56,8 @@ _DIRECTION_SUPPORTED = {
     "reversible",
 }
 _DIRECT_SPECIFICITY = {"exact", "supported"}
+_LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
+_LITERATURE_FINGERPRINT_PREFIX = "literature_artifact_sha256:"
 
 _SUMMARY_COLUMNS = [
     "set_id",
@@ -500,6 +502,14 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "reaction_fit_evidence": _text(row.get("reaction_fit_evidence")),
         "direction_verdict": _text(row.get("direction_verdict")).lower(),
         "direction_confidence": _text(row.get("direction_confidence")).lower(),
+        "retrieval_strategies": _split_values(
+            row.get("retrieval_strategy") or row.get("retrieval_strategies")
+        ),
+        "retrieval_query_ids": _split_values(
+            row.get("retrieval_query_id") or row.get("retrieval_query_ids")
+        ),
+        "reaction_confidence": _split_values(row.get("reaction_confidence")),
+        "publication_ids": _split_values(row.get("publication_ids")),
         "specificity_status": _text(row.get("specificity_status")).lower(),
         "matched_rhea_ids": _split_values(row.get("matched_rhea_ids")),
         "matched_ko_ids": _split_values(row.get("matched_ko_ids")),
@@ -510,6 +520,7 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "function_comments": _text(row.get("function_comments")),
         "cofactors": _split_values(row.get("cofactors")),
         "warnings": _split_values(row.get("warnings")),
+        "reasons": _split_values(row.get("reasons")),
         "sequence_sha256": _text(row.get("sequence_sha256")).lower(),
         "sequence": _text(row.get("sequence")),
     }
@@ -1407,6 +1418,121 @@ def main_enzyme_selection_fingerprint(
     return stable_json_hash(_selection_projection(selection))
 
 
+def _validate_literature_evidence_binding(
+    selection: MainEnzymeSelectionResult,
+    selection_path: Path,
+) -> tuple[Path, str] | None:
+    """Verify that every literature candidate is bound to the live artifact.
+
+    The shortlist and selection fingerprints protect candidate rows, but they
+    cannot detect a literature JSON file being replaced after selection.  The
+    path-based set builder therefore revalidates the artifact's scientific
+    content hash and each candidate's content-hash binding before it searches
+    any combinations.
+    """
+
+    literature_candidates = [
+        candidate
+        for candidates in selection.candidates_by_step.values()
+        for candidate in candidates
+        if _LITERATURE_RETRIEVAL_STRATEGY
+        in {value.lower() for value in candidate.retrieval_strategies}
+    ]
+    if not literature_candidates:
+        return None
+
+    configured = _text(
+        selection.evidence_files.get("literature_activity_evidence_json")
+    )
+    candidate_paths: list[Path] = []
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = selection_path.parent / configured_path
+        candidate_paths.append(configured_path)
+    fallback_path = selection_path.parent / "literature_activity_evidence.json"
+    if fallback_path not in candidate_paths:
+        candidate_paths.append(fallback_path)
+    artifact_path = next((path for path in candidate_paths if path.exists()), None)
+    if artifact_path is None:
+        raise ValueError(
+            "literature activity evidence artifact is missing: "
+            + ", ".join(str(path) for path in candidate_paths)
+        )
+
+    from .literature_activity.storage import artifact_fingerprint
+
+    try:
+        raw_artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"invalid literature activity evidence artifact: {exc}") from exc
+    if not isinstance(raw_artifact, dict):
+        raise ValueError("literature activity evidence artifact must be an object")
+    if raw_artifact.get("schema_version") != "literature_activity_evidence.v1":
+        raise ValueError("unsupported literature activity evidence schema")
+
+    computed_fingerprint = artifact_fingerprint(raw_artifact)
+    if _text(raw_artifact.get("artifact_fingerprint")) != computed_fingerprint:
+        raise ValueError(
+            "literature activity artifact fingerprint does not match its content"
+        )
+    artifact_chassis = _text(raw_artifact.get("chassis_key"))
+    if artifact_chassis and artifact_chassis != selection.chassis_key:
+        raise ValueError("literature activity artifact chassis does not match selection")
+    if _text(raw_artifact.get("status")).lower() not in {"complete", "partial"}:
+        raise ValueError(
+            "literature candidates require a complete or partial evidence artifact"
+        )
+
+    eligible_evidence = {
+        (
+            _text(evidence.get("evidence_id")),
+            _text(evidence.get("resolved_accession")).upper(),
+            _int(evidence.get("step_index")),
+            _text(evidence.get("reaction_id")).upper(),
+        )
+        for evidence in raw_artifact.get("evidence", [])
+        if isinstance(evidence, Mapping)
+        and _text(evidence.get("evidence_level")).upper() in {"A", "B"}
+        and _text(evidence.get("fit_status")) == "verified_with_risk"
+        and _text(evidence.get("resolved_accession"))
+    }
+    expected_reason = _LITERATURE_FINGERPRINT_PREFIX + computed_fingerprint
+    for candidate in literature_candidates:
+        fingerprint_reasons = {
+            reason
+            for reason in candidate.reasons
+            if reason.startswith(_LITERATURE_FINGERPRINT_PREFIX)
+        }
+        if fingerprint_reasons != {expected_reason}:
+            raise ValueError(
+                "literature candidate "
+                f"{candidate.accession} is not bound to the current artifact fingerprint"
+            )
+        literature_query_ids = [
+            query_id
+            for query_id in candidate.retrieval_query_ids
+            if query_id.startswith("LIT-")
+        ]
+        if not literature_query_ids:
+            raise ValueError(
+                f"literature candidate {candidate.accession} lacks an evidence ID"
+            )
+        for evidence_id in literature_query_ids:
+            key = (
+                evidence_id,
+                candidate.accession.upper(),
+                candidate.step_index,
+                candidate.reaction_id.upper(),
+            )
+            if key not in eligible_evidence:
+                raise ValueError(
+                    "literature candidate evidence does not match the live artifact: "
+                    f"{candidate.accession}/{evidence_id}"
+                )
+    return artifact_path, computed_fingerprint
+
+
 def _validate_selection_csv(
     selection: MainEnzymeSelectionResult,
     rows: list[dict[str, str]],
@@ -1516,6 +1642,16 @@ def _validate_selection_csv(
                     _split_values(row.get("retrieval_strategy")),
                     sorted(candidate.retrieval_strategies),
                     "retrieval strategies",
+                ),
+                (
+                    _split_values(row.get("retrieval_query_id")),
+                    sorted(candidate.retrieval_query_ids),
+                    "retrieval query IDs",
+                ),
+                (
+                    _split_values(row.get("publication_ids")),
+                    sorted(candidate.publication_ids),
+                    "publication IDs",
                 ),
                 (
                     _split_values(row.get("matched_rhea_ids")),
@@ -1794,6 +1930,34 @@ def build_main_enzyme_sets(
         )
         result["output_files"] = _write_set_outputs(output_dir, result)
         return result
+
+    try:
+        literature_binding = _validate_literature_evidence_binding(
+            selection, selection_path
+        )
+    except ValueError as exc:
+        result = _failure_result(
+            status="stale_input",
+            solution_id=solution_id,
+            expansion_depth=expansion_depth,
+            solution_fingerprint_value=route_fingerprint,
+            chassis_key=selection.chassis_key,
+            required_step_indexes=required_indexes,
+            max_sets=max_sets,
+            max_search_nodes=max_search_nodes,
+            reason=f"Invalid literature evidence binding: {exc}; rerun main-enzyme",
+            source_artifacts=source_artifacts,
+        )
+        result["output_files"] = _write_set_outputs(output_dir, result)
+        return result
+    if literature_binding is not None:
+        literature_path, literature_fingerprint = literature_binding
+        source_artifacts.update({
+            "literature_activity_evidence": rel_or_abs(literature_path),
+            "literature_activity_evidence_sha256": file_sha256(literature_path),
+            "literature_activity_artifact_fingerprint": literature_fingerprint,
+        })
+
     if selection.status == "source_unavailable":
         result = _failure_result(
             status="source_unavailable",

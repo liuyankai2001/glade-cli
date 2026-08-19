@@ -86,6 +86,8 @@ class MainEnzymeCandidate(BaseModel):
     direction_verdict: str = ""
     direction_confidence: str = ""
     retrieval_strategies: list[str] = Field(default_factory=list)
+    retrieval_query_ids: list[str] = Field(default_factory=list)
+    publication_ids: list[str] = Field(default_factory=list)
     matched_rhea_ids: list[str] = Field(default_factory=list)
     matched_ko_ids: list[str] = Field(default_factory=list)
     reaction_confidence: str = ""
@@ -118,6 +120,8 @@ class MainEnzymeCandidate(BaseModel):
             direction_verdict=_string(row.get("direction_verdict")),
             direction_confidence=_string(row.get("direction_confidence")),
             retrieval_strategies=_values(row.get("retrieval_strategy")),
+            retrieval_query_ids=_values(row.get("retrieval_query_id")),
+            publication_ids=_values(row.get("publication_ids")),
             matched_rhea_ids=_values(row.get("matched_rhea_ids")),
             matched_ko_ids=_values(row.get("matched_ko_ids")),
             reaction_confidence=_string(row.get("reaction_confidence")),
@@ -138,6 +142,7 @@ class MainEnzymeSelectionParameters(BaseModel):
     max_results: int = Field(ge=1)
     allow_transmembrane: bool
     fetch_proteins: bool
+    literature_search: bool = False
 
 
 class MainEnzymeSelectionResult(BaseModel):
