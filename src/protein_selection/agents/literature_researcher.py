@@ -14,6 +14,9 @@ from src.protein_selection.agents.dependency_evidence import (
     DependencyEvidenceAtom,
     DependencyEvidenceSynthesis,
 )
+from src.protein_selection.agents.independence_evidence import (
+    IndependentCatalysisEvidence,
+)
 from src.protein_selection.integrations.tooluniverse import (
     ToolUniverseConfig,
     load_tooluniverse_tools,
@@ -168,6 +171,9 @@ class LiteratureResearchResult(ReactionScopedModel):
     auxiliary_requirement_signal: AssessmentStatus
     papers: list[LiteraturePaper] = Field(default_factory=list)
     evidence: list[LiteratureEvidence] = Field(default_factory=list)
+    independence_evidence: list[IndependentCatalysisEvidence] = Field(
+        default_factory=list
+    )
     candidate_protein_dependencies: list[LiteratureProteinCandidate] = Field(
         default_factory=list
     )
@@ -224,6 +230,29 @@ class LiteratureResearchResult(ReactionScopedModel):
 
         known_evidence_ids = set(evidence_ids)
         evidence_by_id = {item.evidence_id: item for item in self.evidence}
+        referenced_evidence_ids = set(self.conflicting_evidence_ids)
+        independence_ids = [
+            item.independence_id for item in self.independence_evidence
+        ]
+        if len(independence_ids) != len(set(independence_ids)):
+            raise ValueError("independence_id values must be unique")
+        for item in self.independence_evidence:
+            if item.input_uniprot_id.upper() != self.input_uniprot_id.upper():
+                raise ValueError("independence evidence changed the input protein")
+            require_reaction_subset(
+                item.reaction_ids,
+                self.reaction_ids,
+                label=f"independence evidence {item.independence_id}",
+            )
+            unknown_independence_evidence = sorted(
+                set(item.evidence_ids) - known_evidence_ids
+            )
+            if unknown_independence_evidence:
+                raise ValueError(
+                    "unknown independence evidence references: "
+                    + ", ".join(unknown_independence_evidence)
+                )
+            referenced_evidence_ids.update(item.evidence_ids)
         atom_ids = [item.atom_id for item in self.dependency_evidence_atoms]
         if len(atom_ids) != len(set(atom_ids)):
             raise ValueError("dependency atom IDs must be unique")
@@ -240,7 +269,6 @@ class LiteratureResearchResult(ReactionScopedModel):
         syntheses_by_id = {
             item.synthesis_id: item for item in self.dependency_syntheses
         }
-        referenced_evidence_ids = set(self.conflicting_evidence_ids)
         unknown_conflicting_evidence = sorted(
             referenced_evidence_ids - known_evidence_ids
         )
@@ -441,6 +469,11 @@ reaction_ids 必须是该集合的非空子集；不得把不同反应范围的�
    不得把仅有 Crossref 元数据的论文写成实验性证据。
 5. 合并结果时优先按规范化 DOI 去重，其次按 PMID/PMCID，缺少标识符时使用
    标题与第一作者；保留元数据最完整的记录。
+6. 同时主动检索输入蛋白是否能独立催化：纯化重组蛋白活性、定义明确且没有其他
+   蛋白的体外重构、单基因异源表达活性、活性单体或同源寡聚体。只有论文原文或
+   摘要明确描述实验时才输出 independence_evidence，并引用本报告中已来源校验的
+   LiteratureEvidence，保留 source_urls 和 supporting_excerpt；不能把数据库没有
+   伙伴记录当成独立证据。
 
 证据解释：
 - 直接体外重构、纯化复合物、敲除/互补和必要组分实验是最强证据；
@@ -452,6 +485,9 @@ reaction_ids 必须是该集合的非空子集；不得把不同反应范围的�
 - 异源复合物组成本身不能区分 required 和 enhancing；
 - 区分原生物种实验与大肠杆菌异源表达实验，不得跨物种直接外推；
 - 区分蛋白依赖与金属、辅酶、血红素等非蛋白辅因子，后者不得列为候选蛋白。
+- purified_single_protein_activity 和 defined_reconstitution_without_partner 必须明确
+  给出实验蛋白组分，且不能包含另一种蛋白；single_gene_heterologous_activity 和
+  active_homomeric_unit 只是支持性证据，不能单独证明完全独立。
 
 不要直接从 essential、inactive、required 等词生成依赖结论。只从实际读取的论文
 逐项提取 DependencyEvidenceAtom：每个原子只表达一个 fact，并用单个逐字

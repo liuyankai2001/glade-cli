@@ -307,8 +307,19 @@ def _blocking_reasons(
                 "assigned reaction scope"
             )
         elif item.status == "review_required":
+            assessment = (
+                item.research_result.independence_assessment
+                if item.research_result is not None
+                else None
+            )
             reasons.append(
-                f"{item.accession}: auxiliary-protein evidence remains unresolved"
+                (
+                    f"{item.accession}: likely independent, but a purified-protein "
+                    "or defined reconstitution assay is still required"
+                )
+                if assessment is not None
+                and assessment.conclusion == "likely_independent"
+                else f"{item.accession}: auxiliary-protein evidence remains unresolved"
             )
     return reasons
 
@@ -633,6 +644,44 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
             "service_error",
         )
     }
+    confirmed_independent = [
+        item.accession
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+        and item.research_result.outcome == "independent"
+    ]
+    likely_independent = [
+        item.accession
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+        and item.research_result.independence_assessment.conclusion
+        == "likely_independent"
+    ]
+    evidence_unresolved = [
+        item.accession
+        for item in result.main_enzyme_results
+        if item.status == "review_required"
+        and item.research_result is not None
+        and item.research_result.independence_assessment.confidence == "none"
+    ]
+    retrieval_failure_count = sum(
+        int(item.research_result.retrieval_stats.get("failed_calls", 0))
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+    )
+    partial_failure_accessions = [
+        item.accession
+        for item in result.main_enzyme_results
+        if item.research_result is not None
+        and (
+            int(item.research_result.retrieval_stats.get("failed_calls", 0)) > 0
+            or any(
+                marker in limitation.lower()
+                for limitation in item.research_result.limitations
+                for marker in ("timeout", "timed out", "source_error")
+            )
+        )
+    ]
     summary = {
         "运行成功": result.status != "service_error",
         "整体状态": result.status,
@@ -642,6 +691,15 @@ def run_auxiliary_protein_research(config: Any) -> dict[str, Any]:
         "待复核数量": status_counts["review_required"],
         "阻断数量": status_counts["blocked"],
         "服务失败数量": status_counts["service_error"],
+        "确认独立工作数量": len(confirmed_independent),
+        "确认独立工作的主酶": confirmed_independent,
+        "可能独立工作数量": len(likely_independent),
+        "可能独立工作的主酶": likely_independent,
+        "完全证据不足数量": len(evidence_unresolved),
+        "完全证据不足的主酶": evidence_unresolved,
+        "研究单元失败数量": status_counts["service_error"],
+        "检索调用失败数量": retrieval_failure_count,
+        "存在部分检索失败的主酶": partial_failure_accessions,
         "必需辅助蛋白": result.required_auxiliary_protein_accessions,
         "推荐辅助蛋白": result.recommended_auxiliary_protein_accessions,
         "需要导入的辅助蛋白": result.auxiliary_proteins_to_introduce,

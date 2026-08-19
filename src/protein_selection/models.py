@@ -23,8 +23,8 @@ from src.protein_selection.reaction_scope import (
 from src.protein_selection.state import ReactionScope, ResearchMode
 
 
-AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v1"
-AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v1"
+AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v2"
+AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v2"
 
 MainEnzymeResearchStatus = Literal[
     "complete",
@@ -204,10 +204,10 @@ class AuxiliaryProteinCombinationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["auxiliary_protein_research.v1"] = (
+    schema_version: Literal["auxiliary_protein_research.v2"] = (
         AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION
     )
-    pipeline_version: Literal["auxiliary_protein_pipeline.v1"] = (
+    pipeline_version: Literal["auxiliary_protein_pipeline.v2"] = (
         AUXILIARY_PROTEIN_PIPELINE_VERSION
     )
     generated_at: str = Field(min_length=1)

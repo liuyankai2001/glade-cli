@@ -97,7 +97,7 @@ def _state_reaction_ids(state: ProteinSupplyState) -> list[str]:
 
 
 def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
-    """Complete a positively independent case without starting research."""
+    """Return a conservative result for annotation-only homomer evidence."""
 
     if state.get("validation_status") != "valid":
         raise ValueError("input must pass validation before producing output")
@@ -145,10 +145,11 @@ def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
             "input_uniprot_id": uniprot_id,
             "reaction_ids": [reaction_id],
             "reaction_match": "matched",
-            "outcome": "independent",
+            "outcome": "unresolved",
             "research_summary": (
-                "Official input records establish an exact Rhea-family "
-                "reaction match and a single-protein catalytic unit."
+                "Official records establish the reaction mapping and a "
+                "homomeric catalytic unit, but do not directly demonstrate "
+                "activity without another protein."
             ),
             "reaction_match_reason": reaction_reason,
             "auxiliary_requirement_reason": requirement_reason,
@@ -184,8 +185,12 @@ def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
                 },
             ],
             "limitations": [
-                "The deterministic fast path uses the validated official "
-                "input records and does not run a separate literature search."
+                "A monomeric or homomeric annotation alone cannot prove "
+                "protein independence."
+            ],
+            "unresolved_roles": ["辅助蛋白依赖等级"],
+            "unresolved_questions": [
+                "是否存在纯化单蛋白活性实验或定义明确的无伙伴体外重构？"
             ],
         }
     )
@@ -193,10 +198,10 @@ def return_input_protein(state: ProteinSupplyState) -> dict[str, Any]:
     emit_progress(
         "workflow",
         "completed",
-        f"快速路径完成：仅需输入蛋白 {uniprot_id}",
+        f"注释路径完成：{uniprot_id} 的独立催化仍需实验核验",
     )
 
-    return _decision_state_update(decision, completion_status="success")
+    return _decision_state_update(decision, completion_status="unresolved")
 
 
 def return_reaction_mismatch(state: ProteinSupplyState) -> dict[str, Any]:

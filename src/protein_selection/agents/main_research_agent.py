@@ -47,6 +47,12 @@ from src.protein_selection.agents.host_compatibility_researcher import (
     HostCompatibilityResearchResult,
     build_host_compatibility_researcher_subagent,
 )
+from src.protein_selection.agents.independence_evidence import (
+    DIRECT_INDEPENDENCE_ASSAYS,
+    SUPPORTIVE_INDEPENDENCE_ASSAYS,
+    IndependenceAssessment,
+    IndependentCatalysisEvidence,
+)
 from src.protein_selection.agents.evidence_pipeline import (
     RawResearchEvidence,
     ResearchEvidenceLedger,
@@ -250,6 +256,9 @@ class MainResearchResult(ReactionScopedModel):
     research_summary: str = Field(min_length=1)
     reaction_match_reason: str = Field(min_length=1)
     auxiliary_requirement_reason: str = Field(min_length=1)
+    independence_assessment: IndependenceAssessment = Field(
+        default_factory=IndependenceAssessment
+    )
     auxiliary_proteins: list[SelectedAuxiliaryProtein] = Field(
         default_factory=list
     )
@@ -580,6 +589,24 @@ class MainResearchResult(ReactionScopedModel):
         if self.outcome == "independent" and required_proteins:
             raise ValueError(
                 "independent outcome cannot include required auxiliaries"
+            )
+        if (
+            self.outcome == "independent"
+            and self.independence_assessment.confidence != "high"
+            and not any(
+                item.necessity == "enhancing"
+                for item in self.auxiliary_proteins
+            )
+        ):
+            raise ValueError(
+                "independent outcome requires high-confidence independence evidence"
+            )
+        if (
+            self.outcome in {"host_supported", "supplement_required", "reaction_mismatch"}
+            and self.independence_assessment.confidence == "high"
+        ):
+            raise ValueError(
+                "required-partner or mismatched outcomes cannot claim independence"
             )
 
         if self.outcome == "host_supported":
@@ -1922,6 +1949,35 @@ class BalancedResearchAgent:
                 )
             }
         if not candidate_roles:
+            independence_final = _deterministic_independence_result(
+                context,
+                reports,
+                ledger.records,
+                database_run,
+                literature_run,
+                followup_results,
+            )
+            if independence_final is not None:
+                _validate_final_citation_provenance(
+                    independence_final,
+                    reports,
+                    raw_evidence=ledger.records,
+                )
+                timings["final_synthesis"] = _elapsed_seconds(stage_started)
+                emit_progress(
+                    "final_synthesis",
+                    "completed",
+                    "独立催化证据已按确定性门槛完成分级："
+                    f"{independence_final.independence_assessment.conclusion}",
+                )
+                return {
+                    "structured_response": _attach_stage_timings(
+                        independence_final,
+                        timings,
+                        workflow_started,
+                        self._retrieval_stats,
+                    )
+                }
             emit_progress(
                 "final_synthesis",
                 "completed",
@@ -6356,6 +6412,7 @@ def _sanitize_report_grounding(
     ]
     for field_name in (
         "candidate_protein_dependencies",
+        "independence_evidence",
         "small_molecule_cofactors",
     ):
         filtered: list[dict[str, Any]] = []
@@ -7947,6 +8004,380 @@ def _deterministic_unresolved_result(
             "是否存在同物种整蛋白缺失/补回实验或两个独立明确整理断言？"
         ],
         limitations=list(dict.fromkeys(failures)),
+    )
+
+
+_INDEPENDENCE_ACTIVITY_PATTERN = re.compile(
+    r"\b(?:active|activity|cataly[sz](?:e|ed|es|ing)?|"
+    r"convert(?:s|ed|ing)?|produc(?:e|ed|es|ing)|product formation)\b",
+    re.IGNORECASE,
+)
+_DIRECT_ASSAY_PATTERN = re.compile(
+    r"\b(?:purified|reconstitut(?:e|ed|ion)|defined components?)\b",
+    re.IGNORECASE,
+)
+_HETERLOGOUS_ACTIVITY_PATTERN = re.compile(
+    r"\b(?:heterologous(?:ly)?|express(?:ed|ion) in (?:e\.?\s*coli|yeast)|"
+    r"single[- ]gene)\b",
+    re.IGNORECASE,
+)
+_HOMOMER_PATTERN = re.compile(
+    r"\b(?:homodimer|homotrimer|homotetramer|homooligomer|homomeric|monomeric)\b",
+    re.IGNORECASE,
+)
+
+
+def _independence_source_text(evidence: Any) -> str:
+    return " ".join(
+        str(value or "")
+        for value in (
+            getattr(evidence, "claim", ""),
+            getattr(evidence, "experimental_context", ""),
+            getattr(evidence, "supporting_excerpt", ""),
+        )
+    )
+
+
+def _derived_supportive_independence_evidence(
+    context: ResearchContextLike,
+    report: LiteratureResearchResult,
+) -> list[IndependentCatalysisEvidence]:
+    """Derive only supportive, never decisive, evidence from grounded claims."""
+
+    result: list[IndependentCatalysisEvidence] = []
+    accession = context.protein.primary_accession
+    for evidence in report.evidence:
+        text = _independence_source_text(evidence)
+        if not _INDEPENDENCE_ACTIVITY_PATTERN.search(text):
+            continue
+        related = {value.upper() for value in evidence.related_proteins}
+        if related and accession.upper() not in related:
+            continue
+        if _HETERLOGOUS_ACTIVITY_PATTERN.search(text):
+            assay_type = "single_gene_heterologous_activity"
+        elif _HOMOMER_PATTERN.search(text):
+            assay_type = "active_homomeric_unit"
+        else:
+            continue
+        result.append(
+            IndependentCatalysisEvidence(
+                independence_id=f"IND-DERIVED-{len(result) + 1}",
+                input_uniprot_id=accession,
+                reaction_ids=context_reaction_ids(context),
+                assay_type=assay_type,
+                evidence_ids=[evidence.evidence_id],
+                activity_observed=True,
+                input_protein_tested=True,
+                defined_protein_components=False,
+                different_protein_present=False,
+                protein_components=[accession],
+                experimental_context=(
+                    evidence.experimental_context
+                    or evidence.claim
+                ),
+                limitations=[
+                    "Supportive evidence does not define every protein component in the assay."
+                ],
+            )
+        )
+    return result
+
+
+def _raw_supportive_independence_evidence(
+    context: ResearchContextLike,
+    raw_evidence: Sequence[RawResearchEvidence],
+) -> list[IndependentCatalysisEvidence]:
+    """Recover only medium-confidence signals when a literature model fails."""
+
+    allowed_tools = {
+        "PubMed_get_article",
+        "EuropePMC_get_fulltext_snippets",
+        "SemanticScholar_get_pdf_snippets",
+    }
+    identity_terms = list(dict.fromkeys(
+        value.casefold()
+        for value in (
+            context.protein.primary_accession,
+            *context.protein.protein_names,
+            *context.protein.gene_names,
+        )
+        if len(str(value).strip()) >= 4
+    ))
+    result: list[IndependentCatalysisEvidence] = []
+    for record in raw_evidence:
+        if (
+            record.status != "success"
+            or record.tool_name not in allowed_tools
+            or not record.content
+        ):
+            continue
+        lowered = record.content.casefold()
+        if not any(term in lowered for term in identity_terms):
+            continue
+        activity_match = _INDEPENDENCE_ACTIVITY_PATTERN.search(record.content)
+        if activity_match is None:
+            continue
+        if _HETERLOGOUS_ACTIVITY_PATTERN.search(record.content):
+            assay_type = "single_gene_heterologous_activity"
+        elif _HOMOMER_PATTERN.search(record.content):
+            assay_type = "active_homomeric_unit"
+        else:
+            continue
+        start = max(0, activity_match.start() - 350)
+        end = min(len(record.content), activity_match.end() + 650)
+        excerpt = record.content[start:end].strip()
+        result.append(
+            IndependentCatalysisEvidence(
+                independence_id=f"IND-RAW-{len(result) + 1}",
+                input_uniprot_id=context.protein.primary_accession,
+                reaction_ids=context_reaction_ids(context),
+                assay_type=assay_type,
+                evidence_ids=[record.evidence_id],
+                activity_observed=True,
+                input_protein_tested=True,
+                defined_protein_components=False,
+                different_protein_present=False,
+                protein_components=[context.protein.primary_accession],
+                experimental_context=(
+                    "Deterministic supportive signal recovered from a raw "
+                    f"{record.tool_name} record after structured analysis failed."
+                ),
+                source_urls=list(record.source_urls),
+                supporting_excerpt=excerpt,
+                limitations=[
+                    "The raw record supports only a likely-independent conclusion; assay protein components were not fully defined."
+                ],
+            )
+        )
+    return result
+
+
+def _independence_assessment_from_reports(
+    context: ResearchContextLike,
+    reports: Mapping[str, Any],
+) -> tuple[IndependenceAssessment, list[FinalEvidenceCitation]]:
+    literature = reports.get("literature_researcher")
+    if not isinstance(literature, LiteratureResearchResult):
+        return IndependenceAssessment(), []
+
+    evidence_by_id = {item.evidence_id: item for item in literature.evidence}
+    papers_by_id = {item.paper_id: item for item in literature.papers}
+    records = [
+        *literature.independence_evidence,
+        *_derived_supportive_independence_evidence(context, literature),
+    ]
+    accepted: list[IndependentCatalysisEvidence] = []
+    direct: list[IndependentCatalysisEvidence] = []
+    for record in records:
+        sources = [
+            evidence_by_id.get(evidence_id)
+            for evidence_id in record.evidence_ids
+        ]
+        if not sources or any(source is None for source in sources):
+            continue
+        papers = [
+            papers_by_id.get(paper_id)
+            for source in sources
+            if source is not None
+            for paper_id in source.paper_ids
+        ]
+        if not papers or any(
+            paper is None
+            or paper.publication_status != "peer_reviewed"
+            or paper.retraction_status
+            in {"retracted", "expression_of_concern"}
+            or paper.access_level == "metadata_only"
+            for paper in papers
+        ):
+            continue
+        text = " ".join(
+            _independence_source_text(source)
+            for source in sources
+            if source is not None
+        )
+        if not (
+            record.activity_observed
+            and record.input_protein_tested
+            and _INDEPENDENCE_ACTIVITY_PATTERN.search(text)
+        ):
+            continue
+        accepted.append(record)
+        if (
+            record.assay_type in DIRECT_INDEPENDENCE_ASSAYS
+            and record.defined_protein_components
+            and not record.different_protein_present
+            and _DIRECT_ASSAY_PATTERN.search(text)
+        ):
+            direct.append(record)
+
+    if not accepted:
+        return IndependenceAssessment(), []
+
+    exact_reaction_match = (
+        context.preliminary_reaction_match == "matched"
+        or _has_grounded_reaction_match(reports)
+    )
+    selected = direct if direct and exact_reaction_match else accepted
+    confidence = "high" if direct and exact_reaction_match else "medium"
+    conclusion = "independent" if confidence == "high" else "likely_independent"
+    selected_evidence_ids = {
+        evidence_id
+        for record in selected
+        for evidence_id in record.evidence_ids
+    }
+    citations: list[FinalEvidenceCitation] = []
+    for evidence_id in sorted(selected_evidence_ids):
+        source = evidence_by_id[evidence_id]
+        source_papers = [
+            papers_by_id[paper_id]
+            for paper_id in source.paper_ids
+            if paper_id in papers_by_id
+        ]
+        source_url = next(
+            (paper.source_url for paper in source_papers if paper.source_url),
+            None,
+        )
+        citations.append(
+            FinalEvidenceCitation(
+                citation_id=f"CIT-INDEPENDENCE-{len(citations) + 1}",
+                researcher="literature_researcher",
+                source_evidence_id=evidence_id,
+                claim=source.claim,
+                source_record_id=(
+                    source_papers[0].paper_id if source_papers else None
+                ),
+                source_url=source_url,
+                source_locator=source.source_locator,
+                supporting_excerpt=source.supporting_excerpt,
+                strength=(
+                    "direct_experimental"
+                    if confidence == "high"
+                    else "indirect"
+                ),
+                direction="supports",
+                limitations=list(source.limitations),
+            )
+        )
+    reasons = [
+        (
+            "A peer-reviewed purified-protein or defined reconstitution assay "
+            "shows activity without another protein."
+            if confidence == "high"
+            else "Peer-reviewed homomeric or single-gene activity evidence "
+            "supports, but does not prove, protein independence."
+        )
+    ]
+    if not exact_reaction_match:
+        reasons.append(
+            "The input protein is not yet matched exactly to the selected reaction."
+        )
+    return (
+        IndependenceAssessment(
+            confidence=confidence,
+            conclusion=conclusion,
+            evidence=selected,
+            reasons=reasons,
+        ),
+        citations,
+    )
+
+
+def _partial_research_failures(
+    database_run: Mapping[str, Any],
+    literature_run: Mapping[str, Any],
+    followup_runs: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    return list(dict.fromkeys(
+        f"{run.get('researcher', 'researcher')}: {run.get('error')}"
+        for run in (database_run, literature_run, *followup_runs.values())
+        if run.get("error")
+    ))
+
+
+def _deterministic_independence_result(
+    context: ResearchContextLike,
+    reports: Mapping[str, Any],
+    raw_evidence: Sequence[RawResearchEvidence],
+    database_run: Mapping[str, Any],
+    literature_run: Mapping[str, Any],
+    followup_runs: Mapping[str, Mapping[str, Any]],
+) -> MainResearchResult | None:
+    assessment, citations = _independence_assessment_from_reports(
+        context,
+        reports,
+    )
+    raw_supportive = _raw_supportive_independence_evidence(
+        context,
+        raw_evidence,
+    )
+    if assessment.confidence != "high" and raw_supportive:
+        combined = list({
+            item.independence_id: item
+            for item in [*assessment.evidence, *raw_supportive]
+        }.values())
+        assessment = IndependenceAssessment(
+            confidence="medium",
+            conclusion="likely_independent",
+            evidence=combined,
+            reasons=[
+                "Grounded single-gene heterologous activity or active homomer evidence supports, but does not prove, protein independence."
+            ],
+        )
+    if assessment.confidence == "none":
+        return None
+    failures = _partial_research_failures(
+        database_run,
+        literature_run,
+        followup_runs,
+    )
+    if assessment.confidence == "high":
+        return MainResearchResult(
+            input_uniprot_id=context.protein.primary_accession,
+            reaction_ids=context_reaction_ids(context),
+            reaction_match="matched",
+            outcome="independent",
+            research_summary=(
+                "直接实验支持输入主酶在没有另一种蛋白的情况下独立催化。"
+            ),
+            reaction_match_reason=context.preliminary_reaction_match_reason,
+            auxiliary_requirement_reason=assessment.reasons[0],
+            independence_assessment=assessment,
+            evidence=citations,
+            limitations=failures,
+        )
+    return MainResearchResult(
+        input_uniprot_id=context.protein.primary_accession,
+        reaction_ids=context_reaction_ids(context),
+        reaction_match=(
+            context.preliminary_reaction_match
+            if context.preliminary_reaction_match != "mismatched"
+            else "uncertain"
+        ),
+        outcome="unresolved",
+        research_summary=(
+            "已有同源寡聚体或单基因异源活性证据，主酶可能独立工作，"
+            "但尚未达到纯化单蛋白或定义重构的确认门槛。"
+        ),
+        reaction_match_reason=context.preliminary_reaction_match_reason,
+        auxiliary_requirement_reason=assessment.reasons[0],
+        independence_assessment=assessment,
+        evidence=citations,
+        evidence_rejections=[
+            EvidenceRejection(
+                rejection_id=f"REJ-INDEPENDENCE-{index}",
+                stage="independence_confirmation",
+                candidate_uniprot_id=None,
+                source_ids=[],
+                reason_codes=["direct_independence_assay_missing"],
+                message=reason,
+            )
+            for index, reason in enumerate(assessment.reasons, start=1)
+        ],
+        unresolved_roles=["辅助蛋白依赖等级"],
+        unresolved_questions=[
+            "是否存在纯化单蛋白活性实验或定义明确的无伙伴体外重构？"
+        ],
+        limitations=failures,
     )
 
 
