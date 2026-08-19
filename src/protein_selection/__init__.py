@@ -15,6 +15,14 @@ _PUBLIC_EXPORTS = {
         "src.protein_selection.models",
         "AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION",
     ),
+    "AuxiliaryRequirementAssessment": (
+        "src.protein_selection.models",
+        "AuxiliaryRequirementAssessment",
+    ),
+    "AuxiliaryRequirementClassification": (
+        "src.protein_selection.models",
+        "AuxiliaryRequirementClassification",
+    ),
     "AuxiliaryProteinCombinationResult": (
         "src.protein_selection.models",
         "AuxiliaryProteinCombinationResult",

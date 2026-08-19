@@ -23,8 +23,16 @@ from src.protein_selection.reaction_scope import (
 from src.protein_selection.state import ReactionScope, ResearchMode
 
 
-AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v2"
-AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v2"
+AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v3"
+AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v3"
+
+AuxiliaryRequirementClassification = Literal[
+    "confirmed_required",
+    "possibly_required",
+    "possibly_not_required",
+    "confirmed_not_required",
+    "unknown",
+]
 
 MainEnzymeResearchStatus = Literal[
     "complete",
@@ -35,18 +43,223 @@ MainEnzymeResearchStatus = Literal[
 CombinationResearchStatus = MainEnzymeResearchStatus
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_RESOLVED_OUTCOMES = {
-    "independent",
-    "host_supported",
-    "supplement_required",
-}
 
 
-def _status_for_result(result: MainResearchResult) -> MainEnzymeResearchStatus:
-    if result.outcome in _RESOLVED_OUTCOMES:
-        return "complete"
+class AuxiliaryRequirementAssessment(BaseModel):
+    """Deterministic five-level auxiliary-protein conclusion."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    classification: AuxiliaryRequirementClassification
+    reason: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    candidate_auxiliary_accessions: list[str] = Field(default_factory=list)
+    evidence_conflict: bool = False
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def normalize_unique_evidence_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        if len(normalized) != len(value):
+            raise ValueError("assessment identifiers cannot be empty")
+        if normalized != list(dict.fromkeys(normalized)):
+            raise ValueError("assessment identifiers must be unique")
+        return normalized
+
+    @field_validator("candidate_auxiliary_accessions")
+    @classmethod
+    def normalize_accessions(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip().upper() for item in value if item.strip()]
+        if len(normalized) != len(value):
+            raise ValueError("candidate auxiliary accessions cannot be empty")
+        if normalized != list(dict.fromkeys(normalized)):
+            raise ValueError("candidate auxiliary accessions must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_classification_evidence(self) -> Self:
+        if self.evidence_conflict and self.classification != "unknown":
+            raise ValueError("conflicting evidence must classify as unknown")
+        if self.classification != "unknown" and not self.evidence_ids:
+            raise ValueError("non-unknown classifications require evidence")
+        if self.classification in {
+            "confirmed_required",
+            "possibly_required",
+        } and not self.candidate_auxiliary_accessions:
+            raise ValueError(
+                "required classifications need candidate auxiliary accessions"
+            )
+        return self
+
+
+def assess_auxiliary_requirement(
+    result: MainResearchResult | None,
+    *,
+    service_error: str | None = None,
+) -> AuxiliaryRequirementAssessment:
+    """Derive the five-level conclusion from validated evidence only."""
+
+    if result is None:
+        return AuxiliaryRequirementAssessment(
+            classification="unknown",
+            reason=(
+                f"研究服务未完成：{service_error}"
+                if service_error
+                else "研究服务未返回可用结果。"
+            ),
+        )
+
+    all_evidence_ids = list(
+        dict.fromkeys(item.citation_id for item in result.evidence)
+    )
+    if result.reaction_match != "matched":
+        return AuxiliaryRequirementAssessment(
+            classification="unknown",
+            reason="主酶与目标反应尚未确认匹配，不能判断辅助蛋白需求。",
+            evidence_ids=all_evidence_ids,
+            evidence_conflict=bool(result.conflicting_evidence),
+        )
+
+    if result.conflicting_evidence:
+        return AuxiliaryRequirementAssessment(
+            classification="unknown",
+            reason="辅助蛋白依赖证据存在明确冲突，不能给出方向性结论。",
+            evidence_ids=all_evidence_ids,
+            candidate_auxiliary_accessions=list(
+                dict.fromkeys(
+                    [
+                        *(item.uniprot_id for item in result.auxiliary_proteins),
+                        *(
+                            item.uniprot_id
+                            for item in result.candidate_auxiliary_proteins
+                        ),
+                    ]
+                )
+            ),
+            evidence_conflict=True,
+        )
+
+    confirmed_required = [
+        item
+        for item in result.auxiliary_proteins
+        if item.necessity == "required"
+    ]
+    if result.outcome in {"host_supported", "supplement_required"}:
+        return AuxiliaryRequirementAssessment(
+            classification="confirmed_required",
+            reason=result.auxiliary_requirement_reason,
+            evidence_ids=list(
+                dict.fromkeys(
+                    evidence_id
+                    for item in confirmed_required
+                    for evidence_id in item.evidence_citation_ids
+                )
+            ),
+            candidate_auxiliary_accessions=[
+                item.uniprot_id for item in confirmed_required
+            ],
+        )
+
+    if result.outcome == "independent":
+        return AuxiliaryRequirementAssessment(
+            classification="confirmed_not_required",
+            reason=result.auxiliary_requirement_reason,
+            evidence_ids=all_evidence_ids,
+        )
+
+    citations = {item.citation_id: item for item in result.evidence}
+    possible_required_candidates = []
+    possible_required_evidence_ids: list[str] = []
+    for candidate in result.candidate_auxiliary_proteins:
+        if candidate.proposed_necessity != "required":
+            continue
+        supported_ids = [
+            citation_id
+            for citation_id in candidate.evidence_citation_ids
+            if (citation := citations.get(citation_id)) is not None
+            and citation.direction == "supports"
+            and citation.strength
+            in {"direct_experimental", "curated", "indirect"}
+        ]
+        if not supported_ids:
+            continue
+        possible_required_candidates.append(candidate.uniprot_id)
+        possible_required_evidence_ids.extend(supported_ids)
+
+    independence = result.independence_assessment
+    possible_not_required_evidence_ids = list(
+        dict.fromkeys(
+            evidence_id
+            for item in independence.evidence
+            for evidence_id in item.evidence_ids
+        )
+    )
+    has_possible_not_required = (
+        independence.confidence == "medium"
+        and independence.conclusion == "likely_independent"
+        and bool(possible_not_required_evidence_ids)
+    )
+    if possible_required_candidates and has_possible_not_required:
+        return AuxiliaryRequirementAssessment(
+            classification="unknown",
+            reason=(
+                "同时存在可能依赖和可能独立的证据，当前不能确定辅助蛋白需求。"
+            ),
+            evidence_ids=list(
+                dict.fromkeys(
+                    [
+                        *possible_required_evidence_ids,
+                        *possible_not_required_evidence_ids,
+                    ]
+                )
+            ),
+            candidate_auxiliary_accessions=list(
+                dict.fromkeys(possible_required_candidates)
+            ),
+            evidence_conflict=True,
+        )
+    if possible_required_candidates:
+        return AuxiliaryRequirementAssessment(
+            classification="possibly_required",
+            reason=(
+                "存在支持辅助蛋白依赖的方向性证据，但尚未达到确认门槛。"
+            ),
+            evidence_ids=list(dict.fromkeys(possible_required_evidence_ids)),
+            candidate_auxiliary_accessions=list(
+                dict.fromkeys(possible_required_candidates)
+            ),
+        )
+    if has_possible_not_required:
+        return AuxiliaryRequirementAssessment(
+            classification="possibly_not_required",
+            reason=(
+                independence.reasons[0]
+                if independence.reasons
+                else "存在支持主酶可能独立工作的实验依据。"
+            ),
+            evidence_ids=possible_not_required_evidence_ids,
+        )
+    return AuxiliaryRequirementAssessment(
+        classification="unknown",
+        reason=result.auxiliary_requirement_reason,
+        evidence_ids=all_evidence_ids,
+    )
+
+
+def status_for_auxiliary_assessment(
+    result: MainResearchResult,
+    assessment: AuxiliaryRequirementAssessment,
+) -> MainEnzymeResearchStatus:
+    """Map one five-level assessment to workflow status."""
+
     if result.outcome == "reaction_mismatch":
         return "blocked"
+    if assessment.classification in {
+        "confirmed_required",
+        "possibly_not_required",
+        "confirmed_not_required",
+    }:
+        return "complete"
     return "review_required"
 
 
@@ -123,6 +336,7 @@ class MainEnzymeAuxiliaryResearchResult(BaseModel):
     assigned_step_indexes: list[int] = Field(min_length=1)
     reaction_ids: list[str] = Field(min_length=1)
     status: MainEnzymeResearchStatus
+    auxiliary_requirement_assessment: AuxiliaryRequirementAssessment
     research_result: MainResearchResult | None = None
     error: str | None = None
 
@@ -178,6 +392,14 @@ class MainEnzymeAuxiliaryResearchResult(BaseModel):
                 raise ValueError("service_error units cannot contain a result")
             if not self.error:
                 raise ValueError("service_error units require an error message")
+            expected_assessment = assess_auxiliary_requirement(
+                None,
+                service_error=self.error,
+            )
+            if self.auxiliary_requirement_assessment != expected_assessment:
+                raise ValueError(
+                    "service_error auxiliary assessment is inconsistent"
+                )
             return self
 
         if self.error is not None:
@@ -191,7 +413,17 @@ class MainEnzymeAuxiliaryResearchResult(BaseModel):
             self.reaction_ids,
             label=f"main enzyme {self.accession}",
         )
-        expected_status = _status_for_result(self.research_result)
+        expected_assessment = assess_auxiliary_requirement(
+            self.research_result
+        )
+        if self.auxiliary_requirement_assessment != expected_assessment:
+            raise ValueError(
+                "auxiliary requirement assessment does not match evidence"
+            )
+        expected_status = status_for_auxiliary_assessment(
+            self.research_result,
+            expected_assessment,
+        )
         if self.status != expected_status:
             raise ValueError(
                 "unit status does not match the main research outcome"
@@ -204,10 +436,10 @@ class AuxiliaryProteinCombinationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["auxiliary_protein_research.v2"] = (
+    schema_version: Literal["auxiliary_protein_research.v3"] = (
         AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION
     )
-    pipeline_version: Literal["auxiliary_protein_pipeline.v2"] = (
+    pipeline_version: Literal["auxiliary_protein_pipeline.v3"] = (
         AUXILIARY_PROTEIN_PIPELINE_VERSION
     )
     generated_at: str = Field(min_length=1)
@@ -320,6 +552,19 @@ class AuxiliaryProteinCombinationResult(BaseModel):
             raise ValueError("complete results cannot contain blocking reasons")
         if self.status != "complete" and not self.blocking_reasons:
             raise ValueError("non-complete results require blocking reasons")
+        for item in self.main_enzyme_results:
+            if (
+                item.auxiliary_requirement_assessment.classification
+                != "possibly_not_required"
+            ):
+                continue
+            if not any(
+                item.accession in warning and "可能不需要辅助蛋白" in warning
+                for warning in self.warnings
+            ):
+                raise ValueError(
+                    "possibly_not_required units require an explicit warning"
+                )
 
         required: list[str] = []
         recommended: list[str] = []
@@ -400,9 +645,13 @@ class AuxiliaryProteinCombinationResult(BaseModel):
 __all__ = [
     "AUXILIARY_PROTEIN_PIPELINE_VERSION",
     "AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION",
+    "AuxiliaryRequirementAssessment",
+    "AuxiliaryRequirementClassification",
     "AuxiliaryProteinCombinationResult",
     "CombinationResearchStatus",
     "MainEnzymeAuxiliaryResearchResult",
     "MainEnzymeResearchStatus",
+    "assess_auxiliary_requirement",
     "auxiliary_protein_result_fingerprint",
+    "status_for_auxiliary_assessment",
 ]
