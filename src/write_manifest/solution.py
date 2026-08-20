@@ -118,6 +118,10 @@ SOLUTION_DOWNSTREAM_SECTIONS = (
     "expression_cassette_assembly",
     "parts_selection",
     "assembled_expression_cassettes",
+    "assembled_expression_constructs",
+    "plasmid_selection",
+    "final_assembly_plan",
+    "final_assembly",
 )
 
 

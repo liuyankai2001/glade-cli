@@ -6,10 +6,14 @@ from src.write_manifest.expression_parts import (
     run_write_expression_parts_selection,
 )
 from src.write_manifest.main_enzyme import run_write_main_enzyme_set
+from src.write_manifest.plasmid import run_write_plasmid_selection
 from src.write_manifest.solution import run_write_solution
 
 
 def run_write(config):
+    if getattr(config, "plasmid", None) is not None:
+        return run_write_plasmid_selection(config)
+
     if getattr(config, "expression_parts", None) is not None:
         return run_write_expression_parts_selection(config)
 
@@ -38,6 +42,12 @@ def register(subparsers):
 
     action.add_argument("--solution", type=int, metavar="N")
     action.add_argument("--main-enzyme-set", type=int, metavar="N")
+    action.add_argument(
+        "--plasmid",
+        type=int,
+        metavar="N",
+        help="将排名为 N 的质粒骨架候选写入 manifest",
+    )
     action.add_argument(
         "--expression-parts",
         nargs="+",

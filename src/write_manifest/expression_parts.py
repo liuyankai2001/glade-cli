@@ -26,6 +26,7 @@ PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v1"
 PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "assembled_expression_cassettes",
     "assembled_expression_constructs",
+    "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
 )

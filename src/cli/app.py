@@ -9,6 +9,7 @@ from src.cli.commands import (
     info,
     main_enzyme,
     main_enzyme_sets,
+    plasmid,
     protein_to_cds,
     validate,
     write,
@@ -28,6 +29,7 @@ COMMAND_MODULES = [
     main_enzyme_sets,
     auxiliary_protein,
     protein_to_cds,
+    plasmid,
 ]
 
 def build_parser():

@@ -20,3 +20,4 @@ __all__ = [
     "write_expression_parts_selection",
     "write_solution",
 ]
+"""Native writers for sections of ``design_manifest.json``."""
