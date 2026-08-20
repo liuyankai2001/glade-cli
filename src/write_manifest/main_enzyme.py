@@ -52,6 +52,7 @@ MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "protein_selection",
     "auxiliary_protein_selection",
     "enzyme_system_selection",
+    "cds_selection",
 )
 
 _SUPPORTED_DIRECTIONS = {

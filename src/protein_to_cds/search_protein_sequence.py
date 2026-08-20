@@ -15,10 +15,7 @@ from urllib.request import Request, urlopen
 
 from Bio import SeqIO
 
-
-UNIPROT_FASTA_URL_TEMPLATE = (
-    "https://rest.uniprot.org/uniprotkb/{accession}.fasta"
-)
+UNIPROT_FASTA_URL_TEMPLATE = "https://rest.uniprot.org/uniprotkb/{accession}.fasta"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 USER_AGENT = "glade/0.1.0"
 STANDARD_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
@@ -27,7 +24,7 @@ STANDARD_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
 # newer ten-character form.  Isoform accessions add a numeric suffix.
 _ACCESSION_RE = re.compile(
     r"(?:[OPQ][0-9][A-Z0-9]{3}[0-9]"
-    r"|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}){1,2}[0-9])"
+    r"|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})"
     r"(?:-[1-9][0-9]*)?"
 )
 _WRITE_LOCK = threading.RLock()
@@ -69,6 +66,7 @@ class ProteinSequenceRecord:
     sequence_sha256: str
     source_url: str
     fasta_path: Path
+    reused_existing: bool
 
 
 def normalize_uniprot_accession(accession: str) -> str:
@@ -78,9 +76,7 @@ def normalize_uniprot_accession(accession: str) -> str:
     if not normalized:
         raise InvalidUniProtAccessionError("UniProt accession must not be empty")
     if _ACCESSION_RE.fullmatch(normalized) is None:
-        raise InvalidUniProtAccessionError(
-            f"invalid UniProt accession: {accession!r}"
-        )
+        raise InvalidUniProtAccessionError(f"invalid UniProt accession: {accession!r}")
     return normalized
 
 
@@ -88,14 +84,20 @@ def _sequence_sha256(sequence: str) -> str:
     return hashlib.sha256(sequence.encode("utf-8")).hexdigest()
 
 
-def _parse_record_identity(record_id: str) -> tuple[str, str]:
+def _parse_record_identity(
+    record_id: str,
+    record_description: str = "",
+) -> tuple[str, str]:
     tokens = str(record_id or "").strip().split("|")
     if len(tokens) == 3 and tokens[0].lower() in {"sp", "tr"}:
         primary_accession = normalize_uniprot_accession(tokens[1])
         entry_name = tokens[2].strip()
     else:
         primary_accession = normalize_uniprot_accession(tokens[0])
-        entry_name = primary_accession
+        description_tokens = str(record_description or "").strip().split()
+        entry_name = (
+            description_tokens[1] if len(description_tokens) > 1 else primary_accession
+        )
 
     if not entry_name or any(character.isspace() for character in entry_name):
         raise InvalidProteinSequenceError(
@@ -136,7 +138,10 @@ def _parse_single_fasta(fasta_text: str) -> tuple[str, str, str]:
         )
 
     record = records[0]
-    primary_accession, entry_name = _parse_record_identity(record.id)
+    primary_accession, entry_name = _parse_record_identity(
+        record.id,
+        record.description,
+    )
     sequence = _normalize_protein_sequence(str(record.seq))
     return primary_accession, entry_name, sequence
 
@@ -244,12 +249,6 @@ def search_protein_sequence(
     """
 
     requested_accession = normalize_uniprot_accession(accession)
-    fasta_text, source_url = _download_uniprot_fasta(
-        requested_accession,
-        timeout_seconds=float(timeout_seconds),
-    )
-    primary_accession, entry_name, sequence = _parse_single_fasta(fasta_text)
-
     destination_dir = Path(output_dir).expanduser().resolve()
     try:
         destination_dir.mkdir(parents=True, exist_ok=True)
@@ -262,6 +261,38 @@ def search_protein_sequence(
             f"protein-sequence output path is not a directory: {destination_dir}"
         )
 
+    existing_path = destination_dir / f"{requested_accession}.fasta"
+    if existing_path.exists():
+        try:
+            existing_text = existing_path.read_text(encoding="utf-8")
+            primary_accession, entry_name, sequence = _parse_single_fasta(existing_text)
+        except (OSError, UnicodeError, ProteinSequenceError) as exc:
+            raise ProteinSequenceConflictError(
+                "existing protein FASTA is invalid and will not be overwritten: "
+                f"{existing_path}"
+            ) from exc
+        if primary_accession != requested_accession:
+            raise ProteinSequenceConflictError(
+                f"existing FASTA {existing_path} identifies {primary_accession}, "
+                f"not {requested_accession}"
+            )
+        return ProteinSequenceRecord(
+            requested_accession=requested_accession,
+            primary_accession=primary_accession,
+            entry_name=entry_name,
+            sequence=sequence,
+            length_aa=len(sequence),
+            sequence_sha256=_sequence_sha256(sequence),
+            source_url=UNIPROT_FASTA_URL_TEMPLATE.format(accession=requested_accession),
+            fasta_path=existing_path,
+            reused_existing=True,
+        )
+
+    fasta_text, source_url = _download_uniprot_fasta(
+        requested_accession,
+        timeout_seconds=float(timeout_seconds),
+    )
+    primary_accession, entry_name, sequence = _parse_single_fasta(fasta_text)
     fasta_path = destination_dir / f"{primary_accession}.fasta"
     sequence_hash = _sequence_sha256(sequence)
     canonical_fasta = _canonical_fasta(primary_accession, entry_name, sequence)
@@ -291,6 +322,7 @@ def search_protein_sequence(
         sequence_sha256=sequence_hash,
         source_url=source_url,
         fasta_path=fasta_path,
+        reused_existing=False,
     )
 
 

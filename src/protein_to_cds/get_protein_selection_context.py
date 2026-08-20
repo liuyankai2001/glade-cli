@@ -1,546 +1,340 @@
+"""Adapt the current design manifest into proteins requiring CDS design."""
+
 from __future__ import annotations
 
-import csv
+import hashlib
 import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from langchain.tools import tool
-from pydantic import BaseModel, Field
+from src.write_manifest.store import read_design_manifest
 
-from src.runtime.monitor import monitor
-from src.tools.common.session_paths import design_manifest_file, session_dir as resolve_session_dir
-from src.tools.enzyme_system_selection_tools.protein_selection_gate import (
-    evaluate_protein_selection_gate,
-)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
-class GetProteinSelectionContextArgs(BaseModel):
-    top_candidates_per_step: int = Field(default=3, ge=0, le=50, description="每个 step 返回的候选蛋白数量")
-    detail: Literal["compact", "full"] = Field(
-        default="compact",
-        description="返回详细程度：compact 精简输出；full 返回完整候选和 CDS 上下文",
+@dataclass(frozen=True, slots=True)
+class SelectedProteinForCds:
+    accession: str
+    roles: tuple[str, ...]
+    protein_name: str
+    organism_name: str
+    assigned_step_indexes: tuple[int, ...]
+    required_by_main_accessions: tuple[str, ...]
+    expected_sequence_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProteinToCdsContext:
+    manifest_path: Path
+    manifest_revision: int
+    target_compound_id: str
+    chassis_key: str
+    selected_solution_id: int
+    selected_set_id: int
+    source_fingerprint: str
+    proteins: tuple[SelectedProteinForCds, ...]
+    warnings: tuple[str, ...]
+
+
+def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"manifest missing object: {field_name}")
+    return value
+
+
+def _nonempty_text(value: Any, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"manifest field must not be empty: {field_name}")
+    return text
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"manifest field must be an integer: {field_name}")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        result = int(value.strip())
+    else:
+        raise ValueError(f"manifest field must be an integer: {field_name}")
+    if result < 1:
+        raise ValueError(f"manifest field must be positive: {field_name}")
+    return result
+
+
+def _step_indexes(value: Any, field_name: str) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"manifest field must be a list: {field_name}")
+    indexes = tuple(sorted({_positive_int(item, field_name) for item in value}))
+    if not indexes:
+        raise ValueError(f"manifest field must not be empty: {field_name}")
+    return indexes
+
+
+def _sha256_or_none(value: Any, field_name: str) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    normalized = str(value).strip().lower()
+    if _SHA256_RE.fullmatch(normalized) is None:
+        raise ValueError(f"manifest field is not a SHA-256 digest: {field_name}")
+    return normalized
+
+
+def _stable_fingerprint(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _main_proteins(
+    selection: Mapping[str, Any],
+) -> dict[str, SelectedProteinForCds]:
+    raw_proteins = selection.get("proteins")
+    if not isinstance(raw_proteins, list) or not raw_proteins:
+        raise ValueError("main_enzyme_selection.proteins must be a non-empty list")
+
+    proteins: dict[str, SelectedProteinForCds] = {}
+    for index, raw in enumerate(raw_proteins):
+        item = _mapping(raw, f"main_enzyme_selection.proteins[{index}]")
+        accession = _nonempty_text(
+            item.get("accession"),
+            f"main_enzyme_selection.proteins[{index}].accession",
+        ).upper()
+        if accession in proteins:
+            raise ValueError(f"duplicate main-enzyme accession: {accession}")
+        proteins[accession] = SelectedProteinForCds(
+            accession=accession,
+            roles=("main_enzyme",),
+            protein_name=str(item.get("protein_name") or "").strip(),
+            organism_name=str(item.get("organism_name") or "").strip(),
+            assigned_step_indexes=_step_indexes(
+                item.get("assigned_step_indexes"),
+                f"main_enzyme_selection.proteins[{index}].assigned_step_indexes",
+            ),
+            required_by_main_accessions=(),
+            expected_sequence_sha256=_sha256_or_none(
+                item.get("sequence_sha256"),
+                f"main_enzyme_selection.proteins[{index}].sequence_sha256",
+            ),
+        )
+    return proteins
+
+
+def _auxiliary_details(
+    auxiliary: Mapping[str, Any],
+    main_proteins: Mapping[str, SelectedProteinForCds],
+) -> dict[str, SelectedProteinForCds]:
+    raw_introduce = auxiliary.get("auxiliary_proteins_to_introduce")
+    if not isinstance(raw_introduce, list):
+        raise ValueError(
+            "auxiliary_protein_selection.auxiliary_proteins_to_introduce must be a list"
+        )
+    introduce = {str(value or "").strip().upper() for value in raw_introduce}
+    introduce.discard("")
+    if not introduce:
+        return {}
+
+    raw_main_entries = auxiliary.get("main_enzymes")
+    if not isinstance(raw_main_entries, list):
+        raise ValueError("auxiliary_protein_selection.main_enzymes must be a list")
+
+    details: dict[str, SelectedProteinForCds] = {}
+    for main_index, raw_main in enumerate(raw_main_entries):
+        main_entry = _mapping(
+            raw_main,
+            f"auxiliary_protein_selection.main_enzymes[{main_index}]",
+        )
+        main_accession = _nonempty_text(
+            main_entry.get("accession"),
+            f"auxiliary_protein_selection.main_enzymes[{main_index}].accession",
+        ).upper()
+        main = main_proteins.get(main_accession)
+        if main is None:
+            raise ValueError(
+                "auxiliary protein research references an unselected main enzyme: "
+                f"{main_accession}"
+            )
+        confirmed = main_entry.get("confirmed_auxiliary_proteins")
+        if not isinstance(confirmed, list):
+            raise ValueError(
+                "auxiliary_protein_selection.main_enzymes"
+                f"[{main_index}].confirmed_auxiliary_proteins must be a list"
+            )
+        for aux_index, raw_aux in enumerate(confirmed):
+            aux = _mapping(
+                raw_aux,
+                "auxiliary_protein_selection.main_enzymes"
+                f"[{main_index}].confirmed_auxiliary_proteins[{aux_index}]",
+            )
+            accession = _nonempty_text(
+                aux.get("accession"), "auxiliary accession"
+            ).upper()
+            if accession not in introduce:
+                continue
+            previous = details.get(accession)
+            if previous is None:
+                details[accession] = SelectedProteinForCds(
+                    accession=accession,
+                    roles=("auxiliary_protein",),
+                    protein_name=str(aux.get("protein_name") or "").strip(),
+                    organism_name=str(aux.get("organism_name") or "").strip(),
+                    assigned_step_indexes=main.assigned_step_indexes,
+                    required_by_main_accessions=(main_accession,),
+                    expected_sequence_sha256=None,
+                )
+            else:
+                details[accession] = replace(
+                    previous,
+                    assigned_step_indexes=tuple(
+                        sorted(
+                            set(previous.assigned_step_indexes)
+                            | set(main.assigned_step_indexes)
+                        )
+                    ),
+                    required_by_main_accessions=tuple(
+                        sorted(
+                            set(previous.required_by_main_accessions) | {main_accession}
+                        )
+                    ),
+                )
+
+    missing = sorted(introduce - set(details))
+    if missing:
+        raise ValueError(
+            "auxiliary_proteins_to_introduce lacks confirmed protein details: "
+            + ", ".join(missing)
+        )
+    return details
+
+
+def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
+    """Return the unique manifest-selected proteins that require CDS design."""
+
+    path = Path(manifest_path).expanduser().resolve()
+    manifest = read_design_manifest(path)
+    target_compound_id = _nonempty_text(
+        manifest.get("target_compound_id"), "target_compound_id"
+    )
+    try:
+        revision = int(manifest.get("revision", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("manifest revision must be an integer") from exc
+
+    selection = _mapping(manifest.get("main_enzyme_selection"), "main_enzyme_selection")
+    selection_status = _nonempty_text(
+        selection.get("selection_status"),
+        "main_enzyme_selection.selection_status",
+    )
+    if selection_status not in {"user_selected", "user_selected_pending_review"}:
+        raise ValueError("main enzyme set is not user selected: " + selection_status)
+    coverage = _mapping(selection.get("coverage"), "main_enzyme_selection.coverage")
+    if coverage.get("complete") is not True:
+        raise ValueError("main enzyme selection does not completely cover the route")
+
+    chassis_key = _nonempty_text(
+        selection.get("chassis_key"), "main_enzyme_selection.chassis_key"
+    )
+    selected_solution_id = _positive_int(
+        selection.get("selected_solution_id"),
+        "main_enzyme_selection.selected_solution_id",
+    )
+    selected_set_id = _positive_int(
+        selection.get("selected_set_id"),
+        "main_enzyme_selection.selected_set_id",
+    )
+    warnings: list[str] = []
+    if selection_status == "user_selected_pending_review":
+        warnings.append(
+            "main enzyme selection contains unresolved review items; CDS design continued"
+        )
+
+    proteins = _main_proteins(selection)
+    auxiliary_raw = manifest.get("auxiliary_protein_selection")
+    auxiliary_source_fingerprint = ""
+    if auxiliary_raw is None:
+        warnings.append(
+            "auxiliary_protein_selection is absent; only selected main enzymes were processed"
+        )
+    else:
+        auxiliary = _mapping(auxiliary_raw, "auxiliary_protein_selection")
+        if auxiliary.get("can_advance") is not True:
+            raise ValueError("auxiliary protein selection cannot advance to CDS design")
+        source = auxiliary.get("source")
+        if isinstance(source, Mapping):
+            auxiliary_source_fingerprint = str(
+                source.get("result_fingerprint") or ""
+            ).strip()
+        for accession, auxiliary_protein in _auxiliary_details(
+            auxiliary, proteins
+        ).items():
+            if accession in proteins:
+                main = proteins[accession]
+                proteins[accession] = replace(
+                    main,
+                    roles=tuple(sorted(set(main.roles) | set(auxiliary_protein.roles))),
+                    assigned_step_indexes=tuple(
+                        sorted(
+                            set(main.assigned_step_indexes)
+                            | set(auxiliary_protein.assigned_step_indexes)
+                        )
+                    ),
+                    required_by_main_accessions=auxiliary_protein.required_by_main_accessions,
+                )
+            else:
+                proteins[accession] = auxiliary_protein
+
+    ordered = tuple(proteins[accession] for accession in sorted(proteins))
+    fingerprint_payload = {
+        "target_compound_id": target_compound_id,
+        "selected_solution_id": selected_solution_id,
+        "selected_set_id": selected_set_id,
+        "selected_set_fingerprint": str(
+            selection.get("selected_set_fingerprint") or ""
+        ),
+        "auxiliary_source_fingerprint": auxiliary_source_fingerprint,
+        "chassis_key": chassis_key,
+        "proteins": [
+            {
+                "accession": item.accession,
+                "roles": item.roles,
+                "protein_name": item.protein_name,
+                "organism_name": item.organism_name,
+                "assigned_step_indexes": item.assigned_step_indexes,
+                "required_by_main_accessions": (item.required_by_main_accessions),
+                "expected_sequence_sha256": item.expected_sequence_sha256,
+            }
+            for item in ordered
+        ],
+    }
+    return ProteinToCdsContext(
+        manifest_path=path,
+        manifest_revision=revision,
+        target_compound_id=target_compound_id,
+        chassis_key=chassis_key,
+        selected_solution_id=selected_solution_id,
+        selected_set_id=selected_set_id,
+        source_fingerprint=_stable_fingerprint(fingerprint_payload),
+        proteins=ordered,
+        warnings=tuple(warnings),
     )
 
 
-def _json_error(error: str, **details: Any) -> str:
-    return json.dumps({"ok": False, "error": error, **details}, ensure_ascii=False, default=str)
+# Transitional name retained for callers that imported the old module-level
+# function.  The return type is now the typed current-manifest context.
+get_protein_selection_context = get_proteins_for_cds
 
 
-def _session_root(session_dir: str | None, manifest_path: str | None) -> Path:
-    if session_dir:
-        return Path(session_dir).resolve()
-    if manifest_path:
-        path = Path(manifest_path).resolve()
-        if path.name == "design_manifest.json" and path.parent.name == "outputs":
-            return path.parent.parent.resolve()
-    return resolve_session_dir()
-
-
-def _safe_path(session_root: Path, path_value: str | Path) -> Path:
-    path = Path(path_value)
-    if not path.is_absolute():
-        path = session_root / path
-    path = path.resolve()
-    session_root = session_root.resolve()
-    if path != session_root and session_root not in path.parents:
-        raise ValueError(f"path escapes session_dir: {path}")
-    return path
-
-
-def _relpath(session_root: Path, path: Path) -> str:
-    return path.resolve().relative_to(session_root.resolve()).as_posix()
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"JSON root must be an object: {path}")
-    return data
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        return list(csv.DictReader(file))
-
-
-def _split_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return _unique([str(item) for item in value])
-    text = str(value).strip()
-    if not text:
-        return []
-    return _unique([
-        part.strip()
-        for chunk in text.split("|")
-        for part in chunk.split(";")
-        if part.strip()
-    ])
-
-
-def _unique(values: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for value in values:
-        text = str(value or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            result.append(text)
-    return result
-
-
-def _number(value: Any) -> int | float | str | bool | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    lowered = text.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    try:
-        number = float(text)
-    except ValueError:
-        return text
-    return int(number) if number.is_integer() else number
-
-
-def _to_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(float(str(value).strip()))
-    except (TypeError, ValueError):
-        return default
-
-
-def _candidate_file(manifest: dict[str, Any], session_root: Path, key: str) -> Path | None:
-    protein_selection = manifest.get("protein_selection")
-    if not isinstance(protein_selection, dict):
-        return None
-    files = protein_selection.get("files")
-    if not isinstance(files, dict):
-        return None
-    value = files.get(key)
-    if not value:
-        return None
-    return _safe_path(session_root, value)
-
-
-def _pathway_steps_file(manifest: dict[str, Any], session_root: Path) -> Path | None:
-    pathway_selection = manifest.get("pathway_selection")
-    if isinstance(pathway_selection, dict):
-        evidence_files = pathway_selection.get("evidence_files")
-        if isinstance(evidence_files, dict):
-            steps_csv = evidence_files.get("steps_csv")
-            if isinstance(steps_csv, dict) and steps_csv.get("path"):
-                return _safe_path(session_root, steps_csv["path"])
-
-    solution = manifest.get("solution")
-    if isinstance(solution, dict):
-        files = solution.get("files")
-        if isinstance(files, dict):
-            path_value = files.get("all_solution_steps_csv") or files.get("steps_csv")
-            if path_value:
-                return _safe_path(session_root, path_value)
-    return None
-
-
-def _selected_solution_id(manifest: dict[str, Any]) -> int | None:
-    pathway_selection = manifest.get("pathway_selection")
-    if isinstance(pathway_selection, dict):
-        value = pathway_selection.get("selected_solution_id")
-        if value is not None:
-            return _to_int(value)
-
-    solution = manifest.get("solution")
-    if isinstance(solution, dict):
-        value = solution.get("solution_id")
-        if value is not None:
-            return _to_int(value)
-
-    protein_selection = manifest.get("protein_selection")
-    if isinstance(protein_selection, dict):
-        value = protein_selection.get("selected_solution_id")
-        if value is not None:
-            return _to_int(value)
-    return None
-
-
-def _pathway_steps(manifest: dict[str, Any], session_root: Path, solution_id: int | None) -> tuple[list[dict[str, Any]], str | None]:
-    steps_file = _pathway_steps_file(manifest, session_root)
-    if steps_file is not None:
-        rows = _read_csv(steps_file)
-        if solution_id is not None:
-            rows = [row for row in rows if _to_int(row.get("solution_id")) == solution_id]
-        return [{key: _number(value) for key, value in row.items()} for row in rows], _relpath(session_root, steps_file)
-
-    solution = manifest.get("solution")
-    if isinstance(solution, dict) and isinstance(solution.get("steps"), list):
-        return [step for step in solution["steps"] if isinstance(step, dict)], None
-
-    return [], None
-
-
-def _candidate_summary(row: dict[str, str], recommended_accessions: set[str]) -> dict[str, Any]:
-    accession = str(row.get("accession", "")).strip()
-    payload = {
-        "accession": accession,
-        "entry_name": row.get("entry_name", ""),
-        "protein_name": row.get("protein_name", ""),
-        "organism_name": row.get("organism_name", ""),
-        "organism_id": _number(row.get("organism_id")),
-        "reviewed": _number(row.get("reviewed")),
-        "length": _number(row.get("length")),
-        "role": row.get("role", "main") or "main",
-        "accessory_type": row.get("accessory_type", ""),
-        "accessory_for_step_index": _number(row.get("accessory_for_step_index")),
-        "ec_number": row.get("ec_number", ""),
-        "score": _number(row.get("score")),
-        "gene_names": _split_list(row.get("gene_names")),
-        "warnings": _split_list(row.get("warnings")),
-        "recommended_for_route": accession in recommended_accessions,
-    }
-    return {key: value for key, value in payload.items() if value not in (None, "", [])}
-
-
-def _compact_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    payload = {
-        "accession": candidate.get("accession"),
-        "protein_name": candidate.get("protein_name", ""),
-        "organism_name": candidate.get("organism_name", ""),
-        "role": candidate.get("role", "main"),
-        "accessory_type": candidate.get("accessory_type", ""),
-        "reviewed": candidate.get("reviewed"),
-        "length": candidate.get("length"),
-        "score": candidate.get("score"),
-        "recommended_for_route": candidate.get("recommended_for_route"),
-    }
-    warnings = candidate.get("warnings") or []
-    if warnings:
-        payload["warnings"] = warnings
-    return payload
-
-
-def _compact_step(step: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "step_index": step.get("step_index"),
-        "reaction_id": step.get("reaction_id", ""),
-        "reaction_name": step.get("reaction_name", ""),
-        "ec_numbers": step.get("ec_numbers", []),
-        "candidate_count": step.get("candidate_count", 0),
-        "recommended_accessions": step.get("recommended_accessions", []),
-        "candidates": [
-            _compact_candidate(candidate)
-            for candidate in step.get("candidates", [])
-            if isinstance(candidate, dict)
-        ],
-    }
-
-
-def _compact_selected_cds(item: dict[str, Any]) -> dict[str, Any]:
-    protein = item.get("protein") if isinstance(item.get("protein"), dict) else {}
-    optimized = item.get("optimized_cds") if isinstance(item.get("optimized_cds"), dict) else {}
-    sequence_file = optimized.get("sequence_file") if isinstance(optimized.get("sequence_file"), dict) else {}
-    payload = {
-        "cds_id": item.get("cds_id"),
-        "step_index": item.get("step_index"),
-        "reaction_id": item.get("reaction_id"),
-        "ec_number": item.get("ec_number"),
-        "accession": protein.get("accession"),
-        "protein_name": protein.get("protein_name", ""),
-        "organism_name": protein.get("organism_name", ""),
-        "sequence_file": sequence_file.get("path"),
-        "length_nt": optimized.get("length_nt"),
-        "gc_percent": optimized.get("gc_percent"),
-    }
-    return {key: value for key, value in payload.items() if value not in (None, "", [])}
-
-
-def _recommended_accessions(manifest: dict[str, Any]) -> list[str]:
-    protein_selection = manifest.get("protein_selection")
-    if not isinstance(protein_selection, dict):
-        return []
-    design = protein_selection.get("recommended_design")
-    if not isinstance(design, dict):
-        return []
-    return _split_list(design.get("selected_accessions"))
-
-
-def _recommended_proteins(manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    protein_selection = manifest.get("protein_selection")
-    if not isinstance(protein_selection, dict):
-        return []
-    design = protein_selection.get("recommended_design")
-    if not isinstance(design, dict):
-        return []
-    proteins = design.get("selected_proteins")
-    if isinstance(proteins, list):
-        return [item for item in proteins if isinstance(item, dict)]
-    return []
-
-
-def _protein_selection_gate(
-    manifest: dict[str, Any],
-    heterologous_steps: list[dict[str, Any]],
-) -> dict[str, Any]:
-    required = {
-        _to_int(step.get("step_index"))
-        for step in heterologous_steps
-        if _to_int(step.get("step_index"))
-    }
-    # Figure-3's immutable v2.5 benchmark uses a deliberately synthetic object
-    # without a route solution. Preserve its historical diagnostic semantics,
-    # while every real manifest (which has ``solution``) uses the v2.6 gate and
-    # rejects v2.5 for CDS hand-off.
-    if (
-        not isinstance(manifest.get("solution"), dict)
-        and not str(manifest.get("schema_version") or "").strip()
-    ):
-        selection = manifest.get("protein_selection")
-        design = selection.get("recommended_design") if isinstance(selection, dict) else None
-        if not isinstance(design, dict):
-            return {
-                "can_proceed_to_cds": False,
-                "status": "missing_protein_selection" if not isinstance(selection, dict) else "missing_recommended_design",
-                "verified_step_indexes": [],
-                "unverified_step_indexes": sorted(required),
-                "errors": ["synthetic context lacks a complete protein selection"],
-            }
-        schema = str(selection.get("schema_version") or design.get("schema_version") or "")
-        verified = {
-            _to_int(value)
-            for value in _split_list(design.get("verified_step_indexes"))
-            if _to_int(value)
-        }
-        blocking = design.get("blocking_issues", [])
-        blocking = blocking if isinstance(blocking, list) else []
-        accessory_requirements = selection.get("accessory_requirements", [])
-        accessory_requirements = accessory_requirements if isinstance(accessory_requirements, list) else []
-        selected_proteins = design.get("selected_proteins", [])
-        selected_proteins = selected_proteins if isinstance(selected_proteins, list) else []
-        string_required = bool(accessory_requirements) or any(
-            isinstance(item, dict) and item.get("role") == "required_main_component"
-            for item in selected_proteins
-        )
-        string_summary = design.get("string_evidence_summary", {})
-        string_summary = string_summary if isinstance(string_summary, dict) else {}
-        string_ok = not string_required or (
-            string_summary.get("completion_attempted") is True
-            and string_summary.get("all_required_systems_verified") is True
-        )
-        can_proceed = (
-            schema == "protein_selection.v2.5"
-            and str(design.get("status") or "") in {"complete", "complete_with_risks"}
-            and verified == required
-            and not blocking
-            and string_ok
-            and bool(_split_list(design.get("selected_accessions")))
-        )
-        return {
-            "can_proceed_to_cds": can_proceed,
-            "status": str(design.get("status") or "") if schema == "protein_selection.v2.5" else "requires_reselection",
-            "schema_version": schema,
-            "verified_step_indexes": sorted(verified),
-            "unverified_step_indexes": sorted(required - verified),
-            "blocking_issue_count": len(blocking),
-            "string_gate_ok": string_ok,
-            "legacy_synthetic_context": True,
-            "errors": [] if can_proceed else ["legacy synthetic benchmark gate is blocked"],
-        }
-
-    result = evaluate_protein_selection_gate(manifest)
-    verified = {
-        _to_int(value)
-        for value in result.get("verified_step_indexes", [])
-        if _to_int(value)
-    }
-    string_errors = {
-        "STRING completion was not run for network-required components",
-        "network-required component evidence is incomplete",
-        "selected network-required accessory system is not auto-verified",
-    }
-    result["unverified_step_indexes"] = sorted(required - verified)
-    result["string_gate_ok"] = not bool(string_errors & set(result.get("errors", [])))
-    return result
-
-
-def _route_summary(manifest: dict[str, Any]) -> dict[str, Any]:
-    pathway_selection = manifest.get("pathway_selection")
-    if isinstance(pathway_selection, dict):
-        return {
-            "source": pathway_selection.get("source"),
-            "target_compound_id": pathway_selection.get("target_compound_id"),
-            "selected_solution_id": pathway_selection.get("selected_solution_id"),
-            "gap_dir": pathway_selection.get("gap_dir"),
-        }
-
-    solution = manifest.get("solution")
-    if isinstance(solution, dict):
-        summary = solution.get("summary") if isinstance(solution.get("summary"), dict) else {}
-        return {
-            "source": solution.get("source"),
-            "target_compound_id": summary.get("target_compound_id"),
-            "selected_solution_id": solution.get("solution_id"),
-            "gap_dir": solution.get("gap_dir"),
-        }
-    return {}
-
-
-@tool(args_schema=GetProteinSelectionContextArgs)
-def get_protein_selection_context(
-    top_candidates_per_step: int = 3,
-    detail: Literal["compact", "full"] = "compact",
-) -> str:
-    """
-    读取当前 protein_selection 和候选蛋白上下文，供选择序列和密码子优化使用。
-    
-    调用时机：用户要求根据已选路线继续做 CDS、查看蛋白候选或开始优化。
-    返回：默认精简的 solution 摘要、推荐 accession、步骤候选摘要和已选 CDS 摘要；detail=full 返回完整上下文。
-    限制：只读；不搜索序列、不写 cds_selection。
-    """
-
-    tool_name = "get_protein_selection_context"
-    monitor.report_start(tool_name, {"top_candidates_per_step": top_candidates_per_step})
-    try:
-        session_root = _session_root(None, None)
-        manifest_file = design_manifest_file()
-        manifest = _read_json(manifest_file)
-        solution_id = _selected_solution_id(manifest)
-        steps, steps_path = _pathway_steps(manifest, session_root, solution_id)
-
-        heterologous_steps = [
-            step
-            for step in steps
-            if str(step.get("status", "")).strip().lower() == "heterologous"
-        ]
-        heterologous_steps.sort(key=lambda step: _to_int(step.get("step_index")))
-
-        step_candidates_path = _candidate_file(manifest, session_root, "step_protein_candidates_csv")
-        candidate_rows = _read_csv(step_candidates_path) if step_candidates_path else []
-        candidates_by_step: dict[int, list[dict[str, str]]] = {}
-        for row in candidate_rows:
-            step_index = _to_int(row.get("step_index"))
-            if step_index:
-                candidates_by_step.setdefault(step_index, []).append(row)
-
-        gate = _protein_selection_gate(manifest, heterologous_steps)
-        recommended = _recommended_accessions(manifest) if gate["can_proceed_to_cds"] else []
-        recommended_proteins = _recommended_proteins(manifest) if gate["can_proceed_to_cds"] else []
-        recommended_set = set(recommended)
-        selected_cds = []
-        cds_selection = manifest.get("cds_selection")
-        if isinstance(cds_selection, dict) and isinstance(cds_selection.get("selected_cds"), list):
-            selected_cds = [
-                item
-                for item in cds_selection["selected_cds"]
-                if isinstance(item, dict)
-            ]
-
-        step_contexts = []
-        missing_candidate_step_indexes = []
-        for step in heterologous_steps:
-            step_index = _to_int(step.get("step_index"))
-            rows = candidates_by_step.get(step_index, [])
-            rows.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
-            if not rows:
-                missing_candidate_step_indexes.append(step_index)
-
-            candidates = [
-                _candidate_summary(row, recommended_set)
-                for row in rows[:top_candidates_per_step]
-            ]
-            step_contexts.append({
-                "step_index": step_index,
-                "reaction_id": step.get("reaction_id", ""),
-                "reaction_name": step.get("reaction_name", ""),
-                "produced_compound_id": step.get("produced_compound_id", ""),
-                "produced_compound_name": step.get("produced_compound_name", ""),
-                "ec_numbers": _split_list(step.get("enzyme_ecs")),
-                "ko_ids": _split_list(step.get("ko_ids")),
-                "candidate_count": len(rows),
-                "recommended_accessions": [
-                    accession
-                    for accession in recommended
-                    if any(str(row.get("accession", "")).strip() == accession for row in rows)
-                ],
-                "candidates": candidates,
-            })
-
-        protein_selection = manifest.get("protein_selection")
-        protein_selection_summary = protein_selection if isinstance(protein_selection, dict) else {}
-
-        full_result = {
-            "ok": True,
-            "manifest_path": _relpath(session_root, manifest_file),
-            "revision": manifest.get("revision"),
-            "solution_summary": _route_summary(manifest),
-            "protein_selection": {
-                "available": isinstance(protein_selection, dict),
-                "source": protein_selection_summary.get("source"),
-                "selected_solution_id": protein_selection_summary.get("selected_solution_id"),
-                "chassis_key": protein_selection_summary.get("chassis_key"),
-                "recommended_accessions": recommended,
-                "recommended_proteins": recommended_proteins,
-                "recommended_design": protein_selection_summary.get("recommended_design", {}),
-                "gate": gate,
-            },
-            "evidence_files": {
-                "steps_csv": steps_path,
-                "step_protein_candidates_csv": (
-                    _relpath(session_root, step_candidates_path)
-                    if step_candidates_path and step_candidates_path.exists()
-                    else None
-                ),
-            },
-            "heterologous_step_count": len(step_contexts),
-            "missing_candidate_step_indexes": missing_candidate_step_indexes,
-            "steps": step_contexts,
-            "selected_cds": selected_cds,
-            "next_actions": [
-                "Use recommended_accessions or candidates[*].accession with search_protein_sequence.",
-                "Then run codon_optimization and write_selected_optimized_cds_to_manifest for user-selected CDS.",
-            ],
-        }
-        compact_result = {
-            "ok": True,
-            "revision": manifest.get("revision"),
-            "solution_summary": _route_summary(manifest),
-            "protein_selection": {
-                "available": isinstance(protein_selection, dict),
-                "source": protein_selection_summary.get("source"),
-                "selected_solution_id": protein_selection_summary.get("selected_solution_id"),
-                "chassis_key": protein_selection_summary.get("chassis_key"),
-                "recommended_accessions": recommended,
-                "recommended_proteins": recommended_proteins,
-                "recommended_design": protein_selection_summary.get("recommended_design", {}),
-                "gate": gate,
-            },
-            "evidence_files": {
-                "steps_csv": steps_path,
-                "step_protein_candidates_csv": (
-                    _relpath(session_root, step_candidates_path)
-                    if step_candidates_path and step_candidates_path.exists()
-                    else None
-                ),
-            },
-            "heterologous_step_count": len(step_contexts),
-            "missing_candidate_step_indexes": missing_candidate_step_indexes,
-            "steps": [_compact_step(step) for step in step_contexts],
-            "selected_cds": [
-                _compact_selected_cds(item)
-                for item in selected_cds
-                if isinstance(item, dict)
-            ],
-        }
-        result = full_result if detail == "full" else compact_result
-        monitor.report_end(tool_name, {"heterologous_step_count": len(step_contexts)})
-        return json.dumps(result, ensure_ascii=False, default=str)
-    except Exception as exc:
-        monitor.report_error(tool_name, exc)
-        return _json_error(type(exc).__name__, message=str(exc))
+__all__ = [
+    "ProteinToCdsContext",
+    "SelectedProteinForCds",
+    "get_protein_selection_context",
+    "get_proteins_for_cds",
+]

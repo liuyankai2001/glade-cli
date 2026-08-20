@@ -63,6 +63,7 @@ def update_design_manifest(
     target_compound_id: str,
     sections: Mapping[str, Any],
     discard_sections: tuple[str, ...] = (),
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
     """原子更新 manifest 的指定区段并自动递增 revision。"""
 
@@ -82,6 +83,11 @@ def update_design_manifest(
         ) from exc
     if current_revision < 0:
         raise ValueError(f"manifest revision 不能为负数：{current_revision}")
+    if expected_revision is not None and current_revision != expected_revision:
+        raise ValueError(
+            "manifest revision 已变化："
+            f"预期 {expected_revision}，当前 {current_revision}"
+        )
 
     for section_name in discard_sections:
         if section_name not in sections:

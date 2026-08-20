@@ -5,7 +5,8 @@ import math
 import random
 import re
 import threading
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 import numpy as np
 from Bio.Data import CodonTable
@@ -18,9 +19,9 @@ from dnachisel import (
     EnforceTranslation,
 )
 
-from src.config.cds_config import CDS_CONSTRAINT_CONFIG
+from src.protein_to_cds.config import CDS_CONSTRAINT_CONFIG
 
-# 兼容原有模块字段；阈值的中文含义和唯一默认值位于 cds_config.py。
+# 兼容原有模块字段；阈值的唯一默认值位于 config.py。
 POLICY_VERSION = CDS_CONSTRAINT_CONFIG.policy_version
 DNA_ALPHABET = frozenset("ACGT")
 VALID_STOP_CODONS = frozenset({"TAA", "TAG", "TGA"})
@@ -185,7 +186,10 @@ def local_gc_values(sequence: str, window_nt: int = LOCAL_GC_WINDOW_NT) -> list[
         return []
     if len(dna) <= window_nt:
         return [gc_fraction(dna)]
-    return [gc_fraction(dna[index : index + window_nt]) for index in range(len(dna) - window_nt + 1)]
+    return [
+        gc_fraction(dna[index : index + window_nt])
+        for index in range(len(dna) - window_nt + 1)
+    ]
 
 
 def max_homopolymer_length(sequence: str) -> int:
@@ -210,17 +214,24 @@ def calculate_cai(sequence: str, weights: dict[str, float] | None) -> float | No
     return math.exp(sum(log_weights) / len(log_weights)) if log_weights else 1.0
 
 
-def rare_codon_metrics(sequence: str, weights: dict[str, float] | None) -> tuple[int | None, float | None, int | None]:
+def rare_codon_metrics(
+    sequence: str, weights: dict[str, float] | None
+) -> tuple[int | None, float | None, int | None]:
     if not weights:
         return None, None, None
     dna = normalize_dna(sequence)
     codons = [dna[index : index + 3] for index in range(0, len(dna) - 2, 3)]
-    rare_flags = [codon not in VALID_STOP_CODONS and weights.get(codon, 0.0) < RARE_CODON_WEIGHT_LT for codon in codons]
+    rare_flags = [
+        codon not in VALID_STOP_CODONS
+        and weights.get(codon, 0.0) < RARE_CODON_WEIGHT_LT
+        for codon in codons
+    ]
     rare_count = sum(rare_flags)
     coding_count = sum(codon not in VALID_STOP_CODONS for codon in codons)
     clusters = sum(
-        sum(rare_flags[index : index + RARE_CLUSTER_WINDOW_CODONS]) >= RARE_CLUSTER_MIN_CODONS
-        for index in range(max(0, len(rare_flags) - RARE_CLUSTER_WINDOW_CODONS + 1))
+        sum(rare_flags[index : index + RARE_CLUSTER_WINDOW_CODONS])
+        >= RARE_CLUSTER_MIN_CODONS
+        for index in range(max(1, len(rare_flags) - RARE_CLUSTER_WINDOW_CODONS + 1))
     )
     return rare_count, rare_count / coding_count if coding_count else 0.0, clusters
 
@@ -238,7 +249,9 @@ def _validate_additional_motifs(values: Iterable[str] | None) -> dict[str, str]:
     for index, raw in enumerate(values or (), start=1):
         motif = normalize_dna(raw)
         if len(motif) < 4 or not set(motif).issubset(DNA_ALPHABET):
-            raise ValueError(f"additional_forbidden_motifs[{index}] must be an A/C/G/T sequence of at least 4 nt")
+            raise ValueError(
+                f"additional_forbidden_motifs[{index}] must be an A/C/G/T sequence of at least 4 nt"
+            )
         motifs[f"additional_{index}_{motif}"] = motif
     return motifs
 
@@ -246,7 +259,11 @@ def _validate_additional_motifs(values: Iterable[str] | None) -> dict[str, str]:
 def _translate_cds(sequence: str) -> tuple[str, int]:
     dna = normalize_dna(sequence)
     translated = str(Seq(dna).translate(table=11, to_stop=False))
-    internal_stops = translated[:-1].count("*") if translated.endswith("*") else translated.count("*")
+    internal_stops = (
+        translated[:-1].count("*")
+        if translated.endswith("*")
+        else translated.count("*")
+    )
     return translated.rstrip("*"), internal_stops
 
 
@@ -258,12 +275,18 @@ def audit_cds(
 ) -> dict[str, Any]:
     dna = normalize_dna(sequence)
     protein = normalize_protein(protein_sequence)
-    translated, internal_stops = _translate_cds(dna) if dna and len(dna) % 3 == 0 else ("", 0)
+    translated, internal_stops = (
+        _translate_cds(dna) if dna and len(dna) % 3 == 0 else ("", 0)
+    )
     local_values = local_gc_values(dna)
-    extreme_local_windows = sum(value < LOCAL_GC_MIN or value > LOCAL_GC_MAX for value in local_values)
+    extreme_local_windows = sum(
+        value < LOCAL_GC_MIN or value > LOCAL_GC_MAX for value in local_values
+    )
     hits = motif_hits(dna, motifs)
     cai = calculate_cai(dna, profile.get("codon_weights"))
-    rare_count, rare_fraction, rare_clusters = rare_codon_metrics(dna, profile.get("codon_weights"))
+    rare_count, rare_fraction, rare_clusters = rare_codon_metrics(
+        dna, profile.get("codon_weights")
+    )
     gc_value = gc_fraction(dna)
     checks = {
         "valid_alphabet": bool(dna) and set(dna).issubset(DNA_ALPHABET),
@@ -272,23 +295,33 @@ def audit_cds(
         "stop_codon_valid": dna[-3:] in VALID_STOP_CODONS if len(dna) >= 3 else False,
         "no_internal_stop": internal_stops == 0,
         "amino_acid_identity_exact": translated == protein,
-        "global_gc_pass": profile["global_gc_min"] <= gc_value <= profile["global_gc_max"],
+        "global_gc_pass": profile["global_gc_min"]
+        <= gc_value
+        <= profile["global_gc_max"],
         "local_gc_pass": extreme_local_windows == 0,
         "forbidden_motif_pass": not hits,
         "homopolymer_pass": max_homopolymer_length(dna) < HOMOPOLYMER_LIMIT,
-        "cai_pass": cai is None or profile.get("cai_min") is None or cai >= profile["cai_min"],
+        "cai_pass": cai is None
+        or profile.get("cai_min") is None
+        or cai >= profile["cai_min"],
         "rare_cluster_pass": rare_clusters is None or rare_clusters == 0,
     }
     return {
         "sequence_sha256": sha256_text(dna),
         "length_nt": len(dna),
         "gc_percent": round(100.0 * gc_value, 8),
-        "local_gc_min_percent": round(100.0 * min(local_values), 8) if local_values else None,
-        "local_gc_max_percent": round(100.0 * max(local_values), 8) if local_values else None,
+        "local_gc_min_percent": round(100.0 * min(local_values), 8)
+        if local_values
+        else None,
+        "local_gc_max_percent": round(100.0 * max(local_values), 8)
+        if local_values
+        else None,
         "extreme_local_gc_window_count": extreme_local_windows,
         "cai": round(cai, 8) if cai is not None else None,
         "rare_codon_count": rare_count,
-        "rare_codon_fraction": round(rare_fraction, 8) if rare_fraction is not None else None,
+        "rare_codon_fraction": round(rare_fraction, 8)
+        if rare_fraction is not None
+        else None,
         "rare_cluster_count": rare_clusters,
         "max_homopolymer": max_homopolymer_length(dna),
         "forbidden_site_count": sum(hits.values()),
@@ -314,53 +347,59 @@ def _rare_cluster_participating_indexes(
         for codon in codons
     ]
     participating: set[int] = set()
-    for start in range(max(0, len(rare_flags) - RARE_CLUSTER_WINDOW_CODONS + 1)):
+    for start in range(max(1, len(rare_flags) - RARE_CLUSTER_WINDOW_CODONS + 1)):
         window = rare_flags[start : start + RARE_CLUSTER_WINDOW_CODONS]
         if sum(window) < RARE_CLUSTER_MIN_CODONS:
             continue
         participating.update(
-            start + offset
-            for offset, is_rare in enumerate(window)
-            if is_rare
+            start + offset for offset, is_rare in enumerate(window) if is_rare
         )
     return sorted(participating)
 
 
-def _repair_rare_codon_clusters(
+def _repair_host_codon_usage(
     sequence: str,
     protein_sequence: str,
     profile: dict[str, Any],
     motifs: dict[str, str],
 ) -> tuple[str, dict[str, Any]]:
-    """Deterministically remove rare-codon clusters by minimal synonymous edits.
+    """Repair CAI and rare clusters with deterministic synonymous edits.
 
     DNA Chisel enforces the sequence, GC, motif, and homopolymer constraints, but
-    rare-cluster detection is an independent host-specific gate.  A GC repair can
-    therefore introduce a cluster even when the model output did not contain one.
-    This pass changes only rare codons that participate in failing windows and
-    accepts a synonymous replacement only when every other hard gate remains true.
+    CAI and rare-cluster detection are independent host-specific gates.  A GC
+    repair can therefore reduce CAI or introduce a rare cluster.  This pass only
+    accepts higher-weight synonymous replacements that improve the host-usage
+    gate while every sequence, translation, GC, motif, and homopolymer gate stays
+    true.
     """
 
     current = normalize_dna(sequence)
     weights = profile.get("codon_weights")
     current_audit = audit_cds(current, protein_sequence, profile, motifs)
     initial_cluster_count = current_audit.get("rare_cluster_count")
+    initial_cai = current_audit.get("cai")
     metadata: dict[str, Any] = {
         "applied": False,
+        "initial_cai": initial_cai,
+        "final_cai": initial_cai,
         "initial_rare_cluster_count": initial_cluster_count,
         "final_rare_cluster_count": initial_cluster_count,
         "replacement_count": 0,
         "replacements": [],
     }
-    if not weights or not initial_cluster_count:
+    if not weights or (
+        current_audit["checks"].get("cai_pass")
+        and current_audit["checks"].get("rare_cluster_pass")
+    ):
         return current, metadata
 
-    non_rare_failures = [
+    usage_checks = {"cai_pass", "rare_cluster_pass"}
+    non_usage_failures = [
         check
         for check in current_audit.get("failed_checks", [])
-        if check != "rare_cluster_pass"
+        if check not in usage_checks
     ]
-    if non_rare_failures:
+    if non_usage_failures:
         return current, metadata
 
     table = CodonTable.unambiguous_dna_by_id[11]
@@ -368,26 +407,65 @@ def _repair_rare_codon_clusters(
     for codon, amino_acid in table.forward_table.items():
         synonymous_codons.setdefault(amino_acid, []).append(codon)
 
+    def usage_rank(audit: dict[str, Any]) -> tuple[int, int, float]:
+        checks = audit["checks"]
+        failed_count = sum(not checks.get(name, False) for name in usage_checks)
+        cluster_count = int(audit.get("rare_cluster_count") or 0)
+        cai = float(audit.get("cai") or 0.0)
+        return failed_count, cluster_count, -cai
+
     replacements: list[dict[str, Any]] = []
-    max_rounds = int(current_audit.get("rare_codon_count") or 0)
+    codon_count = len(current) // 3
+    max_rounds = max(1, codon_count * 2)
     for _ in range(max_rounds):
-        current_cluster_count = int(current_audit.get("rare_cluster_count") or 0)
-        if current_cluster_count == 0:
+        if current_audit["checks"].get("cai_pass") and current_audit["checks"].get(
+            "rare_cluster_pass"
+        ):
             break
 
         codons = [current[index : index + 3] for index in range(0, len(current), 3)]
-        candidates: list[tuple[tuple[Any, ...], str, dict[str, Any], dict[str, Any]]] = []
-        for codon_index in _rare_cluster_participating_indexes(current, weights):
+        rare_indexes = set(_rare_cluster_participating_indexes(current, weights))
+        ranked_indexes: list[tuple[tuple[Any, ...], int]] = []
+        for codon_index, before in enumerate(codons):
+            amino_acid = table.forward_table.get(before)
+            if amino_acid is None:
+                continue
+            before_weight = float(weights.get(before, 0.0))
+            best_weight = max(
+                (
+                    float(weights.get(codon, 0.0))
+                    for codon in synonymous_codons.get(amino_acid, [])
+                    if codon != before
+                ),
+                default=before_weight,
+            )
+            if best_weight <= before_weight:
+                continue
+            ranked_indexes.append(
+                (
+                    (
+                        0 if codon_index in rare_indexes else 1,
+                        -math.log(max(best_weight, 1e-12) / max(before_weight, 1e-12)),
+                        codon_index,
+                    ),
+                    codon_index,
+                )
+            )
+
+        accepted: tuple[str, dict[str, Any], dict[str, Any]] | None = None
+        current_rank = usage_rank(current_audit)
+        for _, codon_index in sorted(ranked_indexes):
             before = codons[codon_index]
             amino_acid = table.forward_table.get(before)
             if amino_acid is None:
                 continue
+            before_weight = float(weights.get(before, 0.0))
             alternatives = sorted(
                 (
                     codon
                     for codon in synonymous_codons.get(amino_acid, [])
                     if codon != before
-                    and weights.get(codon, 0.0) >= RARE_CODON_WEIGHT_LT
+                    and float(weights.get(codon, 0.0)) > before_weight
                 ),
                 key=lambda codon: (-weights.get(codon, 0.0), codon),
             )
@@ -395,48 +473,43 @@ def _repair_rare_codon_clusters(
                 candidate_codons = list(codons)
                 candidate_codons[codon_index] = after
                 candidate = "".join(candidate_codons)
-                candidate_audit = audit_cds(candidate, protein_sequence, profile, motifs)
+                candidate_audit = audit_cds(
+                    candidate, protein_sequence, profile, motifs
+                )
                 if any(
-                    check != "rare_cluster_pass"
+                    check not in usage_checks
                     for check in candidate_audit.get("failed_checks", [])
                 ):
                     continue
-                candidate_cluster_count = int(
-                    candidate_audit.get("rare_cluster_count") or 0
-                )
-                if candidate_cluster_count >= current_cluster_count:
+                if usage_rank(candidate_audit) >= current_rank:
                     continue
-                nucleotide_changes = sum(
-                    left != right for left, right in zip(before, after)
-                )
                 replacement = {
                     "codon_index_0": codon_index,
                     "amino_acid_position_1": codon_index + 1,
                     "before": before,
                     "after": after,
                     "amino_acid": amino_acid,
+                    "before_weight": before_weight,
+                    "after_weight": float(weights.get(after, 0.0)),
+                    "cai_after": candidate_audit.get("cai"),
+                    "rare_cluster_count_after": candidate_audit.get(
+                        "rare_cluster_count"
+                    ),
                 }
-                rank = (
-                    candidate_cluster_count,
-                    int(candidate_audit.get("rare_codon_count") or 0),
-                    nucleotide_changes,
-                    -float(weights.get(after, 0.0)),
-                    codon_index,
-                    after,
-                )
-                candidates.append((rank, candidate, candidate_audit, replacement))
+                accepted = candidate, candidate_audit, replacement
+                break
+            if accepted is not None:
+                break
 
-        if not candidates:
+        if accepted is None:
             break
-        _, current, current_audit, replacement = min(
-            candidates,
-            key=lambda item: item[0],
-        )
+        current, current_audit, replacement = accepted
         replacements.append(replacement)
 
     metadata.update(
         {
             "applied": bool(replacements),
+            "final_cai": current_audit.get("cai"),
             "final_rare_cluster_count": current_audit.get("rare_cluster_count"),
             "replacement_count": len(replacements),
             "replacements": replacements,
@@ -489,9 +562,15 @@ def repair_cds(
     constraints: list[Any] = [
         EnforceTranslation(genetic_table="Bacterial", start_codon="keep"),
         EnforceGCContent(mini=profile["global_gc_min"], maxi=profile["global_gc_max"]),
-        EnforceGCContent(mini=LOCAL_GC_MIN, maxi=LOCAL_GC_MAX, window=LOCAL_GC_WINDOW_NT),
+        EnforceGCContent(
+            mini=LOCAL_GC_MIN, maxi=LOCAL_GC_MAX, window=LOCAL_GC_WINDOW_NT
+        ),
     ]
-    constraints.extend(AvoidPattern(motif) for motif in motifs.values())
+    constrained_motifs: set[str] = set()
+    for motif in motifs.values():
+        constrained_motifs.add(motif)
+        constrained_motifs.add(reverse_complement(motif))
+    constraints.extend(AvoidPattern(motif) for motif in sorted(constrained_motifs))
     constraints.extend(AvoidPattern(base * HOMOPOLYMER_LIMIT) for base in "ACGT")
 
     with _OPTIMIZER_LOCK:
@@ -510,12 +589,14 @@ def repair_cds(
             problem.optimize()
             final = normalize_dna(problem.sequence)
         except Exception as exc:
-            raise CdsConstraintError(f"constraint repair failed: {type(exc).__name__}: {exc}") from exc
+            raise CdsConstraintError(
+                f"constraint repair failed: {type(exc).__name__}: {exc}"
+            ) from exc
         finally:
             np.random.set_state(numpy_state)
             random.setstate(python_state)
 
-    final, rare_cluster_repair = _repair_rare_codon_clusters(
+    final, host_codon_usage_repair = _repair_host_codon_usage(
         final,
         protein,
         profile,
@@ -553,7 +634,7 @@ def repair_cds(
             "name": "DNA Chisel",
             "deterministic_seed": seed,
             "objective": "minimize nucleotide changes after satisfying hard constraints",
-            "rare_cluster_repair": rare_cluster_repair,
+            "host_codon_usage_repair": host_codon_usage_repair,
         },
         "constraints": {
             "local_gc_window_nt": LOCAL_GC_WINDOW_NT,

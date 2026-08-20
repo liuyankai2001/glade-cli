@@ -1,12 +1,32 @@
 from argparse import ArgumentParser
 
-from src.cli.common import load_input, apply_args_to_config
-from src.config.config import INPUTS_DIR
 from src.cli.commands import (
-    chassis, expand, gap, validate, write, main_enzyme, info,main_enzyme_sets,auxiliary_protein,
+    auxiliary_protein,
+    chassis,
+    expand,
+    gap,
+    info,
+    main_enzyme,
+    main_enzyme_sets,
+    protein_to_cds,
+    validate,
+    write,
 )
+from src.cli.common import apply_args_to_config, load_input
+from src.config.config import INPUTS_DIR
 
-COMMAND_MODULES = [chassis, expand, gap, validate, write, main_enzyme, info,main_enzyme_sets,auxiliary_protein]
+COMMAND_MODULES = [
+    chassis,
+    expand,
+    gap,
+    validate,
+    write,
+    main_enzyme,
+    info,
+    main_enzyme_sets,
+    auxiliary_protein,
+    protein_to_cds,
+]
 
 def build_parser():
     parser = ArgumentParser()

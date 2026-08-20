@@ -31,6 +31,7 @@ AUXILIARY_PROTEIN_RESEARCH_MANIFEST_SCHEMA_VERSION = (
 AUXILIARY_PROTEIN_RESEARCH_DOWNSTREAM_SECTIONS = (
     "auxiliary_protein_selection",
     "enzyme_system_selection",
+    "cds_selection",
 )
 
 
