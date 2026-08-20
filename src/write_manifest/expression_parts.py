@@ -18,12 +18,14 @@ from src.expression_box.parts_manifest_adapter import load_expression_parts_cont
 from src.expression_box.parts_models import ExpressionPartsContext
 from src.expression_box.parts_pipeline import EXPRESSION_PARTS_DESIGNS_FILENAME
 from src.pathway_analyze.target_id import validate_target_compound_id
+from src.write_manifest.expression_constructs import prepare_expression_constructs
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 
 PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v1"
 PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "assembled_expression_cassettes",
+    "assembled_expression_constructs",
     "final_assembly_plan",
     "final_assembly",
 )
@@ -350,7 +352,7 @@ def _selection_payload(
 
 
 def write_expression_parts_selection(config: Any) -> dict[str, Any]:
-    """Validate and commit multiple expression-parts design references."""
+    """Commit selected designs and their complete concatenated GenBank files."""
 
     requested_ids = parse_expression_parts_design_ids(
         getattr(config, "expression_parts", None)
@@ -371,27 +373,62 @@ def write_expression_parts_selection(config: Any) -> dict[str, Any]:
         manifest_path,
         Path(config.project_output_path).expanduser().resolve(),
     )
+    manifest = read_design_manifest(manifest_path)
+    if int(manifest.get("revision", 0)) != context.manifest_revision:
+        raise ValueError("manifest revision 在读取表达元件上下文时发生变化，请重试")
     artifact = _read_artifact(_artifact_path(config))
     designs = _validate_artifact(artifact, context=context)
     selected = _select_designs(designs, requested_ids)
     payload = _selection_payload(selected, artifact, context)
 
-    current = manifest.get("parts_selection")
-    unchanged = (
-        isinstance(current, Mapping)
-        and current.get("schema_version") == PARTS_SELECTION_SCHEMA_VERSION
-        and current.get("selection_fingerprint") == payload["selection_fingerprint"]
+    current_selection = manifest.get("parts_selection")
+    current_constructs = manifest.get("assembled_expression_constructs")
+    transaction = prepare_expression_constructs(
+        selected_designs=selected,
+        selection_payload=payload,
+        context=context,
+        current_section=current_constructs,
     )
-    if unchanged:
-        updated_manifest = manifest
-    else:
-        updated_manifest = update_design_manifest(
-            manifest_path,
-            target_compound_id=target_compound_id,
-            sections={"parts_selection": payload},
-            discard_sections=PARTS_SELECTION_DOWNSTREAM_SECTIONS,
-            expected_revision=context.manifest_revision,
-        )
+    manifest_changed = not (
+        isinstance(current_selection, Mapping)
+        and dict(current_selection) == payload
+        and isinstance(current_constructs, Mapping)
+        and dict(current_constructs) == transaction.section
+    )
+    try:
+        transaction.install()
+        if manifest_changed:
+            updated_manifest = update_design_manifest(
+                manifest_path,
+                target_compound_id=target_compound_id,
+                sections={
+                    "parts_selection": payload,
+                    "assembled_expression_constructs": transaction.section,
+                },
+                discard_sections=PARTS_SELECTION_DOWNSTREAM_SECTIONS,
+                expected_revision=context.manifest_revision,
+            )
+        else:
+            updated_manifest = manifest
+    except Exception:
+        try:
+            transaction.rollback()
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "表达构建文件写入失败，且自动回滚未能完成；"
+                "请检查 expression_constructs 目录"
+            ) from rollback_error
+        raise
+    cleanup_warning = transaction.finalize()
+
+    warnings = list(payload["warnings"])
+    if cleanup_warning:
+        warnings.append(cleanup_warning)
+
+    construct_dir = (
+        Path(config.project_output_path).expanduser().resolve()
+        / "expression_constructs"
+    )
 
     return {
         "运行成功": True,
@@ -399,11 +436,16 @@ def write_expression_parts_selection(config: Any) -> dict[str, Any]:
         "表达元件方案编号": payload["selected_design_ids"],
         "主方案编号": payload["primary_design_id"],
         "方案数量": payload["design_count"],
+        "完整表达构建数量": transaction.section["design_count"],
         "最高成功评分": payload["summary"]["highest_score"],
         "最低成功评分": payload["summary"]["lowest_score"],
-        "清单是否更新": not unchanged,
+        "GenBank目录": str(construct_dir),
+        "GenBank是否复用": not transaction.needs_install,
+        "GenBank是否修复": transaction.is_repair,
+        "清单是否更新": manifest_changed,
         "清单文件": str(manifest_path),
         "清单版本": updated_manifest["revision"],
+        "警告": warnings,
     }
 
 

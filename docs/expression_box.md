@@ -78,6 +78,25 @@ uv run python main.py write -i demo04.json --expression-parts 1:4 7 9:12
 方案成为 `primary_design_id`。manifest 的 `parts_selection` 只保存方案 ID、评分和
 内容指纹引用，不复制完整元件组合；候选文件发生变化后，下游必须拒绝使用旧引用。
 
-这个阶段不会生成最终 GenBank。远端 Milvus 不可达、
-collection schema 不匹配或缺少任一类可用元件时，命令会直接失败，不使用本地或
-过期缓存静默回退。
+写入选择的同时，系统会为每个已选方案自动生成一份完整串联 GenBank：同一方案内
+的表达盒按 `cassette_index` 排序后直接首尾连接，不插入 linker；每个表达盒内部按
+`promoter -> RBS -> CDS -> ... -> terminator` 复原。选择 `1:12` 会生成：
+
+```text
+outputs/<目标化合物>/expression_constructs/design_001.gb
+...
+outputs/<目标化合物>/expression_constructs/design_012.gb
+```
+
+每个 GenBank 包含 source、表达盒范围、promoter、RBS、CDS 和 terminator feature，
+manifest 的 `assembled_expression_constructs` 保存文件哈希、完整序列哈希、盒坐标和
+整段安全审计。系统会先核对每个表达盒的长度与哈希，再对串联后的完整序列重新检查
+GC、同聚物和禁用酶切位点，因此盒与盒连接处新产生的风险也会阻止整批写入。
+
+文件采用整批暂存和替换：任一方案失败时不修改 manifest，也不留下部分 GenBank。
+同样的选择重复执行时会复用完整文件并保持 manifest revision 不变；文件丢失或损坏
+时会自动重建整批文件，但如果记录内容未变化也不会增加 revision。更换选择后，固定
+的 `expression_constructs` 目录只保留本次选择对应的文件。
+
+远端 Milvus 不可达、collection schema 不匹配或缺少任一类可用元件时，推荐命令会
+直接失败，不使用本地或过期缓存静默回退。
