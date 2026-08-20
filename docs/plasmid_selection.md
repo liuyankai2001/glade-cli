@@ -105,3 +105,11 @@ uv run python main.py plasmid --recommend -i demo04.json
 ## 缓存与远端状态
 
 每次运行推荐命令都会重新查询远端 Milvus，以确认 collection schema 和候选内容快照。只有当前 manifest 输入、远端快照、参数以及全部本地候选文件都没有变化时，才复用已有结果。候选文件缺失或损坏时会重新下载并重建；Milvus 不可用时不会静默使用过期离线结果。
+
+质粒骨架写入后，下一步可为每个完整表达构建生成最终组装计划：
+
+```powershell
+uv run python main.py assembly --plan -i demo04.json
+```
+
+详细说明见 `docs/final_assembly_plan.md`。

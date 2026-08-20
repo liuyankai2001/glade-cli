@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 
 from src.cli.commands import (
+    assembly,
     auxiliary_protein,
     chassis,
     expression,
@@ -18,6 +19,7 @@ from src.cli.common import apply_args_to_config, load_input
 from src.config.config import INPUTS_DIR
 
 COMMAND_MODULES = [
+    assembly,
     chassis,
     expression,
     expand,

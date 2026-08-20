@@ -5,12 +5,18 @@ from src.write_manifest.expression_box import run_write_expression_box_selection
 from src.write_manifest.expression_parts import (
     run_write_expression_parts_selection,
 )
+from src.write_manifest.final_assembly_plan import (
+    run_write_final_assembly_plan,
+)
 from src.write_manifest.main_enzyme import run_write_main_enzyme_set
 from src.write_manifest.plasmid import run_write_plasmid_selection
 from src.write_manifest.solution import run_write_solution
 
 
 def run_write(config):
+    if bool(getattr(config, "assembly_plan", False)):
+        return run_write_final_assembly_plan(config)
+
     if getattr(config, "plasmid", None) is not None:
         return run_write_plasmid_selection(config)
 
@@ -47,6 +53,11 @@ def register(subparsers):
         type=int,
         metavar="N",
         help="将排名为 N 的质粒骨架候选写入 manifest",
+    )
+    action.add_argument(
+        "--assembly-plan",
+        action="store_true",
+        help="接受当前完整的最终组装计划",
     )
     action.add_argument(
         "--expression-parts",
