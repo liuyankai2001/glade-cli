@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from src.cli.commands import (
     auxiliary_protein,
     chassis,
+    expression,
     expand,
     gap,
     info,
@@ -17,6 +18,7 @@ from src.config.config import INPUTS_DIR
 
 COMMAND_MODULES = [
     chassis,
+    expression,
     expand,
     gap,
     validate,
