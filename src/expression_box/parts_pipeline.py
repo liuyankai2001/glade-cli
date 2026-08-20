@@ -30,6 +30,7 @@ from src.expression_box.config import (
     RBS_SHORTLIST_PER_STRENGTH,
 )
 from src.expression_box.milvus_parts import fetch_expression_part_candidates
+from src.expression_box.expression_burden import burden_model_parameters
 from src.expression_box.ostir_adapter import backend_versions
 from src.expression_box.parts_manifest_adapter import load_expression_parts_context
 from src.expression_box.recommend_expression_parts import (
@@ -134,6 +135,8 @@ def _summary(
                 "design_id": primary["design_id"],
                 "score": primary["expression_success_score"],
                 "expression_regime": primary["expression_regime"],
+                "estimated_burden": primary["estimated_burden"],
+                "burden_score": primary["expression_burden"]["score"],
             }
             if primary is not None
             else None
@@ -206,6 +209,7 @@ def run_expression_parts_design(
                     "terminator": EXPRESSION_SUCCESS_TERMINATOR_WEIGHT,
                     "assembly": EXPRESSION_SUCCESS_ASSEMBLY_WEIGHT,
                 },
+                "expression_burden_model": burden_model_parameters(),
             },
         }
     )
@@ -287,6 +291,7 @@ def run_expression_parts_design(
                 "terminator": EXPRESSION_SUCCESS_TERMINATOR_WEIGHT,
                 "assembly": EXPRESSION_SUCCESS_ASSEMBLY_WEIGHT,
             },
+            "expression_burden_model": burden_model_parameters(),
         },
         "ranking": generation["ranking"],
         "design_count": len(generation["designs"]),

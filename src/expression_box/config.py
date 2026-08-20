@@ -4,8 +4,8 @@ from __future__ import annotations
 
 EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION = "expression_box_designs.v1"
 GROUPING_ALGORITHM_VERSION = "expression_box_grouping.v1"
-EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION = "expression_parts_designs.v3"
-PARTS_RECOMMENDATION_ALGORITHM_VERSION = "expression_parts_recommendation.v3.0.0"
+EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION = "expression_parts_designs.v4"
+PARTS_RECOMMENDATION_ALGORITHM_VERSION = "expression_parts_recommendation.v4.0.0"
 
 EXPRESSION_PARTS_COLLECTION = "expression_parts_v3"
 MILVUS_QUERY_LIMIT = 512

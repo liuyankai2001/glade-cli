@@ -14,6 +14,10 @@ from src.expression_box.config import (
     EXPRESSION_SUCCESS_MIN_SCORE,
     PARTS_RECOMMENDATION_ALGORITHM_VERSION,
 )
+from src.expression_box.expression_burden import (
+    expression_burden_summary,
+    validate_expression_burden,
+)
 from src.expression_box.parts_manifest_adapter import load_expression_parts_context
 from src.expression_box.parts_models import ExpressionPartsContext
 from src.expression_box.parts_pipeline import EXPRESSION_PARTS_DESIGNS_FILENAME
@@ -22,7 +26,7 @@ from src.write_manifest.expression_constructs import prepare_expression_construc
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 
-PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v1"
+PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v2"
 PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "assembled_expression_cassettes",
     "assembled_expression_constructs",
@@ -197,6 +201,24 @@ def _validate_design_structure(
         signature.append(str(terminator.get("part_id") or ""))
     if list(design.get("design_signature") or []) != signature:
         raise ValueError(f"表达元件方案 {design_id} 的 design_signature 无效")
+    burden = design.get("expression_burden")
+    if not isinstance(burden, Mapping):
+        raise ValueError(
+            f"表达元件方案 {design_id} 缺少 expression_burden；"
+            "请重新运行 expression --design --parts"
+        )
+    try:
+        validate_expression_burden(
+            burden,
+            raw_cassettes,
+            fallback_promoter_percentile=float(
+                design.get("expression_target_percentile")
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"表达元件方案 {design_id} 的表达负担无效：{exc}") from exc
+    if str(design.get("estimated_burden") or "") != burden.get("level"):
+        raise ValueError(f"表达元件方案 {design_id} 的负担等级不一致")
 
 
 def _validate_artifact(
@@ -286,6 +308,9 @@ def _selection_payload(
             "rank": int(design["rank"]),
             "expression_success_score": float(design["expression_success_score"]),
             "expression_regime": str(design["expression_regime"]),
+            "expression_burden": expression_burden_summary(
+                design["expression_burden"]
+            ),
             "system_recommended": bool(design.get("recommended")),
             "design_fingerprint": _stable_json_hash(design),
         }
@@ -307,6 +332,12 @@ def _selection_payload(
         }
     )
     scores = [item["expression_success_score"] for item in references]
+    burden_scores = [
+        float(item["expression_burden"]["score"]) for item in references
+    ]
+    burden_levels = sorted(
+        {str(item["expression_burden"]["level"]) for item in references}
+    )
     warnings = list(
         dict.fromkeys(
             str(warning)
@@ -347,6 +378,11 @@ def _selection_payload(
             "highest_score": max(scores),
             "lowest_score": min(scores),
             "minimum_success_score": EXPRESSION_SUCCESS_MIN_SCORE,
+            "expression_burden_score_range": {
+                "minimum": min(burden_scores),
+                "maximum": max(burden_scores),
+            },
+            "expression_burden_levels": burden_levels,
         },
         "warnings": warnings,
     }

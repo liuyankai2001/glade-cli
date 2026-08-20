@@ -10,7 +10,7 @@
 uv run python main.py plasmid --recommend -i demo04.json
 ```
 
-默认返回 5 个有差异的候选，终端只显示排名、名称、分数、拷贝类型、抗性标记和组装策略摘要。完整证据和逐构建评分写入：
+默认返回 5 个有差异的候选，终端只显示排名、名称、分数、拷贝类型、抗性标记、组装策略和表达负担摘要。完整证据和逐构建评分写入：
 
 ```text
 outputs/<目标化合物>/plasmid_selection/plasmid_candidates.json
@@ -33,11 +33,11 @@ uv run python main.py plasmid --recommend -i demo04.json --preferred-resistance 
 uv run python main.py plasmid --recommend -i demo04.json --exclude-resistance ampicillin tetracycline
 ```
 
-`--priority` 支持：
+`--priority` 支持，但只对动态拷贝适配施加最多 3 分的偏置：
 
-- `stability`：默认，优先低拷贝，其次中拷贝；适合多基因、较长表达构建。
-- `balanced`：优先中拷贝，在表达量和稳定性之间折中。
-- `expression`：优先高拷贝；可能增加宿主负担和结构不稳定风险。
+- `stability`：默认，轻微偏向低拷贝，但不会压过明显更适合的中拷贝。
+- `balanced`：不增加拷贝偏置，完全使用负担适配基础分。
+- `expression`：轻微偏向中/高拷贝，但高负担设计仍不会被推到高拷贝首选。
 
 系统默认的抗性标记偏好顺序为：卡那霉素、氯霉素、庆大霉素、链霉素/壮观霉素、四环素、氨苄青霉素。`--preferred-resistance` 会改变评分偏好，`--exclude-resistance` 是硬排除条件。
 
@@ -78,9 +78,29 @@ uv run python main.py write -i demo04.json --plasmid 1
 - 抗性标记适用性：10 分；
 - 估算最终质粒长度：10 分。
 
+其中 35 分的拷贝适配不再固定认为低拷贝最好，而是读取 manifest 中每个方案的
+`expression_burden.v1`：
+
+| 表达负担 | 低拷贝 | 中拷贝 | 条件依赖 | 高拷贝 |
+|---|---:|---:|---:|---:|
+| low | 24 | 35 | 22 | 30 |
+| moderate | 30 | 35 | 20 | 18 |
+| high | 35 | 25 | 12 | 5 |
+
+因此，中等负担通常优先中拷贝，高负担优先低拷贝；低负担可以保留中、高拷贝候选。
+插入片段达到 10 kb 时该项再扣 5 分，达到 15 kb 时扣 10 分。
+
 候选的最终稳健分是它对全部表达构建的配对分数中的最低值。因此，一个只适合部分方案的骨架不会得到虚高排名。第一名始终是原始最高分；其余候选会优先保持复制子、抗性标记、组装策略和拷贝类型的多样性。
 
 这些分数是透明、可复查的工程启发式分数，不是实验成功概率。当前数据库没有经过实验验证的最大插入容量字段，所以容量依据拷贝类型和预计最终长度估算，候选文件会保留这一警告。
+
+旧版表达结果没有数值负担，升级后请按以下顺序重新生成：
+
+```powershell
+uv run python main.py expression --design --parts -i demo04.json
+uv run python main.py write -i demo04.json --expression-parts 1:12
+uv run python main.py plasmid --recommend -i demo04.json
+```
 
 ## 缓存与远端状态
 

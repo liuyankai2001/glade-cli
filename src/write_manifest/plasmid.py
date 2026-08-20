@@ -282,6 +282,16 @@ def _selection_payload(
         "robust_score": candidate.get("robust_score"),
         "pair_score_median": candidate.get("pair_score_median"),
         "score_breakdown": candidate.get("score_breakdown"),
+        "copy_load_fit_details": candidate.get("copy_load_fit_details"),
+        "expression_burden_score_range": candidate.get(
+            "expression_burden_score_range"
+        ),
+        "expression_burden_levels": candidate.get(
+            "expression_burden_levels", []
+        ),
+        "expression_burden_model_version": candidate.get(
+            "expression_burden_model_version"
+        ),
         "confidence": candidate.get("confidence"),
         "rationales": candidate.get("rationales", []),
         "warnings": candidate.get("warnings", []),
@@ -312,6 +322,9 @@ def _selection_payload(
             "context_input_fingerprint": context.input_fingerprint,
             "parts_selection_fingerprint": context.parts_selection_fingerprint,
             "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
+            "expression_burden_model_version": context.constructs[
+                0
+            ].burden.model_version,
         },
         "warnings": list(candidate.get("warnings") or []),
     }

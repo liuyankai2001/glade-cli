@@ -10,8 +10,15 @@ from typing import Any
 
 from Bio import SeqIO
 
+from src.expression_box.expression_burden import (
+    validate_expression_burden_summary,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
-from src.plasmid_selection.models import ExpressionConstruct, PlasmidContext
+from src.plasmid_selection.models import (
+    ExpressionBurden,
+    ExpressionConstruct,
+    PlasmidContext,
+)
 from src.write_manifest.store import read_design_manifest
 
 
@@ -103,7 +110,12 @@ def load_plasmid_context(config: Any) -> PlasmidContext:
         raise ValueError("design manifest 与当前目标化合物不一致")
 
     parts = _mapping(manifest.get("parts_selection"), "parts_selection")
-    if parts.get("schema_version") != "parts_selection.v1" or parts.get("status") != "selected":
+    if parts.get("schema_version") != "parts_selection.v2":
+        raise ValueError(
+            "manifest 的表达元件选择缺少数值负担模型，请依次重新运行："
+            "expression --design --parts；write --expression-parts 1:12"
+        )
+    if parts.get("status") != "selected":
         raise ValueError("manifest 中没有有效的表达元件选择")
     parts_fingerprint = str(parts.get("selection_fingerprint") or "").strip()
     if not parts_fingerprint:
@@ -114,6 +126,47 @@ def load_plasmid_context(config: Any) -> PlasmidContext:
     selected_ids = tuple(_positive_int(item, "selected_design_ids") for item in raw_ids)
     if len(selected_ids) != len(set(selected_ids)):
         raise ValueError("parts_selection 包含重复方案编号")
+    raw_references = parts.get("design_references")
+    if not isinstance(raw_references, list) or not raw_references:
+        raise ValueError("parts_selection 没有 design_references")
+    burden_by_design: dict[int, ExpressionBurden] = {}
+    for reference in raw_references:
+        if not isinstance(reference, Mapping):
+            raise ValueError("parts_selection 包含无效 design_reference")
+        design_id = _positive_int(reference.get("design_id"), "design_id")
+        burden = reference.get("expression_burden")
+        if not isinstance(burden, Mapping):
+            raise ValueError(
+                f"表达元件方案 {design_id} 缺少数值负担；"
+                "请重新运行 write --expression-parts"
+            )
+        try:
+            validate_expression_burden_summary(burden)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"表达元件方案 {design_id} 的负担摘要无效：{exc}"
+            ) from exc
+        if design_id in burden_by_design:
+            raise ValueError("parts_selection 包含重复 design_reference")
+        burden_by_design[design_id] = ExpressionBurden(
+            schema_version=str(burden["schema_version"]),
+            model_version=str(burden["model_version"]),
+            score=float(burden["score"]),
+            level=str(burden["level"]),
+            confidence=str(burden["confidence"]),
+            raw_load_units=float(burden["raw_load_units"]),
+            reference_load_units=float(burden["reference_load_units"]),
+            gene_count=int(burden["gene_count"]),
+            cassette_count=int(burden["cassette_count"]),
+            total_cds_length_nt=int(burden["total_cds_length_nt"]),
+            minimum_ostir_reference_count=int(
+                burden["minimum_ostir_reference_count"]
+            ),
+            fingerprint=str(burden["fingerprint"]),
+            warnings=tuple(str(item) for item in burden.get("warnings", [])),
+        )
+    if set(burden_by_design) != set(selected_ids):
+        raise ValueError("parts_selection 负担摘要没有覆盖全部已选方案")
 
     assembled = _mapping(
         manifest.get("assembled_expression_constructs"),
@@ -147,16 +200,33 @@ def load_plasmid_context(config: Any) -> PlasmidContext:
             expected_sequence_hash=sequence_hash,
             expected_length=length_bp,
         )
+        burden = burden_by_design.get(design_id)
+        if burden is None:
+            raise ValueError(f"表达构建 {design_id} 缺少负担摘要")
+        raw_ranges = raw.get("cassette_ranges")
+        raw_ranges = raw_ranges if isinstance(raw_ranges, list) else []
+        gene_count = sum(
+            len(item.get("protein_accessions") or [])
+            for item in raw_ranges
+            if isinstance(item, Mapping)
+            and isinstance(item.get("protein_accessions"), list)
+        )
+        cassette_count = _positive_int(raw.get("cassette_count"), "cassette_count")
+        if burden.cassette_count != cassette_count or (
+            gene_count and burden.gene_count != gene_count
+        ):
+            raise ValueError(f"表达构建 {design_id} 与负担摘要计数不一致")
         constructs.append(
             ExpressionConstruct(
                 design_id=design_id,
                 rank=_positive_int(raw.get("rank"), "rank"),
                 length_bp=length_bp,
-                cassette_count=_positive_int(raw.get("cassette_count"), "cassette_count"),
+                cassette_count=cassette_count,
                 component_count=_positive_int(raw.get("component_count"), "component_count"),
                 sequence_sha256=sequence_hash,
                 file_sha256=file_hash,
                 path=path,
+                burden=burden,
             )
         )
     constructs.sort(key=lambda item: (item.rank, item.design_id))
@@ -222,6 +292,14 @@ def plasmid_context_summary(config: Any) -> dict[str, Any]:
             "maximum": context.maximum_insert_length_bp,
         },
         "maximum_cassette_count": context.maximum_cassette_count,
+        "expression_burden": {
+            "score_range": {
+                "minimum": context.minimum_burden_score,
+                "maximum": context.maximum_burden_score,
+            },
+            "levels": sorted({item.burden.level for item in context.constructs}),
+            "model_version": context.constructs[0].burden.model_version,
+        },
         "input_fingerprint": context.input_fingerprint,
     }
 

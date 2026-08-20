@@ -27,6 +27,11 @@ from src.expression_box.config import (
     RBS_CONTEXT_PREVIOUS_CDS_SUFFIX_NT,
     RBS_SHORTLIST_PER_STRENGTH,
 )
+from src.expression_box.expression_burden import (
+    burden_model_parameters,
+    calculate_expression_burden,
+    empirical_log_percentile,
+)
 from src.expression_box.ostir_adapter import predict_rbs_context
 from src.expression_box.parts_models import (
     ExpressionCds,
@@ -656,14 +661,7 @@ def _central_expression_score(percentile: float | None) -> float:
 
 
 def _empirical_percentile(value: float, reference: tuple[float, ...]) -> float:
-    if len(reference) <= 1:
-        return 50.0
-    target = math.log10(max(float(value), 1e-12))
-    logs = sorted(math.log10(max(float(item), 1e-12)) for item in reference)
-    lower = sum(item < target for item in logs)
-    equal = sum(math.isclose(item, target, rel_tol=1e-12, abs_tol=1e-12) for item in logs)
-    average_index = lower + max(equal - 1, 0) / 2.0
-    return 100.0 * average_index / (len(logs) - 1)
+    return empirical_log_percentile(value, reference)
 
 
 def _translation_reference(
@@ -744,6 +742,13 @@ def _score_expression_candidate(
     hashes = Counter(str(part["sequence_sha256"]) for part in parts)
     repeated_occurrences = sum(count - 1 for count in hashes.values() if count > 1)
     assembly_factor = 1.0 - repeated_occurrences / len(parts)
+    expression_burden = calculate_expression_burden(
+        cassettes,
+        translation_reference,
+        fallback_promoter_percentile=float(
+            candidate["expression_target_percentile"]
+        ),
+    )
 
     components = {
         "evidence_reliability": round(
@@ -769,6 +774,8 @@ def _score_expression_candidate(
         "score_components": components,
         "unintended_start_count": unintended_start_count,
         "repeated_regulatory_part_count": repeated_occurrences,
+        "estimated_burden": expression_burden["level"],
+        "expression_burden": expression_burden,
         "passes_success_threshold": score >= EXPRESSION_SUCCESS_MIN_SCORE,
     }
 
@@ -848,7 +855,7 @@ def generate_expression_parts_designs(
                     **candidate,
                     "expression_regime": strategy_key,
                     "expression_target_percentile": strategy["target_percentile"],
-                    "estimated_burden": strategy["burden"],
+                    "strategy_estimated_burden": strategy["burden"],
                 }
                 for candidate in generated
             ]
@@ -906,7 +913,11 @@ def generate_expression_parts_designs(
                 "expression_target_percentile": selected[
                     "expression_target_percentile"
                 ],
+                "strategy_estimated_burden": selected[
+                    "strategy_estimated_burden"
+                ],
                 "estimated_burden": selected["estimated_burden"],
+                "expression_burden": selected["expression_burden"],
                 "expression_success_score": score,
                 "score_type": "interpretable_heuristic_not_probability",
                 "passes_success_threshold": True,
@@ -970,6 +981,7 @@ def generate_expression_parts_designs(
                 "terminator_reliability": EXPRESSION_SUCCESS_TERMINATOR_WEIGHT,
                 "assembly_robustness": EXPRESSION_SUCCESS_ASSEMBLY_WEIGHT,
             },
+            "expression_burden_model": burden_model_parameters(),
         },
         "skipped_strategies": skipped,
         "prediction_failure_count": len(prediction_failures),

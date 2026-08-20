@@ -8,9 +8,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from src.plasmid_selection.config import (
-    COPY_CLASS_SCORES,
+    BURDEN_COPY_FIT_SCORES,
     MARKER_ALIASES,
     MARKER_SCORES,
+    PRIORITY_COPY_ADJUSTMENTS,
     SUPPORTED_ASSEMBLY_POLICIES,
     SUPPORTED_PRIORITIES,
 )
@@ -217,13 +218,31 @@ def _size_score(length_bp: int) -> float:
     return 2.0
 
 
-def _copy_load_score(copy_class: str, priority: str, insert_length_bp: int) -> float:
-    score = COPY_CLASS_SCORES[priority][copy_class]
+def _copy_load_score(
+    copy_class: str,
+    priority: str,
+    insert_length_bp: int,
+    burden_level: str,
+) -> tuple[float, dict[str, float | str]]:
+    if burden_level not in BURDEN_COPY_FIT_SCORES:
+        raise ValueError(f"unsupported expression burden level: {burden_level}")
+    base = BURDEN_COPY_FIT_SCORES[burden_level][copy_class]
+    adjustment = PRIORITY_COPY_ADJUSTMENTS[priority][copy_class]
+    adjusted = min(35.0, max(0.0, base + adjustment))
+    length_penalty = 0.0
     if insert_length_bp >= 15_000:
-        score -= 10.0
+        length_penalty = 10.0
     elif insert_length_bp >= 10_000:
-        score -= 5.0
-    return max(0.0, score)
+        length_penalty = 5.0
+    score = max(0.0, adjusted - length_penalty)
+    return score, {
+        "expression_burden_level": burden_level,
+        "base_dynamic_copy_fit": base,
+        "priority": priority,
+        "priority_adjustment": adjustment,
+        "insert_length_penalty": length_penalty,
+        "final_copy_load_fit": score,
+    }
 
 
 def _marker_score(marker: str, preferred_marker: str | None) -> float:
@@ -254,10 +273,14 @@ def score_template(
     pair_scores: list[dict[str, Any]] = []
     for construct in context.constructs:
         final_length = estimated_final_length(template, construct.length_bp)
+        copy_load_score, copy_load_details = _copy_load_score(
+            copy_class,
+            priority,
+            construct.length_bp,
+            construct.burden.level,
+        )
         breakdown = {
-            "copy_load_fit": _copy_load_score(
-                copy_class, priority, construct.length_bp
-            ),
+            "copy_load_fit": copy_load_score,
             "assembly_readiness": assembly_score,
             "source_evidence_completeness": evidence_score,
             "marker_suitability": marker_score,
@@ -271,6 +294,8 @@ def score_template(
                 "estimated_final_length_bp": final_length,
                 "score": total,
                 "breakdown": breakdown,
+                "expression_burden": construct.burden.fingerprint_payload(),
+                "copy_load_fit_details": copy_load_details,
             }
         )
     robust_score = min(item["score"] for item in pair_scores)
@@ -284,9 +309,14 @@ def score_template(
     representative = min(
         pair_scores,
         key=lambda item: (item["score"], -item["estimated_final_length_bp"]),
-    )["breakdown"]
+    )
+    burden_scores = [item.burden.score for item in context.constructs]
+    burden_levels = sorted({item.burden.level for item in context.constructs})
     rationales = [
-        f"{copy_class} copy backbone under the {priority} priority",
+        (
+            f"{copy_class} copy backbone dynamically matched to expression "
+            f"burden levels {', '.join(burden_levels)}"
+        ),
         (
             "audited MCS insertion region"
             if policy == "insert_into_mcs"
@@ -298,6 +328,7 @@ def score_template(
     ]
     warnings = [
         "Backbone capacity is estimated from copy class and final size because the database has no experimentally verified insert-capacity field.",
+        "Expression burden and copy-number fit are transparent engineering heuristics and require experimental validation.",
         "Recommendation score is an interpretable heuristic, not an experimental success probability.",
     ]
     return {
@@ -309,7 +340,16 @@ def score_template(
         "assembly_policy": policy,
         "robust_score": robust_score,
         "pair_score_median": median_score,
-        "score_breakdown": representative,
+        "score_breakdown": representative["breakdown"],
+        "copy_load_fit_details": representative["copy_load_fit_details"],
+        "expression_burden_score_range": {
+            "minimum": min(burden_scores),
+            "maximum": max(burden_scores),
+        },
+        "expression_burden_levels": burden_levels,
+        "expression_burden_model_version": context.constructs[
+            0
+        ].burden.model_version,
         "estimated_final_length_range_bp": {
             "minimum": minimum_final_length,
             "maximum": maximum_final_length,

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.plasmid_selection.config import (
-    COPY_CLASS_SCORES,
+    BURDEN_COPY_FIT_SCORES,
     DEFAULT_CANDIDATE_COUNT,
     MARKER_SCORES,
     MAX_CANDIDATE_COUNT,
@@ -21,6 +21,7 @@ from src.plasmid_selection.config import (
     PLASMID_CANDIDATES_FILENAME,
     PLASMID_CANDIDATES_SCHEMA_VERSION,
     PLASMID_RECOMMENDATION_ALGORITHM_VERSION,
+    PRIORITY_COPY_ADJUSTMENTS,
     SUPPORTED_PRIORITIES,
 )
 from src.plasmid_selection.get_plasmid_context import (
@@ -63,12 +64,14 @@ def _parameters(
     priority: str,
     preferred_marker: str | None,
     excluded_markers: Sequence[str],
+    burden_model_version: str,
 ) -> dict[str, Any]:
     return {
         "requested_candidate_count": count,
         "priority": priority,
         "preferred_resistance": preferred_marker,
         "excluded_resistance": list(excluded_markers),
+        "expression_burden_model_version": burden_model_version,
         "score_weights": {
             "copy_load_fit": 35,
             "assembly_readiness": 25,
@@ -76,7 +79,8 @@ def _parameters(
             "marker_suitability": 10,
             "estimated_final_size": 10,
         },
-        "copy_class_scores": COPY_CLASS_SCORES[priority],
+        "dynamic_copy_fit_scores": BURDEN_COPY_FIT_SCORES,
+        "priority_copy_adjustments": PRIORITY_COPY_ADJUSTMENTS,
         "default_marker_scores": MARKER_SCORES,
         "robust_aggregation": "minimum_pair_score_across_all_constructs",
         "diversity": {
@@ -365,6 +369,9 @@ def plasmid_recommendation_summary(
                 "score": candidates[0].get("robust_score"),
                 "copy_number_class": candidates[0].get("copy_number_class"),
                 "marker": candidates[0].get("marker"),
+                "burden_range": candidates[0].get(
+                    "expression_burden_score_range"
+                ),
             }
             if candidates
             else None
@@ -377,6 +384,7 @@ def plasmid_recommendation_summary(
                 "copy": item.get("copy_number_class"),
                 "marker": item.get("marker"),
                 "assembly": item.get("assembly_policy"),
+                "burden_levels": item.get("expression_burden_levels"),
             }
             for item in candidates
         ],
@@ -418,6 +426,7 @@ def run_plasmid_recommendation(
         priority=priority,
         preferred_marker=preferred_marker,
         excluded_markers=excluded_markers,
+        burden_model_version=context.constructs[0].burden.model_version,
     )
     request_fingerprint = _request_fingerprint(
         context,
@@ -485,6 +494,7 @@ def run_plasmid_recommendation(
     )
     warnings = [
         "Plasmid insert capacity is estimated because plasmid_templates_v2 has no experimentally verified capacity field.",
+        "Expression burden dynamically determines copy-number fit; --priority contributes at most a three-point adjustment.",
         "Scores are interpretable heuristics and are not experimental success probabilities.",
         "One selected backbone will later be combined separately with every selected expression construct.",
     ]
@@ -523,6 +533,19 @@ def run_plasmid_recommendation(
                 "maximum": context.maximum_insert_length_bp,
             },
             "maximum_cassette_count": context.maximum_cassette_count,
+            "expression_burden": {
+                "model_version": context.constructs[0].burden.model_version,
+                "score_range": {
+                    "minimum": context.minimum_burden_score,
+                    "maximum": context.maximum_burden_score,
+                },
+                "levels": sorted(
+                    {item.burden.level for item in context.constructs}
+                ),
+                "confidence_levels": sorted(
+                    {item.burden.confidence for item in context.constructs}
+                ),
+            },
             "backbone_policy": "one_backbone_applicable_to_all_selected_constructs",
         },
         "ranking_parameters": parameters,

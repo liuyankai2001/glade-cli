@@ -50,6 +50,12 @@ uv run python main.py expression --design --parts -i demo04.json --n-designs 24
 的 OSTIR 翻译稳健性、terminator 可靠性和重复元件风险。它是可解释的设计启发式，
 不是实验成功概率，也不能证明酶活性或目标化合物产量。
 
+每个方案还会独立计算 `expression_burden.v1` 数值负担。系统把 promoter 活性百分位、
+RBS 活性百分位、OSTIR 在同一基因上下文候选中的经验百分位、CDS 长度和非预期翻译
+起始位点组合为 0–100 分：低于 35 为 `low`，35 至 65 为 `moderate`，65 及以上为
+`high`。这个分数用于后续动态匹配质粒拷贝类型，不参与当前稳定表达成功分排序。
+完整候选保存逐基因计算过程，因此可以追溯每一项负担来源。
+
 每个 RBS 都会结合对应优化 CDS 的上下文，用 OSTIR 重新计算翻译起始速率；
 随后使用 DNA Chisel 检查完整表达盒的 GC、同聚物和禁用酶切位点。结果写入：
 
@@ -57,7 +63,7 @@ uv run python main.py expression --design --parts -i demo04.json --n-designs 24
 outputs/<目标化合物>/expression_box/expression_parts_designs.json
 ```
 
-终端只显示方案数量、70 分入选门槛、分数范围和主推荐 `design_id`；完整元件组合
+终端只显示方案数量、70 分入选门槛、分数范围、主推荐 `design_id` 及其负担摘要；完整元件组合
 和分项评分仅写入上述 JSON 文件，避免大量序列细节占满命令行。
 
 只有评分不低于 70 分的唯一安全组合才会输出。如果合格组合少于请求数量，文件保存
@@ -75,8 +81,11 @@ uv run python main.py write -i demo04.json --expression-parts 1:4 7 9:12
 ```
 
 `start:end` 包含两端；重复编号自动去重，最终按候选 `rank` 排序，排名最高的已选
-方案成为 `primary_design_id`。manifest 的 `parts_selection` 只保存方案 ID、评分和
-内容指纹引用，不复制完整元件组合；候选文件发生变化后，下游必须拒绝使用旧引用。
+方案成为 `primary_design_id`。manifest 的 `parts_selection` 保存方案 ID、评分、紧凑的
+数值负担摘要和内容指纹，不复制完整元件组合；候选文件发生变化后，下游必须拒绝使用旧引用。
+
+`expression_parts_designs.v3` 和 `parts_selection.v1` 不包含完整负担数据，不能用于动态
+质粒评分。升级后需要重新运行表达元件推荐和写入命令。
 
 写入选择的同时，系统会为每个已选方案自动生成一份完整串联 GenBank：同一方案内
 的表达盒按 `cassette_index` 排序后直接首尾连接，不插入 linker；每个表达盒内部按

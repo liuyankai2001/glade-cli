@@ -4,9 +4,9 @@ from __future__ import annotations
 
 
 PLASMID_COLLECTION = "plasmid_templates_v2"
-PLASMID_CANDIDATES_SCHEMA_VERSION = "plasmid_candidates.v1"
-PLASMID_SELECTION_SCHEMA_VERSION = "plasmid_selection.v1"
-PLASMID_RECOMMENDATION_ALGORITHM_VERSION = "plasmid_recommendation.v1.0.0"
+PLASMID_CANDIDATES_SCHEMA_VERSION = "plasmid_candidates.v2"
+PLASMID_SELECTION_SCHEMA_VERSION = "plasmid_selection.v2"
+PLASMID_RECOMMENDATION_ALGORITHM_VERSION = "plasmid_recommendation.v2.0.0"
 PLASMID_CANDIDATES_FILENAME = "plasmid_candidates.json"
 DEFAULT_CANDIDATE_COUNT = 5
 MIN_CANDIDATE_COUNT = 1
@@ -21,26 +21,47 @@ SUPPORTED_ASSEMBLY_POLICIES = {
     "replace_seva_cargo_paci_spei",
 }
 
-# The score is deliberately transparent and is not an experimental-success
-# probability. Each row sums to the 35-point copy/load component.
-COPY_CLASS_SCORES = {
-    "stability": {
+# Intrinsic expression burden determines the copy/load fit. User priority is a
+# small adjustment and cannot overturn a strongly incompatible burden class.
+BURDEN_COPY_FIT_SCORES = {
+    "low": {
+        "low": 24.0,
+        "medium": 35.0,
+        "context_dependent": 22.0,
+        "high": 30.0,
+    },
+    "moderate": {
+        "low": 30.0,
+        "medium": 35.0,
+        "context_dependent": 20.0,
+        "high": 18.0,
+    },
+    "high": {
         "low": 35.0,
-        "medium": 28.0,
-        "context_dependent": 14.0,
-        "high": 8.0,
+        "medium": 25.0,
+        "context_dependent": 12.0,
+        "high": 5.0,
+    },
+}
+
+PRIORITY_COPY_ADJUSTMENTS = {
+    "stability": {
+        "low": 3.0,
+        "medium": 0.0,
+        "context_dependent": -1.0,
+        "high": -3.0,
     },
     "balanced": {
-        "medium": 35.0,
-        "low": 31.0,
-        "context_dependent": 18.0,
-        "high": 14.0,
+        "low": 0.0,
+        "medium": 0.0,
+        "context_dependent": 0.0,
+        "high": 0.0,
     },
     "expression": {
-        "high": 35.0,
-        "medium": 30.0,
-        "low": 18.0,
-        "context_dependent": 14.0,
+        "low": -3.0,
+        "medium": 1.0,
+        "context_dependent": 0.0,
+        "high": 3.0,
     },
 }
 
@@ -82,7 +103,7 @@ MARKER_ALIASES = {
 
 
 __all__ = [
-    "COPY_CLASS_SCORES",
+    "BURDEN_COPY_FIT_SCORES",
     "DEFAULT_CANDIDATE_COUNT",
     "DOWNLOAD_TIMEOUT_SECONDS",
     "MARKER_ALIASES",
@@ -96,6 +117,7 @@ __all__ = [
     "PLASMID_COLLECTION",
     "PLASMID_RECOMMENDATION_ALGORITHM_VERSION",
     "PLASMID_SELECTION_SCHEMA_VERSION",
+    "PRIORITY_COPY_ADJUSTMENTS",
     "SUPPORTED_ASSEMBLY_POLICIES",
     "SUPPORTED_PRIORITIES",
 ]
