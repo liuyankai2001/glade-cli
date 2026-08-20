@@ -2,11 +2,17 @@ from src.write_manifest.auxiliary_protein import (
     run_write_auxiliary_protein_research,
 )
 from src.write_manifest.expression_box import run_write_expression_box_selection
+from src.write_manifest.expression_parts import (
+    run_write_expression_parts_selection,
+)
 from src.write_manifest.main_enzyme import run_write_main_enzyme_set
 from src.write_manifest.solution import run_write_solution
 
 
 def run_write(config):
+    if getattr(config, "expression_parts", None) is not None:
+        return run_write_expression_parts_selection(config)
+
     if getattr(config, "expression_box", None) is not None:
         return run_write_expression_box_selection(config)
 
@@ -32,6 +38,12 @@ def register(subparsers):
 
     action.add_argument("--solution", type=int, metavar="N")
     action.add_argument("--main-enzyme-set", type=int, metavar="N")
+    action.add_argument(
+        "--expression-parts",
+        nargs="+",
+        metavar="ID_OR_RANGE",
+        help="将一个或多个表达元件方案写入manifest，例如 1:12 或 1:4 7",
+    )
     action.add_argument(
         "--expression-box",
         type=int,

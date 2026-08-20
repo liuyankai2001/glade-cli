@@ -64,6 +64,20 @@ outputs/<目标化合物>/expression_box/expression_parts_designs.json
 全部合格方案并标记 `partial`；没有方案达到门槛时标记 `failed`。系统不会使用低分
 或重复方案凑数。
 
-这个阶段不会修改 manifest，也不会生成最终 GenBank。远端 Milvus 不可达、
+推荐命令本身不会修改 manifest。确认要保留的构建方案后，可以一次写入单个、多个或
+闭区间编号：
+
+```powershell
+uv run python main.py write -i demo04.json --expression-parts 1
+uv run python main.py write -i demo04.json --expression-parts 1 3 5
+uv run python main.py write -i demo04.json --expression-parts 1:12
+uv run python main.py write -i demo04.json --expression-parts 1:4 7 9:12
+```
+
+`start:end` 包含两端；重复编号自动去重，最终按候选 `rank` 排序，排名最高的已选
+方案成为 `primary_design_id`。manifest 的 `parts_selection` 只保存方案 ID、评分和
+内容指纹引用，不复制完整元件组合；候选文件发生变化后，下游必须拒绝使用旧引用。
+
+这个阶段不会生成最终 GenBank。远端 Milvus 不可达、
 collection schema 不匹配或缺少任一类可用元件时，命令会直接失败，不使用本地或
 过期缓存静默回退。
