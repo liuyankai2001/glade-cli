@@ -23,6 +23,12 @@ from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v1"
+CDS_SELECTION_DOWNSTREAM_SECTIONS = (
+    "expression_box_selection",
+    "expression_cassette_assembly",
+    "parts_selection",
+    "assembled_expression_cassettes",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +356,7 @@ def write_cds_selection_to_manifest(
         context.manifest_path,
         target_compound_id=context.target_compound_id,
         sections={"cds_selection": payload},
+        discard_sections=CDS_SELECTION_DOWNSTREAM_SECTIONS,
         expected_revision=context.manifest_revision,
     )
     return {
@@ -360,6 +367,7 @@ def write_cds_selection_to_manifest(
 
 
 __all__ = [
+    "CDS_SELECTION_DOWNSTREAM_SECTIONS",
     "CDS_SELECTION_SCHEMA_VERSION",
     "CompletedProteinCds",
     "FailedProteinCds",

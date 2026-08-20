@@ -114,6 +114,10 @@ SOLUTION_DOWNSTREAM_SECTIONS = (
     "auxiliary_protein_selection",
     "enzyme_system_selection",
     "cds_selection",
+    "expression_box_selection",
+    "expression_cassette_assembly",
+    "parts_selection",
+    "assembled_expression_cassettes",
 )
 
 
