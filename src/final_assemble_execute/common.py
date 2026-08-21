@@ -465,7 +465,13 @@ def _mapped_simple_parts(
         if end <= cut:
             return [SimpleLocation(start, end, strand=strand)], False
         if start >= cut:
-            return [SimpleLocation(start + payload_length, end + payload_length, strand=strand)], True
+            return [
+                SimpleLocation(
+                    start + payload_length,
+                    end + payload_length,
+                    strand=strand,
+                )
+            ], False
         changed = True
         parts = []
         if start < cut:
@@ -479,7 +485,7 @@ def _mapped_simple_parts(
     if end <= replace_start:
         return [SimpleLocation(start, end, strand=strand)], False
     if start >= replace_end:
-        return [SimpleLocation(start + delta, end + delta, strand=strand)], True
+        return [SimpleLocation(start + delta, end + delta, strand=strand)], False
     changed = True
     parts: list[SimpleLocation] = []
     if start < replace_start:

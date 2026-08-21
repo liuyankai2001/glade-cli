@@ -35,7 +35,6 @@ from src.final_assemble_execute.config import (
     THEORETICAL_ASSEMBLY_WARNING,
 )
 from src.final_assemble_execute.export_final_design_report import (
-    ReportGenerator,
     build_report_payload,
     generate_final_design_report,
 )
@@ -285,7 +284,6 @@ def _selection_fingerprint(section: Mapping[str, Any]) -> str:
 def execute_final_assembly(
     config: Any,
     *,
-    reporter: ReportGenerator | None = None,
     design_executor: DesignExecutor | None = None,
 ) -> dict[str, Any]:
     """Regenerate and commit the complete in-silico final-assembly bundle."""
@@ -401,8 +399,7 @@ def execute_final_assembly(
             run_summary=run_summary,
         )
         markdown, generated_by, report_warning = generate_final_design_report(
-            report_payload,
-            reporter=reporter,
+            report_payload
         )
         report_path = staging_dir / FINAL_DESIGN_REPORT_FILENAME
         report_path.write_text(markdown, encoding="utf-8", newline="\n")

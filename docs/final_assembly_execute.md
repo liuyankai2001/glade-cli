@@ -36,7 +36,15 @@ outputs/<目标化合物>/final_assembly/
 
 GenBank 会保留并重新定位骨架和完整表达构建中的 features；每个 JSON 记录来源计划、method、酶、插入位置、文件哈希和计算验证结果。
 
-中文报告在执行时自动生成。系统优先调用 `.env` 中配置的 LLM；模型不可用、超时或返回空内容时会写入固定模板报告，组装结果不会因此失败。
+中文报告在执行时由 Python 固定模板自动生成，不调用 LLM，也不读取模型配置。报告中的通路、KEGG Orthology、宿主、主酶风险、优化 CDS、表达方案、质粒和组装结果都直接映射自当前 manifest 与输出文件，`generated_by` 固定为 `system_template`。
+
+报告固定区分：
+
+- KO 表示 KEGG Orthology，不表示 gene knockout；
+- 缺少宿主敲除分析时明确写为“暂无敲除建议”；
+- 反应记录解析完成不等于主酶反应适配已经验证；
+- 已生成的优化 CDS 会显示文件路径，不会再次建议从零做密码子优化；
+- 复制子家族和拷贝数等级分别显示。
 
 ## complete、partial 和 failed
 
