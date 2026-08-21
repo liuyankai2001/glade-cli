@@ -65,3 +65,11 @@ uv run python main.py write -i demo04.json --assembly-plan
 ## 与执行工具的边界
 
 规划阶段不会拼接最终序列、重排最终 features 或输出 `.gb/.fasta`。后续接入执行工具后，由执行命令遍历 manifest 中 12 个 `design_plans`，完成精确序列组装和输出校验。
+
+接受计划后可直接执行：
+
+```powershell
+uv run python main.py assembly --execute -i demo04.json
+```
+
+执行阶段的输出、partial 语义和自动报告说明见 `docs/final_assembly_execute.md`。

@@ -1,15 +1,20 @@
-"""CLI registration for final-assembly plan recommendation."""
+"""CLI registration for final-assembly planning and execution."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from src.final_assemble_execute import run_final_assembly_execute
 from src.final_assemble_plan.config import SUPPORTED_METHODS
 from src.final_assemble_plan.plan_final_assembly import run_final_assembly_plan
 
 
 def _run(config: Any) -> dict[str, Any]:
+    if bool(getattr(config, "assembly_execute", False)):
+        if getattr(config, "assembly_method", None) is not None:
+            raise ValueError("--method 只能与 assembly --plan 一起使用")
+        return run_final_assembly_execute(config)
     result = run_final_assembly_plan(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
@@ -18,13 +23,19 @@ def _run(config: Any) -> dict[str, Any]:
 def register(subparsers):
     parser = subparsers.add_parser(
         "assembly",
-        help="为每个完整表达构建生成最终组装计划",
+        help="生成或执行最终组装计划",
     )
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument(
         "--plan",
         action="store_true",
-        required=True,
         help="生成整套最终组装计划",
+    )
+    action.add_argument(
+        "--execute",
+        dest="assembly_execute",
+        action="store_true",
+        help="执行manifest中已接受的整套最终组装计划",
     )
     parser.add_argument(
         "--method",

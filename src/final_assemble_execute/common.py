@@ -1,860 +1,782 @@
+"""Strict sequence, plan, annotation, and output helpers for final assembly."""
+
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import warnings
-from datetime import datetime
+from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from src.tools.common.session_paths import (
-    design_manifest_file,
-    final_assembly_dir as resolve_context_final_assembly_dir,
-    outputs_dir as resolve_context_outputs_dir,
-    session_dir as resolve_context_session_dir,
+from Bio import Restriction, SeqIO
+from Bio.Seq import Seq
+from Bio.SeqFeature import CompoundLocation, SeqFeature, SimpleLocation
+from Bio.SeqRecord import SeqRecord
+
+from src.final_assemble_plan.common import (
+    circular_segment,
+    enzyme_cut_positions,
+    stable_json_hash,
 )
-
-GENBANK_EXTENSIONS = {".gb", ".gbk", ".gbj"}
-
-
-def json_error(error: str, **details: Any) -> str:
-    return json.dumps({"ok": False, "error": error, **details}, ensure_ascii=False, default=str)
-
-
-def session_root(session_dir: str | None, output_dir: str | None, manifest_path: str | None) -> Path:
-    if session_dir:
-        return Path(session_dir).resolve()
-
-    if output_dir:
-        output_path = Path(output_dir).resolve()
-        return output_path.parent.resolve() if output_path.name == "outputs" else output_path.parent.resolve()
-
-    if manifest_path:
-        path = Path(manifest_path).resolve()
-        if path.name == "design_manifest.json" and path.parent.name == "outputs":
-            return path.parent.parent.resolve()
-
-    return resolve_context_session_dir()
+from src.final_assemble_plan.config import (
+    FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION,
+    SUPPORTED_METHODS,
+)
+from src.final_assemble_plan.get_final_assembly_context import (
+    load_final_assembly_context,
+)
+from src.final_assemble_execute.models import (
+    FinalAssemblyExecutionContext,
+    SequenceAssemblyResult,
+)
+from src.write_manifest.store import read_design_manifest
 
 
-def outputs_dir(root: Path, output_dir: str | None) -> Path:
-    if output_dir:
-        return Path(output_dir).resolve()
-
-    return resolve_context_outputs_dir()
+DNA_ALPHABET = frozenset("ACGT")
 
 
-def manifest_file(root: Path, output_dir: Path, manifest_path: str | None) -> Path:
-    if manifest_path:
-        path = Path(manifest_path)
-        if not path.is_absolute():
-            output_relative = output_dir / path
-            session_relative = root / path
-            path = output_relative if output_relative.exists() else session_relative
-        return path.resolve()
-
-    return design_manifest_file()
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"JSON root must be an object: {path}")
-    return data
-
-
-def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(path.parent),
-        delete=False,
-        suffix=".tmp",
-    ) as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-        tmp_path = Path(handle.name)
-    tmp_path.replace(path)
-
-
-def as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def clean_dna(value: Any) -> str:
-    return "".join(base for base in str(value or "").upper() if base in "ACGTN")
-
-
-def sanitize_name(value: Any) -> str:
-    text = str(value or "").strip() or "final_construct"
-    return "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in text)
-
-
-def relpath_or_abs(base_dir: Path, path_value: Any) -> str:
-    if not path_value:
-        return ""
-    path = Path(str(path_value))
-    if not path.is_absolute():
-        path = base_dir / path
-    try:
-        return path.resolve().relative_to(base_dir.resolve()).as_posix()
-    except ValueError:
-        return str(path.resolve())
-
-
-def resolve_file_path(output_dir: Path, path_value: Any) -> Path:
-    if not path_value:
-        raise ValueError("sequence file path is empty")
-
-    path = Path(str(path_value))
-    if path.is_absolute():
-        return path.resolve()
-
-    output_relative = (output_dir / path).resolve()
-    if output_relative.exists():
-        return output_relative
-
-    session_relative = (output_dir.parent / path).resolve()
-    if session_relative.exists():
-        return session_relative
-
-    return output_relative
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_bytes(path.read_bytes())
 
 
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def sha256_sequence(sequence: str) -> str:
+    return hashlib.sha256(sequence.upper().encode("ascii")).hexdigest()
 
 
-def read_genbank_origin(path: Path) -> str:
-    in_origin = False
-    chunks: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.upper() == "ORIGIN":
-            in_origin = True
-            continue
-        if in_origin and stripped == "//":
-            break
-        if in_origin:
-            chunks.append("".join(char for char in stripped if char.isalpha()))
-    return "".join(chunks)
-
-
-def read_genbank(path: Path) -> tuple[Any | None, str, list[str]]:
-    if path.suffix.lower() not in GENBANK_EXTENSIONS:
-        raise ValueError(f"expected GenBank file (.gb/.gbk/.gbj): {path}")
-
-    parse_warnings: list[str] = []
+def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
     try:
-        from Bio import SeqIO
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
+
+def relative_project_path(project_root: Path, path: Path) -> str:
+    return path.resolve().relative_to(project_root.resolve()).as_posix()
+
+
+def resolve_project_file(project_root: Path, value: Any) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("sequence file path is empty")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    path = path.resolve()
+    try:
+        path.relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"file is outside project output: {path}") from exc
+    return path
+
+
+def read_genbank_strict(path: Path) -> tuple[SeqRecord, str, list[str]]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            with path.open("r", encoding="utf-8") as handle:
-                record = next(SeqIO.parse(handle, "genbank"))
-        parse_warnings = [str(item.message) for item in caught]
-        sequence = clean_dna(str(record.seq))
-        if not sequence:
-            raise ValueError("parsed GenBank sequence is empty")
-        return record, sequence, parse_warnings
+            record = SeqIO.read(path, "genbank")
     except Exception as exc:
-        sequence = clean_dna(read_genbank_origin(path))
-        if not sequence:
-            raise ValueError(f"could not parse GenBank sequence: {path}") from exc
-        parse_warnings.append(f"Biopython parse failed; recovered sequence from ORIGIN: {exc}")
-        return None, sequence, parse_warnings
+        raise ValueError(f"could not parse GenBank file: {path}") from exc
+    sequence = str(record.seq).upper()
+    if not sequence or set(sequence) - DNA_ALPHABET:
+        raise ValueError(f"GenBank sequence must contain only A/C/G/T: {path}")
+    return record, sequence, [str(item.message) for item in caught]
 
 
-def feature_label(feature: Any) -> str:
-    for key in ("label", "gene", "product", "note"):
-        values = getattr(feature, "qualifiers", {}).get(key, [])
-        if values:
-            return str(values[0])
-    return str(getattr(feature, "type", "misc_feature"))
+def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"manifest 缺少 {name}")
+    return value
 
 
-def feature_note(feature: Any) -> str:
-    values = getattr(feature, "qualifiers", {}).get("note", [])
-    return str(values[0]) if values else feature_label(feature)
+def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
+    """Load and authenticate the selected 12-plan execution bundle."""
 
+    source_context = load_final_assembly_context(config)
+    manifest = read_design_manifest(source_context.manifest_path)
+    revision = int(manifest.get("revision") or 0)
+    if revision != source_context.manifest_revision:
+        raise ValueError("manifest revision 在读取执行上下文时发生变化，请重试")
 
-def file_summary(output_dir: Path, path: Path, *, sequence: str, file_format: str) -> dict[str, Any]:
-    return {
-        "path": relpath_or_abs(output_dir, path),
-        "sha256": sha256_file(path),
-        "sequence_sha256": sha256_text(sequence),
-        "length_bp": len(sequence),
-        "format": file_format,
+    section = _mapping(manifest.get("final_assembly_plan"), "final_assembly_plan")
+    if section.get("schema_version") != FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION:
+        raise ValueError("最终组装计划版本无效，请重新运行并写入 assembly --plan")
+    if section.get("status") != "selected":
+        raise ValueError("请先使用 write --assembly-plan 接受完整组装计划")
+    recorded_selection = str(section.get("selection_fingerprint") or "")
+    unsigned_selection = dict(section)
+    unsigned_selection.pop("selection_fingerprint", None)
+    if recorded_selection != stable_json_hash(unsigned_selection):
+        raise ValueError("final_assembly_plan.selection_fingerprint 无效")
+
+    source = _mapping(section.get("source"), "final_assembly_plan.source")
+    expected_source = {
+        "context_input_fingerprint": source_context.input_fingerprint,
+        "parts_selection_fingerprint": source_context.parts_selection_fingerprint,
+        "assembled_constructs_fingerprint": (
+            source_context.assembled_constructs_fingerprint
+        ),
+        "plasmid_selection_fingerprint": (
+            source_context.plasmid_selection_fingerprint
+        ),
     }
+    for key, expected in expected_source.items():
+        if source.get(key) != expected:
+            raise ValueError(
+                "最终组装计划与当前表达构建或质粒骨架不一致，请重新生成计划"
+            )
+
+    raw_plans = section.get("design_plans")
+    if not isinstance(raw_plans, list) or not raw_plans:
+        raise ValueError("final_assembly_plan.design_plans 为空")
+    plans = [dict(item) for item in raw_plans if isinstance(item, Mapping)]
+    if len(plans) != len(raw_plans):
+        raise ValueError("final_assembly_plan.design_plans 包含无效条目")
+    expected_ids = {item.design_id for item in source_context.constructs}
+    actual_ids = [int(item.get("parts_design_id") or 0) for item in plans]
+    if (
+        len(plans) != len(source_context.constructs)
+        or len(actual_ids) != len(set(actual_ids))
+        or set(actual_ids) != expected_ids
+        or int(section.get("design_count") or 0) != len(plans)
+    ):
+        raise ValueError("最终组装计划没有完整且唯一地覆盖全部表达构建")
+    if source.get("plan_set_fingerprint") != stable_json_hash(plans):
+        raise ValueError("final_assembly_plan 的 plan_set_fingerprint 无效")
+
+    construct_by_id = {item.design_id: item for item in source_context.constructs}
+    for plan in plans:
+        design_id = int(plan["parts_design_id"])
+        construct = construct_by_id[design_id]
+        if plan.get("assembly_method") not in SUPPORTED_METHODS:
+            raise ValueError(f"design {design_id} 包含不支持的组装方法")
+        recorded_plan = str(plan.get("plan_fingerprint") or "")
+        unsigned_plan = dict(plan)
+        unsigned_plan.pop("plan_fingerprint", None)
+        if recorded_plan != stable_json_hash(unsigned_plan):
+            raise ValueError(f"design {design_id} 的 plan_fingerprint 无效")
+        insert = _mapping(plan.get("insert"), f"design {design_id}.insert")
+        backbone = _mapping(plan.get("backbone"), f"design {design_id}.backbone")
+        if (
+            insert.get("file_sha256") != construct.file_sha256
+            or insert.get("sequence_sha256") != construct.sequence_sha256
+            or int(insert.get("length_bp") or 0) != construct.length_bp
+            or backbone.get("file_sha256") != source_context.backbone.file_sha256
+            or backbone.get("sequence_content_sha256")
+            != source_context.backbone.sequence_content_sha256
+            or int(backbone.get("length_bp") or 0)
+            != source_context.backbone.length_bp
+        ):
+            raise ValueError(f"design {design_id} 的输入文件指纹与当前文件不一致")
+
+    backbone_record, backbone_sequence, _ = read_genbank_strict(
+        source_context.backbone.path
+    )
+    if backbone_sequence != source_context.backbone.sequence:
+        raise ValueError("质粒骨架序列在执行上下文读取期间发生变化")
+    insert_records: dict[int, SeqRecord] = {}
+    for construct in source_context.constructs:
+        record, sequence, _ = read_genbank_strict(construct.path)
+        if sequence != construct.sequence:
+            raise ValueError(
+                f"design {construct.design_id} 序列在执行上下文读取期间发生变化"
+            )
+        insert_records[construct.design_id] = record
+
+    return FinalAssemblyExecutionContext(
+        manifest=manifest,
+        manifest_path=source_context.manifest_path,
+        project_output_path=source_context.project_output_path,
+        manifest_revision=revision,
+        source_context=source_context,
+        plan_selection_fingerprint=recorded_selection,
+        plans=tuple(sorted(plans, key=lambda item: int(item["parts_design_id"]))),
+        backbone_record=backbone_record,
+        insert_records=insert_records,
+    )
 
 
-def validate_file_digest(path: Path, file_info: dict[str, Any], sequence: str) -> list[str]:
-    warnings_list = []
-    expected_sha = str(file_info.get("sha256") or "").strip()
-    if expected_sha and expected_sha != sha256_file(path):
-        warnings_list.append(f"sha256 mismatch for {path.name}")
-
-    expected_sequence_sha = str(file_info.get("sequence_sha256") or "").strip()
-    if expected_sequence_sha and expected_sequence_sha != sha256_text(sequence):
-        warnings_list.append(f"sequence_sha256 mismatch for {path.name}")
-
-    expected_length = file_info.get("length_bp")
-    if expected_length is not None and int(expected_length) != len(sequence):
-        warnings_list.append(f"length mismatch for {path.name}: expected {expected_length}, actual {len(sequence)}")
-
-    return warnings_list
-
-
-def site_positions(sequence: str, site: str) -> list[int]:
-    site = clean_dna(site)
-    if not sequence or not site:
-        return []
-    return [
-        index + 1
-        for index in range(0, len(sequence) - len(site) + 1)
-        if sequence[index:index + len(site)] == site
-    ]
+def _target_indexes(target: Mapping[str, Any], vector_length: int) -> tuple[int, int]:
+    mode = str(target.get("mode") or "")
+    if mode == "insert_after":
+        cut = int(target.get("insert_after_bp") or 0)
+        if not 1 <= cut <= vector_length:
+            raise ValueError("insert_after_bp 超出骨架范围")
+        return cut, cut
+    if mode == "replace":
+        start = int(target.get("replace_start_bp") or 0)
+        end = int(target.get("replace_end_bp") or 0)
+        if start < 1 or end < start or end > vector_length:
+            raise ValueError("replace 坐标超出骨架范围")
+        return start - 1, end
+    raise ValueError(f"不支持的 target.mode：{mode}")
 
 
-def sequence_segment(sequence: str, start_bp: int, length: int, *, circular: bool) -> str:
-    if length <= 0:
-        raise ValueError("segment length must be positive")
-    if not circular and (start_bp < 1 or start_bp + length - 1 > len(sequence)):
-        raise ValueError("segment is outside linear vector bounds")
-    if circular:
-        return "".join(sequence[(start_bp - 1 + offset) % len(sequence)] for offset in range(length))
-    return sequence[start_bp - 1:start_bp + length - 1]
+def _enzyme_from_record(record: Mapping[str, Any]) -> Any:
+    name = str(record.get("name") or "")
+    enzyme = getattr(Restriction, name, None)
+    if enzyme is None:
+        raise ValueError(f"Biopython 不支持计划中的限制酶：{name}")
+    if str(enzyme.site) != str(record.get("recognition_site") or "").upper():
+        raise ValueError(f"限制酶 {name} 的识别序列与 Biopython 不一致")
+    return enzyme
 
 
-def get_plan(manifest: dict[str, Any]) -> dict[str, Any]:
-    plan = as_dict(manifest.get("final_assembly_plan"))
-    if plan.get("status") != "planned":
-        raise ValueError('final_assembly_plan.status must be "planned"')
-    strategy = as_dict(plan.get("strategy"))
-    method = strategy.get("assembly_method")
-    if method not in {"direct", "restriction", "gibson"}:
-        raise ValueError("final_assembly_plan.strategy.assembly_method must be direct, restriction, or gibson")
-    return plan
+def _validate_linearization_enzyme(
+    record: Mapping[str, Any],
+    vector_sequence: str,
+) -> Any:
+    enzyme = _enzyme_from_record(record)
+    cuts = enzyme_cut_positions(enzyme, vector_sequence, circular=True)
+    if cuts != [int(record.get("cut_after_bp"))]:
+        raise ValueError(
+            f"限制酶 {record.get('name')} 的骨架切割坐标与计划不一致"
+        )
+    start = int(record.get("site_start_bp") or 0)
+    end = int(record.get("site_end_bp") or 0)
+    site = str(record.get("recognition_site") or "").upper()
+    if start < 1 or end != start + len(site) - 1:
+        raise ValueError(f"限制酶 {record.get('name')} 的识别位点坐标无效")
+    if vector_sequence[start - 1 : end] != site:
+        raise ValueError(f"限制酶 {record.get('name')} 的识别位点与骨架不一致")
+    return enzyme
 
 
-def assembled_cassette_by_index(manifest: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    assembled = as_dict(manifest.get("assembled_expression_cassettes"))
-    if assembled.get("status") != "assembled":
-        raise ValueError('assembled_expression_cassettes.status must be "assembled"')
-
-    cassette_files = [item for item in as_list(assembled.get("cassette_files")) if isinstance(item, dict)]
-    if not cassette_files:
-        raise ValueError("assembled_expression_cassettes.cassette_files is empty")
-    return {int(item.get("cassette_index")): item for item in cassette_files}
-
-
-def planned_cassettes(manifest: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
-    cassette_by_index = assembled_cassette_by_index(manifest)
-    order = [int(index) for index in as_list(as_dict(plan.get("insert")).get("cassette_order"))]
-    if not order:
-        order = sorted(cassette_by_index)
-
-    missing = [index for index in order if index not in cassette_by_index]
-    if missing:
-        raise ValueError(f"final_assembly_plan references missing cassette_index values: {missing}")
-    return [cassette_by_index[index] for index in order]
-
-
-def load_vector(manifest: dict[str, Any], output_dir: Path) -> dict[str, Any]:
-    plasmid_selection = as_dict(manifest.get("plasmid_selection"))
-    if plasmid_selection.get("status") != "selected":
-        raise ValueError('plasmid_selection.status must be "selected"')
-
-    vector = as_dict(plasmid_selection.get("vector"))
-    sequence_file = as_dict(vector.get("sequence_file"))
-    vector_path = resolve_file_path(output_dir, sequence_file.get("path"))
-    if not vector_path.exists():
-        raise FileNotFoundError(vector_path)
-
-    record, sequence, parse_warnings = read_genbank(vector_path)
-    digest_warnings = validate_file_digest(vector_path, sequence_file, sequence)
-    topology = str(vector.get("topology") or getattr(record, "annotations", {}).get("topology", "") or "").lower()
-
-    return {
-        "manifest_vector": vector,
-        "path": vector_path,
-        "record": record,
-        "sequence": sequence,
-        "topology": topology or "circular",
-        "warnings": parse_warnings + digest_warnings,
-    }
-
-
-def load_insert(manifest: dict[str, Any], plan: dict[str, Any], output_dir: Path) -> dict[str, Any]:
-    cassettes = planned_cassettes(manifest, plan)
-    linker_sequence = clean_dna(as_dict(plan.get("insert")).get("linker_sequence"))
-
-    cursor = 1
-    chunks: list[str] = []
-    files: list[dict[str, Any]] = []
-    insert_components: list[dict[str, Any]] = []
-
-    for index, cassette in enumerate(cassettes):
-        if index > 0 and linker_sequence:
-            linker_start = cursor
-            chunks.append(linker_sequence)
-            cursor += len(linker_sequence)
-            insert_components.append({
-                "type": "linker",
-                "label": f"linker_before_cassette_{cassette.get('cassette_index')}",
-                "start_bp": linker_start,
-                "end_bp": cursor - 1,
-                "source": "final_assembly_plan.insert.linker_sequence",
-            })
-
-        cassette_path = resolve_file_path(output_dir, cassette.get("path"))
-        if not cassette_path.exists():
-            raise FileNotFoundError(cassette_path)
-
-        _, sequence, parse_warnings = read_genbank(cassette_path)
-        digest_warnings = validate_file_digest(cassette_path, cassette, sequence)
-        cassette_start = cursor
-        chunks.append(sequence)
-        cursor += len(sequence)
-        cassette_end = cursor - 1
-
-        files.append({
-            "cassette_index": cassette.get("cassette_index"),
-            "path": relpath_or_abs(output_dir, cassette_path),
-            "length_bp": len(sequence),
-            "sha256": sha256_file(cassette_path),
-            "sequence_sha256": sha256_text(sequence),
-            "parse_warnings": parse_warnings,
-            "validation_warnings": digest_warnings,
-        })
-        insert_components.append({
-            "type": "expression_cassette",
-            "label": f"cassette_{cassette.get('cassette_index')}",
-            "cassette_index": cassette.get("cassette_index"),
-            "start_bp": cassette_start,
-            "end_bp": cassette_end,
-            "source": relpath_or_abs(output_dir, cassette_path),
-        })
-
-        for component in as_list(cassette.get("components")):
-            if not isinstance(component, dict):
-                continue
-            component_start = int(component.get("start_bp") or 0)
-            component_end = int(component.get("end_bp") or 0)
-            if component_start <= 0 or component_end <= 0:
-                continue
-            insert_components.append({
-                "type": component.get("type", "misc_feature"),
-                "label": component.get("label") or component.get("source_id") or component.get("cds_id") or "component",
-                "source_id": component.get("source_id", ""),
-                "cds_id": component.get("cds_id", ""),
-                "protein_name": component.get("protein_name", ""),
-                "cassette_index": cassette.get("cassette_index"),
-                "start_bp": cassette_start + component_start - 1,
-                "end_bp": cassette_start + component_end - 1,
-                "source": as_dict(component.get("sequence_file")).get("path", ""),
-            })
-
-    sequence = "".join(chunks)
-    if not sequence:
-        raise ValueError("assembled insert sequence is empty")
-
-    expected_length = as_dict(plan.get("insert")).get("total_length_bp")
-    warnings_list = []
-    if expected_length is not None and int(expected_length) != len(sequence):
-        warnings_list.append(f"insert length mismatch: expected {expected_length}, actual {len(sequence)}")
-
-    for item in files:
-        warnings_list.extend(item["parse_warnings"])
-        warnings_list.extend(item["validation_warnings"])
-
-    return {
-        "sequence": sequence,
-        "cassette_files": files,
-        "components": insert_components,
-        "linker_sequence": linker_sequence,
-        "warnings": warnings_list,
-    }
-
-
-def validate_target_bounds(vector_length: int, start_bp: int, end_bp: int) -> None:
-    if start_bp < 1 or end_bp < 1:
-        raise ValueError("target coordinates must be >= 1")
-    if start_bp > end_bp:
-        raise ValueError("replace_start_bp must be <= replace_end_bp")
-    if end_bp > vector_length:
-        raise ValueError("target coordinates exceed vector length")
-
-
-def assembly_target(
-    *,
+def _assemble_restriction(
     vector_sequence: str,
     insert_sequence: str,
-    strategy: dict[str, Any],
-) -> dict[str, Any]:
-    method = strategy.get("assembly_method")
-    vector_length = len(vector_sequence)
-
-    if method in {"direct", "gibson"}:
-        insert_after_bp = strategy.get("insert_after_bp")
-        replace_start_bp = strategy.get("replace_start_bp")
-        replace_end_bp = strategy.get("replace_end_bp")
-
-        if insert_after_bp is not None:
-            cut = int(insert_after_bp)
-            if cut < 0 or cut > vector_length:
-                raise ValueError("insert_after_bp must be between 0 and vector length")
-            inserted_start = cut + 1
-            return {
-                "mode": "insert_after",
-                "insert_after_bp": cut,
-                "replace_start_bp": None,
-                "replace_end_bp": None,
-                "replaced_length_bp": 0,
-                "inserted_start_bp": inserted_start,
-                "inserted_end_bp": inserted_start + len(insert_sequence) - 1,
-                "final_sequence": vector_sequence[:cut] + insert_sequence + vector_sequence[cut:],
-            }
-
-        if replace_start_bp is None or replace_end_bp is None:
-            raise ValueError(f"{method} strategy requires insert_after_bp or replace_start_bp/replace_end_bp")
-
-        start_bp = int(replace_start_bp)
-        end_bp = int(replace_end_bp)
-        validate_target_bounds(vector_length, start_bp, end_bp)
-        inserted_start = start_bp
-        return {
-            "mode": "replace",
-            "insert_after_bp": None,
-            "replace_start_bp": start_bp,
-            "replace_end_bp": end_bp,
-            "replaced_length_bp": end_bp - start_bp + 1,
-            "inserted_start_bp": inserted_start,
-            "inserted_end_bp": inserted_start + len(insert_sequence) - 1,
-            "final_sequence": vector_sequence[:start_bp - 1] + insert_sequence + vector_sequence[end_bp:],
-        }
-
-    left_site = clean_dna(strategy.get("left_site"))
-    right_site = clean_dna(strategy.get("right_site"))
+    plan: Mapping[str, Any],
+) -> SequenceAssemblyResult:
+    target = _mapping(plan.get("target"), "restriction target")
+    start_index, end_index = _target_indexes(target, len(vector_sequence))
+    if target.get("mode") != "replace":
+        raise ValueError("restriction 计划必须使用 replace target")
+    restriction = _mapping(plan.get("restriction"), "restriction parameters")
+    if restriction.get("restriction_site_retention") != "retain":
+        raise ValueError("当前执行器仅接受 retain restriction sites 的计划")
+    left_site = str(restriction.get("left_site") or "").upper()
+    right_site = str(restriction.get("right_site") or "").upper()
     if not left_site or not right_site:
-        raise ValueError("restriction strategy requires left_site and right_site")
-    if site_positions(insert_sequence, left_site) or site_positions(insert_sequence, right_site):
-        raise ValueError("restriction site occurs inside assembled insert sequence")
+        raise ValueError("restriction 计划缺少左右识别序列")
+    if vector_sequence[start_index : start_index + len(left_site)] != left_site:
+        raise ValueError("左限制酶位点与 target.replace_start_bp 不一致")
+    if vector_sequence[end_index - len(right_site) : end_index] != right_site:
+        raise ValueError("右限制酶位点与 target.replace_end_bp 不一致")
 
-    left_positions = site_positions(vector_sequence, left_site)
-    right_positions = site_positions(vector_sequence, right_site)
-    if len(left_positions) != 1:
-        raise ValueError(f"left restriction site must occur exactly once in vector, found {len(left_positions)}")
-    if len(right_positions) != 1:
-        raise ValueError(f"right restriction site must occur exactly once in vector, found {len(right_positions)}")
-
-    left_start = left_positions[0]
-    right_start = right_positions[0]
-    if left_start >= right_start:
-        raise ValueError("restriction execution requires left_site to occur before right_site in the vector sequence")
-
-    replace_start_bp = left_start
-    replace_end_bp = right_start + len(right_site) - 1
-    validate_target_bounds(vector_length, replace_start_bp, replace_end_bp)
-    retention = str(strategy.get("restriction_site_retention") or "remove").strip().lower()
-    if retention not in {"retain", "remove"}:
-        raise ValueError("restriction_site_retention must be 'retain' or 'remove'")
-
-    if retention == "retain":
-        replacement_payload = left_site + insert_sequence + right_site
-        inserted_start = replace_start_bp + len(left_site)
-        left_site_retained_start = replace_start_bp
-        right_site_retained_start = inserted_start + len(insert_sequence)
-        mode = "restriction_replace_retain_sites"
-    else:
-        replacement_payload = insert_sequence
-        inserted_start = replace_start_bp
-        left_site_retained_start = None
-        right_site_retained_start = None
-        mode = "restriction_replace"
-
-    junction_flank_length = min(20, len(insert_sequence))
-    return {
-        "mode": mode,
-        "left_enzyme": strategy.get("left_enzyme"),
-        "right_enzyme": strategy.get("right_enzyme"),
-        "left_site": left_site,
-        "right_site": right_site,
-        "restriction_site_retention": retention,
-        "left_site_position_bp": left_start,
-        "right_site_position_bp": right_start,
-        "left_site_retained_start_bp": left_site_retained_start,
-        "left_site_retained_end_bp": (
-            left_site_retained_start + len(left_site) - 1
-            if left_site_retained_start is not None
-            else None
-        ),
-        "right_site_retained_start_bp": right_site_retained_start,
-        "right_site_retained_end_bp": (
-            right_site_retained_start + len(right_site) - 1
-            if right_site_retained_start is not None
-            else None
-        ),
-        "restriction_junctions": {
-            "left": {
-                "enzyme": strategy.get("left_enzyme"),
-                "recognition_site": left_site,
-                "sequence": left_site + insert_sequence[:junction_flank_length]
-                if retention == "retain"
-                else insert_sequence[:junction_flank_length],
-            },
-            "right": {
-                "enzyme": strategy.get("right_enzyme"),
-                "recognition_site": right_site,
-                "sequence": insert_sequence[-junction_flank_length:] + right_site
-                if retention == "retain"
-                else insert_sequence[-junction_flank_length:],
-            },
-        },
-        "primer_tail_requirements": {
-            "left_forward": {
-                "enzyme": strategy.get("left_enzyme"),
-                "recognition_site_tail": left_site,
-                "protective_clamp": "not_specified",
-            },
-            "right_reverse": {
-                "enzyme": strategy.get("right_enzyme"),
-                "recognition_site_tail": right_site,
-                "protective_clamp": "not_specified",
-            },
-        },
-        "insert_after_bp": None,
-        "replace_start_bp": replace_start_bp,
-        "replace_end_bp": replace_end_bp,
-        "replaced_length_bp": replace_end_bp - replace_start_bp + 1,
-        "replacement_payload_length_bp": len(replacement_payload),
-        "inserted_start_bp": inserted_start,
-        "inserted_end_bp": inserted_start + len(insert_sequence) - 1,
-        "final_sequence": (
-            vector_sequence[:replace_start_bp - 1]
-            + replacement_payload
-            + vector_sequence[replace_end_bp:]
-        ),
+    linearization = _mapping(
+        plan.get("backbone_linearization"), "backbone_linearization"
+    )
+    enzymes = linearization.get("restriction_enzymes")
+    if linearization.get("mode") != "restriction" or not isinstance(enzymes, list):
+        raise ValueError("restriction 计划缺少骨架酶切线性化记录")
+    by_role = {
+        str(item.get("role")): item
+        for item in enzymes
+        if isinstance(item, Mapping)
     }
+    left_record = _mapping(by_role.get("left"), "left restriction enzyme")
+    right_record = _mapping(by_role.get("right"), "right restriction enzyme")
+    if (
+        left_record.get("name") != restriction.get("left_enzyme")
+        or right_record.get("name") != restriction.get("right_enzyme")
+    ):
+        raise ValueError("左右限制酶名称在计划字段间不一致")
+    for record in (left_record, right_record):
+        enzyme = _validate_linearization_enzyme(record, vector_sequence)
+        if enzyme_cut_positions(enzyme, insert_sequence, circular=False):
+            raise ValueError(
+                f"限制酶 {record.get('name')} 在完整表达构建内部存在切点"
+            )
+
+    payload = left_site + insert_sequence + right_site
+    final_sequence = (
+        vector_sequence[:start_index] + payload + vector_sequence[end_index:]
+    )
+    inserted_start = start_index + len(left_site) + 1
+    inserted_end = inserted_start + len(insert_sequence) - 1
+    return SequenceAssemblyResult(
+        sequence=final_sequence,
+        inserted_start_bp=inserted_start,
+        inserted_end_bp=inserted_end,
+        vector_replace_start_index=start_index,
+        vector_replace_end_index=end_index,
+        replacement_payload_length_bp=len(payload),
+        target_audit={
+            "mode": "restriction_replace_retain_sites",
+            "replace_start_bp": start_index + 1,
+            "replace_end_bp": end_index,
+            "inserted_start_bp": inserted_start,
+            "inserted_end_bp": inserted_end,
+            "left_enzyme": restriction.get("left_enzyme"),
+            "right_enzyme": restriction.get("right_enzyme"),
+            "left_site": left_site,
+            "right_site": right_site,
+            "retained_sites": {
+                "left": {
+                    "start_bp": start_index + 1,
+                    "end_bp": start_index + len(left_site),
+                },
+                "right": {
+                    "start_bp": inserted_end + 1,
+                    "end_bp": inserted_end + len(right_site),
+                },
+            },
+        },
+    )
 
 
-def validate_gibson_homology(vector: dict[str, Any], strategy: dict[str, Any], target: dict[str, Any]) -> None:
-    if strategy.get("assembly_method") != "gibson":
+def _validate_gibson_linearization(
+    plan: Mapping[str, Any],
+    vector_sequence: str,
+) -> None:
+    linearization = _mapping(
+        plan.get("backbone_linearization"), "backbone_linearization"
+    )
+    enzymes = linearization.get("restriction_enzymes")
+    if not isinstance(enzymes, list):
+        raise ValueError("Gibson 计划缺少 restriction_enzymes 列表")
+    mode = str(linearization.get("mode") or "")
+    if mode == "pcr":
+        if enzymes or linearization.get("enzyme_summary") != "none (PCR linearization)":
+            raise ValueError("PCR 线性化记录必须明确为无限制酶")
         return
+    if mode != "restriction" or not enzymes:
+        raise ValueError("Gibson 骨架线性化方式无效")
+    for item in enzymes:
+        if not isinstance(item, Mapping):
+            raise ValueError("Gibson 限制酶线性化记录无效")
+        _validate_linearization_enzyme(item, vector_sequence)
 
-    homology_arm_length = int(strategy.get("homology_arm_length") or 0)
-    left_homology = clean_dna(strategy.get("left_homology"))
-    right_homology = clean_dna(strategy.get("right_homology"))
-    if homology_arm_length <= 0 or not left_homology or not right_homology:
-        raise ValueError("gibson strategy requires homology_arm_length, left_homology, and right_homology")
-    if len(left_homology) != homology_arm_length or len(right_homology) != homology_arm_length:
-        raise ValueError("gibson homology arm lengths do not match homology_arm_length")
 
-    vector_sequence = vector["sequence"]
-    circular = str(vector.get("topology") or "").lower() == "circular"
-    if target["mode"] == "insert_after":
-        insert_after = int(target["insert_after_bp"])
-        left_start = insert_after - homology_arm_length + 1
-        right_start = insert_after + 1
+def _assemble_gibson(
+    vector_sequence: str,
+    insert_sequence: str,
+    plan: Mapping[str, Any],
+) -> SequenceAssemblyResult:
+    target = _mapping(plan.get("target"), "Gibson target")
+    start_index, end_index = _target_indexes(target, len(vector_sequence))
+    gibson = _mapping(plan.get("gibson"), "Gibson parameters")
+    arm_length = int(gibson.get("homology_arm_length") or 0)
+    left_arm = str(gibson.get("left_homology") or "").upper()
+    right_arm = str(gibson.get("right_homology") or "").upper()
+    if arm_length < 1 or len(left_arm) != arm_length or len(right_arm) != arm_length:
+        raise ValueError("Gibson 同源臂长度无效")
+    if target.get("mode") == "insert_after":
+        cut = int(target["insert_after_bp"])
+        left_start = cut - arm_length + 1
+        right_start = cut + 1
     else:
-        left_start = int(target["replace_start_bp"]) - homology_arm_length
+        left_start = int(target["replace_start_bp"]) - arm_length
         right_start = int(target["replace_end_bp"]) + 1
+    expected_left = circular_segment(vector_sequence, left_start, arm_length)
+    expected_right = circular_segment(vector_sequence, right_start, arm_length)
+    if left_arm != expected_left or right_arm != expected_right:
+        raise ValueError("Gibson 同源臂与计划插入位置附近的骨架序列不一致")
+    _validate_gibson_linearization(plan, vector_sequence)
 
-    expected_left = sequence_segment(vector_sequence, left_start, homology_arm_length, circular=circular)
-    expected_right = sequence_segment(vector_sequence, right_start, homology_arm_length, circular=circular)
-    if expected_left != left_homology:
-        raise ValueError("left_homology does not match vector sequence around planned insertion site")
-    if expected_right != right_homology:
-        raise ValueError("right_homology does not match vector sequence around planned insertion site")
+    final_sequence = (
+        vector_sequence[:start_index] + insert_sequence + vector_sequence[end_index:]
+    )
+    inserted_start = start_index + 1
+    inserted_end = inserted_start + len(insert_sequence) - 1
+    return SequenceAssemblyResult(
+        sequence=final_sequence,
+        inserted_start_bp=inserted_start,
+        inserted_end_bp=inserted_end,
+        vector_replace_start_index=start_index,
+        vector_replace_end_index=end_index,
+        replacement_payload_length_bp=len(insert_sequence),
+        target_audit={
+            "mode": str(target.get("mode")),
+            "insert_after_bp": target.get("insert_after_bp"),
+            "replace_start_bp": target.get("replace_start_bp"),
+            "replace_end_bp": target.get("replace_end_bp"),
+            "inserted_start_bp": inserted_start,
+            "inserted_end_bp": inserted_end,
+            "homology_arm_length": arm_length,
+            "left_homology": left_arm,
+            "right_homology": right_arm,
+            "linearization": deepcopy(plan.get("backbone_linearization")),
+        },
+    )
 
 
-def map_vector_feature(feature: Any, target: dict[str, Any], insert_length: int) -> tuple[dict[str, Any] | None, str | None]:
-    if getattr(feature, "location", None) is None or getattr(feature, "type", "") == "source":
-        return None, None
-
-    start = int(feature.location.start) + 1
-    end = int(feature.location.end)
-    replacement_payload_length = int(target.get("replacement_payload_length_bp", insert_length))
-    shift = replacement_payload_length - int(target["replaced_length_bp"])
-    replace_start = target.get("replace_start_bp")
-    replace_end = target.get("replace_end_bp")
-    insert_after = target.get("insert_after_bp")
-
-    if replace_start is not None and replace_end is not None:
-        replace_start = int(replace_start)
-        replace_end = int(replace_end)
-        if end < replace_start:
-            mapped_start, mapped_end = start, end
-        elif start > replace_end:
-            mapped_start, mapped_end = start + shift, end + shift
-        elif start >= replace_start and end <= replace_end:
-            return None, f"dropped vector feature inside replaced region: {feature_label(feature)}"
-        else:
-            return None, f"dropped vector feature overlapping replaced region: {feature_label(feature)}"
+def assemble_sequence(
+    vector_sequence: str,
+    insert_sequence: str,
+    plan: Mapping[str, Any],
+) -> SequenceAssemblyResult:
+    method = str(plan.get("assembly_method") or "")
+    if method == "restriction":
+        result = _assemble_restriction(vector_sequence, insert_sequence, plan)
+    elif method == "gibson":
+        result = _assemble_gibson(vector_sequence, insert_sequence, plan)
     else:
-        cut = int(insert_after)
+        raise ValueError(f"不支持的组装方法：{method}")
+    expected_length = int(plan.get("estimated_final_length_bp") or 0)
+    if expected_length != len(result.sequence):
+        raise ValueError(
+            f"预计最终长度 {expected_length} bp 与执行结果 {len(result.sequence)} bp 不一致"
+        )
+    return result
+
+
+def _mapped_simple_parts(
+    location: Any,
+    *,
+    replace_start: int,
+    replace_end: int,
+    payload_length: int,
+) -> tuple[list[SimpleLocation], bool]:
+    start = int(location.start)
+    end = int(location.end)
+    strand = location.strand
+    delta = payload_length - (replace_end - replace_start)
+    changed = False
+    if replace_start == replace_end:
+        cut = replace_start
         if end <= cut:
-            mapped_start, mapped_end = start, end
-        elif start > cut:
-            mapped_start, mapped_end = start + insert_length, end + insert_length
-        else:
-            mapped_start, mapped_end = start, end + insert_length
-            return {
-                "type": getattr(feature, "type", "misc_feature"),
-                "label": feature_label(feature),
-                "note": f"{feature_note(feature)}; feature spans inserted region",
-                "start_bp": mapped_start,
-                "end_bp": mapped_end,
-                "strand": getattr(feature.location, "strand", None),
-                "source": "vector",
-            }, f"vector feature spans insertion site and was expanded: {feature_label(feature)}"
+            return [SimpleLocation(start, end, strand=strand)], False
+        if start >= cut:
+            return [SimpleLocation(start + payload_length, end + payload_length, strand=strand)], True
+        changed = True
+        parts = []
+        if start < cut:
+            parts.append(SimpleLocation(start, cut, strand=strand))
+        if cut < end:
+            parts.append(
+                SimpleLocation(cut + payload_length, end + payload_length, strand=strand)
+            )
+        return parts, changed
 
-    return {
-        "type": getattr(feature, "type", "misc_feature"),
-        "label": feature_label(feature),
-        "note": feature_note(feature),
-        "start_bp": mapped_start,
-        "end_bp": mapped_end,
-        "strand": getattr(feature.location, "strand", None),
-        "source": "vector",
-    }, None
+    if end <= replace_start:
+        return [SimpleLocation(start, end, strand=strand)], False
+    if start >= replace_end:
+        return [SimpleLocation(start + delta, end + delta, strand=strand)], True
+    changed = True
+    parts: list[SimpleLocation] = []
+    if start < replace_start:
+        parts.append(SimpleLocation(start, replace_start, strand=strand))
+    if end > replace_end:
+        parts.append(
+            SimpleLocation(
+                replace_start + payload_length,
+                end + delta,
+                strand=strand,
+            )
+        )
+    return parts, changed
 
 
-def final_features(vector: dict[str, Any], insert: dict[str, Any], target: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    features: list[dict[str, Any]] = []
-    warnings_list: list[str] = []
-    insert_length = len(insert["sequence"])
-    record = vector.get("record")
+def _map_vector_feature(
+    feature: SeqFeature,
+    *,
+    replace_start: int,
+    replace_end: int,
+    payload_length: int,
+) -> tuple[SeqFeature | None, str | None]:
+    if feature.type == "source" or feature.location is None:
+        return None, None
+    original_parts = (
+        list(feature.location.parts)
+        if isinstance(feature.location, CompoundLocation)
+        else [feature.location]
+    )
+    mapped_parts: list[SimpleLocation] = []
+    changed = False
+    for part in original_parts:
+        pieces, part_changed = _mapped_simple_parts(
+            part,
+            replace_start=replace_start,
+            replace_end=replace_end,
+            payload_length=payload_length,
+        )
+        mapped_parts.extend(pieces)
+        changed = changed or part_changed
+    label = _feature_label(feature)
+    if not mapped_parts:
+        return None, f"dropped vector feature inside replaced region: {label}"
+    location: Any
+    if len(mapped_parts) == 1:
+        location = mapped_parts[0]
+    else:
+        operator = (
+            feature.location.operator
+            if isinstance(feature.location, CompoundLocation)
+            else "join"
+        )
+        location = CompoundLocation(mapped_parts, operator=operator)
+    mapped = SeqFeature(
+        location=location,
+        type=feature.type,
+        id=feature.id,
+        qualifiers=deepcopy(feature.qualifiers),
+    )
+    warning = f"remapped vector feature across assembly target: {label}" if changed else None
+    return mapped, warning
 
-    if record is not None:
-        for feature in getattr(record, "features", []):
-            mapped, warning = map_vector_feature(feature, target, insert_length)
-            if mapped is not None:
-                features.append(mapped)
-            if warning:
-                warnings_list.append(warning)
 
-    inserted_start = int(target["inserted_start_bp"])
-    if target.get("restriction_site_retention") == "retain":
-        for side in ("left", "right"):
-            start = target.get(f"{side}_site_retained_start_bp")
-            end = target.get(f"{side}_site_retained_end_bp")
-            if start is None or end is None:
-                continue
-            enzyme = target.get(f"{side}_enzyme") or side
-            features.append({
-                "type": "misc_feature",
-                "label": f"{enzyme}_retained_restriction_site",
-                "note": (
-                    f"Retained {enzyme} recognition site "
-                    f"({target.get(f'{side}_site', '')}) at the insert junction"
-                ),
-                "start_bp": int(start),
-                "end_bp": int(end),
-                "strand": 1,
-                "source": "final_assembly_plan.restriction_site",
-            })
+def _feature_label(feature: SeqFeature) -> str:
+    for key in ("label", "gene", "product", "note"):
+        values = feature.qualifiers.get(key, [])
+        if values:
+            return str(values[0])
+    return feature.type
 
-    for component in insert["components"]:
-        if component.get("type") == "expression_cassette":
-            continue
 
-        start = inserted_start + int(component["start_bp"]) - 1
-        end = inserted_start + int(component["end_bp"]) - 1
-        features.append({
-            **component,
-            "note": component.get("note")
-            or component.get("protein_name")
-            or component.get("source_id")
-            or component.get("label", ""),
-            "start_bp": start,
-            "end_bp": end,
-            "source": component.get("source", "insert"),
-        })
-
-    features = [
-        feature
-        for feature in features
-        if int(feature.get("start_bp") or 0) >= 1
-        and int(feature.get("end_bp") or 0) >= int(feature.get("start_bp") or 0)
+def _shift_feature(feature: SeqFeature, offset: int) -> SeqFeature | None:
+    if feature.type == "source" or feature.location is None:
+        return None
+    parts = (
+        list(feature.location.parts)
+        if isinstance(feature.location, CompoundLocation)
+        else [feature.location]
+    )
+    shifted = [
+        SimpleLocation(
+            int(part.start) + offset,
+            int(part.end) + offset,
+            strand=part.strand,
+        )
+        for part in parts
     ]
-    features.sort(key=lambda item: (int(item["start_bp"]), int(item["end_bp"])))
-    return features, warnings_list
-
-
-def biopython_feature(feature: dict[str, Any]) -> Any:
-    from Bio.SeqFeature import SeqFeature, SimpleLocation
-
-    start = int(feature["start_bp"]) - 1
-    end = int(feature["end_bp"])
-    strand = feature.get("strand")
-    feature_type = str(feature.get("type") or "misc_feature")
-    if feature_type.lower() == "rbs":
-        feature_type = "RBS"
-    elif feature_type.lower() == "cds":
-        feature_type = "CDS"
-    if len(feature_type) > 15 or feature_type in {"expression_cassette", "linker"}:
-        feature_type = "misc_feature"
-
-    qualifiers = {"label": [str(feature.get("label") or feature.get("type") or "feature")]}
-    note = str(feature.get("note") or "").strip()
-    if note:
-        qualifiers["note"] = [note]
-    if feature.get("cds_id"):
-        qualifiers["gene"] = [str(feature["cds_id"])]
-    if feature.get("protein_name"):
-        qualifiers["product"] = [str(feature["protein_name"])]
-
+    if len(shifted) == 1:
+        location: Any = shifted[0]
+    else:
+        location = CompoundLocation(
+            shifted,
+            operator=(
+                feature.location.operator
+                if isinstance(feature.location, CompoundLocation)
+                else "join"
+            ),
+        )
+    qualifiers = deepcopy(feature.qualifiers)
+    qualifiers.setdefault("assembly_source", ["complete_expression_construct"])
     return SeqFeature(
-        SimpleLocation(start, end, strand=strand if strand in {-1, 1} else None),
-        type=feature_type,
+        location=location,
+        type=feature.type,
+        id=feature.id,
         qualifiers=qualifiers,
     )
 
 
-def write_fasta(path: Path, record_id: str, sequence: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f">{record_id}"]
-    for index in range(0, len(sequence), 80):
-        lines.append(sequence[index:index + 80])
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def build_final_record(
+    *,
+    record_id: str,
+    backbone_record: SeqRecord,
+    insert_record: SeqRecord,
+    result: SequenceAssemblyResult,
+    plan: Mapping[str, Any],
+) -> tuple[SeqRecord, list[str]]:
+    warnings_list: list[str] = []
+    features: list[SeqFeature] = [
+        SeqFeature(
+            SimpleLocation(0, len(result.sequence), strand=1),
+            type="source",
+            qualifiers={
+                "organism": ["synthetic DNA construct"],
+                "mol_type": ["other DNA"],
+            },
+        )
+    ]
+    for feature in backbone_record.features:
+        mapped, warning = _map_vector_feature(
+            feature,
+            replace_start=result.vector_replace_start_index,
+            replace_end=result.vector_replace_end_index,
+            payload_length=result.replacement_payload_length_bp,
+        )
+        if mapped is not None:
+            mapped.qualifiers.setdefault("assembly_source", ["plasmid_backbone"])
+            features.append(mapped)
+        if warning:
+            warnings_list.append(warning)
 
-
-def write_genbank(path: Path, record_id: str, sequence: str, topology: str, features: list[dict[str, Any]]) -> None:
-    from Bio import SeqIO
-    from Bio.Seq import Seq
-    from Bio.SeqRecord import SeqRecord
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = SeqRecord(
-        Seq(sequence),
-        id=record_id[:16],
-        name=record_id[:16],
-        description=f"{record_id} final assembled construct",
+    insert_offset = result.inserted_start_bp - 1
+    features.append(
+        SeqFeature(
+            SimpleLocation(
+                insert_offset,
+                result.inserted_end_bp,
+                strand=1,
+            ),
+            type="misc_feature",
+            qualifiers={
+                "label": [f"expression_design_{int(plan['parts_design_id']):03d}"],
+                "note": ["Complete expression construct inserted in forward orientation"],
+                "assembly_source": ["complete_expression_construct"],
+            },
+        )
     )
-    record.annotations["molecule_type"] = "DNA"
-    record.annotations["topology"] = "circular" if topology == "circular" else "linear"
-    record.annotations["date"] = datetime.now().strftime("%d-%b-%Y").upper()
-    record.features = [biopython_feature(feature) for feature in features]
-    SeqIO.write(record, str(path), "genbank")
+    for feature in insert_record.features:
+        shifted = _shift_feature(feature, insert_offset)
+        if shifted is not None:
+            features.append(shifted)
+
+    retained = result.target_audit.get("retained_sites")
+    if isinstance(retained, Mapping):
+        for role in ("left", "right"):
+            site = retained.get(role)
+            if not isinstance(site, Mapping):
+                continue
+            enzyme = result.target_audit.get(f"{role}_enzyme")
+            recognition = result.target_audit.get(f"{role}_site")
+            features.append(
+                SeqFeature(
+                    SimpleLocation(
+                        int(site["start_bp"]) - 1,
+                        int(site["end_bp"]),
+                        strand=1,
+                    ),
+                    type="misc_feature",
+                    qualifiers={
+                        "label": [f"{enzyme}_retained_site"],
+                        "note": [f"Retained {enzyme} recognition site {recognition}"],
+                        "assembly_source": ["final_assembly_plan"],
+                    },
+                )
+            )
+
+    def feature_key(item: SeqFeature) -> tuple[int, int, str]:
+        return (int(item.location.start), int(item.location.end), item.type)
+
+    source_feature = features[0]
+    remaining = sorted(features[1:], key=feature_key)
+    final = SeqRecord(
+        Seq(result.sequence),
+        id=record_id,
+        name=record_id[:16],
+        description=(
+            f"In-silico assembled final plasmid for expression parts design "
+            f"{int(plan['parts_design_id'])}"
+        ),
+    )
+    final.annotations["molecule_type"] = "DNA"
+    final.annotations["topology"] = "circular"
+    final.annotations["data_file_division"] = "SYN"
+    final.features = [source_feature, *remaining]
+    return final, warnings_list
 
 
-def read_written_sequence(path: Path, file_format: str) -> tuple[str, list[str]]:
-    from Bio import SeqIO
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with path.open("r", encoding="utf-8") as handle:
-            record = next(SeqIO.parse(handle, file_format))
-    return clean_dna(str(record.seq)), [str(item.message) for item in caught]
+def write_genbank(path: Path, record: SeqRecord) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    SeqIO.write(record, path, "genbank")
 
 
-def validate_written_outputs(genbank_path: Path, fasta_path: Path, expected_sequence: str) -> dict[str, Any]:
-    genbank_sequence, genbank_warnings = read_written_sequence(genbank_path, "genbank")
-    fasta_sequence, fasta_warnings = read_written_sequence(fasta_path, "fasta")
+def write_fasta(path: Path, record_id: str, sequence: str) -> None:
+    record = SeqRecord(Seq(sequence), id=record_id, description="in-silico final plasmid")
+    SeqIO.write(record, path, "fasta")
+
+
+def validate_written_outputs(
+    *,
+    genbank_path: Path,
+    fasta_path: Path,
+    expected_sequence: str,
+    inserted_start_bp: int,
+    inserted_end_bp: int,
+    expected_insert: str,
+) -> dict[str, Any]:
+    genbank_record = SeqIO.read(genbank_path, "genbank")
+    fasta_record = SeqIO.read(fasta_path, "fasta")
+    genbank_sequence = str(genbank_record.seq).upper()
+    fasta_sequence = str(fasta_record.seq).upper()
     if genbank_sequence != expected_sequence:
-        raise ValueError("written GenBank sequence does not match assembled final sequence")
+        raise ValueError("写出的 GenBank 序列与理论组装结果不一致")
     if fasta_sequence != expected_sequence:
-        raise ValueError("written FASTA sequence does not match assembled final sequence")
+        raise ValueError("写出的 FASTA 序列与理论组装结果不一致")
+    if str(genbank_record.annotations.get("topology") or "").lower() != "circular":
+        raise ValueError("写出的 GenBank 未保留 circular topology")
+    if genbank_sequence[inserted_start_bp - 1 : inserted_end_bp] != expected_insert:
+        raise ValueError("最终 GenBank 的插入片段与完整表达构建不一致")
+    invalid_features = [
+        feature.type
+        for feature in genbank_record.features
+        if int(feature.location.start) < 0
+        or int(feature.location.end) > len(expected_sequence)
+        or int(feature.location.end) < int(feature.location.start)
+    ]
+    if invalid_features:
+        raise ValueError(f"最终 GenBank 包含越界 feature：{invalid_features}")
     return {
+        "status": "PASS",
         "genbank_parse_ok": True,
         "fasta_parse_ok": True,
         "genbank_sequence_matches": True,
         "fasta_sequence_matches": True,
-        "genbank_parse_warnings": genbank_warnings,
-        "fasta_parse_warnings": fasta_warnings,
+        "insert_sequence_matches": True,
+        "topology_circular": True,
+        "feature_coordinates_valid": True,
+        "sequence_sha256": sha256_sequence(expected_sequence),
     }
 
 
-def prepare_context(output_dir: str | None, session_dir: str | None, manifest_path: str | None) -> dict[str, Any]:
-    root = session_root(session_dir, output_dir, manifest_path)
-    outputs = outputs_dir(root, output_dir)
-    manifest = manifest_file(root, outputs, manifest_path)
-    manifest_data = read_json(manifest)
-    plan = get_plan(manifest_data)
-    vector = load_vector(manifest_data, outputs)
-    insert = load_insert(manifest_data, plan, outputs)
-    strategy = as_dict(plan.get("strategy"))
-    target = assembly_target(
-        vector_sequence=vector["sequence"],
-        insert_sequence=insert["sequence"],
-        strategy=strategy,
-    )
-    validate_gibson_homology(vector, strategy, target)
-    warnings_list = vector["warnings"] + insert["warnings"]
+def file_summary(project_root: Path, path: Path, *, file_format: str) -> dict[str, Any]:
     return {
-        "session_root": root,
-        "outputs": outputs,
-        "manifest_file": manifest,
-        "manifest": manifest_data,
-        "plan": plan,
-        "vector": vector,
-        "insert": insert,
-        "strategy": strategy,
-        "target": target,
-        "warnings": warnings_list,
+        "path": relative_project_path(project_root, path),
+        "format": file_format,
+        "file_sha256": sha256_file(path),
     }
 
 
-def final_assembly_dir(outputs: Path, final_assembly_dir_value: str | None) -> Path:
-    return Path(final_assembly_dir_value).resolve() if final_assembly_dir_value else resolve_context_final_assembly_dir()
-
-
-def final_assembly_summary(manifest: dict[str, Any], outputs: Path) -> dict[str, Any]:
-    final_assembly = as_dict(manifest.get("final_assembly"))
-    if not final_assembly:
-        return {"available": False}
-
-    construct_files = as_dict(final_assembly.get("construct_files"))
-    resolved_files = {}
-    file_warnings = []
-    for key, info in construct_files.items():
-        file_info = info if isinstance(info, dict) else {"path": info}
-        path_value = file_info.get("path")
-        if not path_value:
-            resolved_files[key] = {"exists": False, "path": ""}
-            continue
-        path = resolve_file_path(outputs, path_value)
-        exists = path.exists()
-        actual_sha = sha256_file(path) if exists else ""
-        expected_sha = str(file_info.get("sha256") or "")
-        if exists and expected_sha and expected_sha != actual_sha:
-            file_warnings.append(f"{key} sha256 mismatch")
-        resolved_files[key] = {
-            **file_info,
-            "path": relpath_or_abs(outputs, path),
-            "exists": exists,
-            "sha256_matches": bool(exists and (not expected_sha or expected_sha == actual_sha)),
-        }
-
+def inspect_file(project_root: Path, info: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        path = resolve_project_file(project_root, info.get("path"))
+    except Exception as exc:
+        return {"path": str(info.get("path") or ""), "exists": False, "error": str(exc)}
+    exists = path.is_file()
+    actual = sha256_file(path) if exists else ""
+    expected = str(info.get("file_sha256") or "")
     return {
-        "available": True,
-        "status": final_assembly.get("status"),
-        "source": final_assembly.get("source"),
-        "assembled_at": final_assembly.get("assembled_at"),
-        "construct_name": final_assembly.get("construct_name"),
-        "assembly_method": as_dict(final_assembly.get("strategy")).get("assembly_method"),
-        "length_bp": final_assembly.get("length_bp"),
-        "topology": final_assembly.get("topology"),
-        "component_count": final_assembly.get("component_count"),
-        "construct_files": resolved_files,
-        "validation": as_dict(final_assembly.get("validation")),
-        "warnings": as_list(final_assembly.get("warnings")) + file_warnings,
+        "path": relative_project_path(project_root, path),
+        "exists": exists,
+        "file_sha256_matches": bool(exists and expected and actual == expected),
+        "actual_file_sha256": actual,
     }
+
+
+__all__ = [
+    "assemble_sequence",
+    "build_final_record",
+    "file_summary",
+    "inspect_file",
+    "load_execution_context",
+    "read_genbank_strict",
+    "relative_project_path",
+    "resolve_project_file",
+    "sha256_file",
+    "sha256_sequence",
+    "stable_json_hash",
+    "validate_written_outputs",
+    "write_fasta",
+    "write_genbank",
+    "write_json_atomic",
+]

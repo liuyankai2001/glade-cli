@@ -1,56 +1,89 @@
+"""Read-only inspection of a committed final-assembly output bundle."""
+
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
-from langchain.tools import tool
-from pydantic import BaseModel
-
-from src.runtime.monitor import monitor
-from src.tools.final_assemble_execute_tools.common import (
-    final_assembly_summary,
-    json_error,
-    manifest_file,
-    outputs_dir,
-    read_json,
-    relpath_or_abs,
-    session_root,
-)
+from src.final_assemble_execute.common import inspect_file
+from src.final_assemble_execute.config import FINAL_ASSEMBLY_SCHEMA_VERSION
+from src.write_manifest.store import read_design_manifest
 
 
-class GetFinalAssemblyResultArgs(BaseModel):
-    pass
-
-
-@tool(args_schema=GetFinalAssemblyResultArgs)
-def get_final_assembly_result(
-) -> str:
-    """
-    读取已生成的 final_assembly 结果摘要。
-    
-    调用时机：用户要求查看最终组装产物、导出文件路径或执行结果状态。
-    返回：ok、final_assembly 摘要、GenBank/FASTA/report 路径和 warnings。
-    限制：只读；不执行组装，不修改计划或 manifest。
-    """
-
-    tool_name = "get_final_assembly_result"
-    monitor.report_start(tool_name)
-    try:
-        root = session_root(None, None, None)
-        outputs = outputs_dir(root, None)
-        manifest = manifest_file(root, outputs, None)
-        data = read_json(manifest)
-        summary = final_assembly_summary(data, outputs)
-        monitor.report_end(tool_name, {"available": summary.get("available")})
-        return json.dumps(
-            {
-                "ok": True,
-                "manifest_path": relpath_or_abs(root, manifest),
-                "revision": data.get("revision"),
-                "final_assembly": summary,
-            },
-            ensure_ascii=False,
-            default=str,
+def get_final_assembly_result(config: Any) -> dict[str, Any]:
+    project_root = Path(config.project_output_path).expanduser().resolve()
+    manifest_path = Path(config.manifest_output_path).expanduser().resolve()
+    manifest = read_design_manifest(manifest_path)
+    section = manifest.get("final_assembly")
+    if not isinstance(section, Mapping):
+        return {
+            "ok": True,
+            "available": False,
+            "manifest_path": str(manifest_path),
+            "manifest_revision": manifest.get("revision"),
+        }
+    if section.get("schema_version") != FINAL_ASSEMBLY_SCHEMA_VERSION:
+        raise ValueError("manifest 中的 final_assembly 版本已过期")
+    constructs = section.get("constructs")
+    constructs = constructs if isinstance(constructs, list) else []
+    inspected: list[dict[str, Any]] = []
+    issue_count = 0
+    for item in constructs:
+        if not isinstance(item, Mapping):
+            issue_count += 1
+            continue
+        files = item.get("files")
+        files = files if isinstance(files, Mapping) else {}
+        file_status = {
+            key: inspect_file(project_root, value)
+            for key, value in files.items()
+            if isinstance(value, Mapping)
+        }
+        intact = bool(file_status) and all(
+            value.get("exists") and value.get("file_sha256_matches")
+            for value in file_status.values()
         )
-    except Exception as exc:
-        monitor.report_error(tool_name, exc)
-        return json_error(type(exc).__name__, message=str(exc))
+        if not intact:
+            issue_count += 1
+        inspected.append(
+            {
+                "parts_design_id": item.get("parts_design_id"),
+                "assembly_method": item.get("assembly_method"),
+                "length_bp": item.get("length_bp"),
+                "intact": intact,
+                "files": file_status,
+            }
+        )
+    top_level_files: dict[str, Any] = {}
+    for key in ("run_summary_file", "report_file"):
+        value = section.get(key)
+        if isinstance(value, Mapping):
+            top_level_files[key] = inspect_file(project_root, value)
+            if not (
+                top_level_files[key].get("exists")
+                and top_level_files[key].get("file_sha256_matches")
+            ):
+                issue_count += 1
+    return {
+        "ok": issue_count == 0,
+        "available": True,
+        "status": section.get("status"),
+        "target_compound_id": section.get("target_compound_id"),
+        "counts": {
+            "planned": section.get("planned_design_count"),
+            "succeeded": section.get("succeeded_count"),
+            "failed": section.get("failed_count"),
+            "integrity_issues": issue_count,
+        },
+        "method_counts": section.get("method_counts"),
+        "constructs": inspected,
+        "files": top_level_files,
+        "failures": section.get("failures"),
+        "warnings": section.get("warnings"),
+        "manifest_path": str(manifest_path),
+        "manifest_revision": manifest.get("revision"),
+    }
+
+
+__all__ = ["get_final_assembly_result"]
