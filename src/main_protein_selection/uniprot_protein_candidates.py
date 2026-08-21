@@ -31,6 +31,7 @@ UNIPROT_FIELDS = ",".join([
     "gene_names",
     "organism_name",
     "organism_id",
+    "taxonomic_lineage",
     "reviewed",
     "protein_existence",
     "annotation_score",
@@ -105,12 +106,17 @@ STEP_CANDIDATE_COLUMNS = [
     "produced_compound_id",
     "produced_compound_name",
     "role",
+    "enzyme_system_type",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
+    "auxiliary_requirements_json",
     "ec_number",
     "accession",
     "entry_name",
     "protein_name",
     "organism_name",
     "organism_id",
+    "taxonomic_lineage",
     "reviewed",
     "length",
     "score",
@@ -189,6 +195,10 @@ PROTEIN_CANDIDATE_COLUMNS = [
     "covered_reaction_ids",
     "covered_ec_numbers",
     "roles",
+    "enzyme_system_types",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_statuses",
+    "auxiliary_requirements_json",
     "best_score",
     "mean_score",
     "min_score",
@@ -253,6 +263,7 @@ class ProteinCandidate:
     score: float
     reasons: list[str]
     sequence: str = ""
+    taxonomic_lineage: list[str] = field(default_factory=list)
     gene_names: list[str] = field(default_factory=list)
     catalytic_activities: list[str] = field(default_factory=list)
     catalytic_activity_records: list[dict[str, Any]] = field(default_factory=list)
@@ -1941,6 +1952,7 @@ def _candidate_from_entry(
         protein_name=get_protein_name(entry),
         organism_name=organism.get("scientificName", ""),
         organism_id=organism.get("taxonId"),
+        taxonomic_lineage=[str(value) for value in get_lineage(entry)],
         reviewed=_entry_is_reviewed(entry),
         length=get_sequence_length(entry),
         ec_numbers=extract_ec_numbers(entry),
@@ -2122,6 +2134,7 @@ def _step_candidate_row(
         "protein_name": candidate.protein_name,
         "organism_name": candidate.organism_name,
         "organism_id": candidate.organism_id or "",
+        "taxonomic_lineage": _join(candidate.taxonomic_lineage),
         "reviewed": candidate.reviewed,
         "length": candidate.length or "",
         "score": candidate.score,

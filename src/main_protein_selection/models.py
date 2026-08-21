@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from math import isclose
@@ -10,10 +11,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v1"
-MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v1"
+MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v2"
+MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v2"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
-    "evidence_constrained_assignment.v1"
+    "evidence_constrained_assignment.v2"
 )
 AcceptedReactionFitStatus = Literal["verified", "verified_with_risk"]
 SelectionStatus = Literal["complete", "source_unavailable"]
@@ -25,6 +26,16 @@ MainEnzymeSetsStatus = Literal[
     "truncated",
     "stale_input",
     "source_unavailable",
+]
+AuxiliarySelectionStatus = Literal[
+    "pending_user_selection",
+    "integrated_in_main_enzyme",
+]
+AuxiliaryRequirementStatus = Literal[
+    "not_required",
+    "pending_user_selection",
+    "integrated",
+    "mixed",
 ]
 
 
@@ -66,6 +77,76 @@ def _values(value: Any) -> list[str]:
     return list(dict.fromkeys(item for item in raw_values if item))
 
 
+class AuxiliaryRoleRequirement(BaseModel):
+    """One still-unselected or main-enzyme-integrated helper role."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    role: str = Field(min_length=1)
+    necessity: Literal["required", "possibly_required"]
+    confidence: Literal["high", "medium", "low"]
+    selection_status: AuxiliarySelectionStatus
+    carrier_ids: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    step_indexes: list[int] = Field(default_factory=list)
+    main_enzyme_accessions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_stable_lists(self) -> "AuxiliaryRoleRequirement":
+        if self.carrier_ids != sorted(set(self.carrier_ids)):
+            raise ValueError("carrier_ids must be sorted and unique")
+        if self.evidence != list(dict.fromkeys(self.evidence)):
+            raise ValueError("evidence must be unique in stable order")
+        if self.step_indexes != sorted(set(self.step_indexes)):
+            raise ValueError("step_indexes must be sorted and unique")
+        accessions = [item.upper() for item in self.main_enzyme_accessions]
+        if accessions != sorted(set(accessions)):
+            raise ValueError(
+                "main_enzyme_accessions must be uppercase, sorted and unique"
+            )
+        return self
+
+
+def _auxiliary_requirements(
+    value: Any,
+    *,
+    step_index: int | None = None,
+    accession: str | None = None,
+) -> list[AuxiliaryRoleRequirement]:
+    if isinstance(value, list):
+        raw = value
+    else:
+        text = _string(value)
+        if not text:
+            raw = []
+        else:
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid auxiliary requirements JSON") from exc
+    if not isinstance(raw, list):
+        raise ValueError("auxiliary requirements must be a list")
+    result: list[AuxiliaryRoleRequirement] = []
+    for item in raw:
+        payload = dict(item)
+        if step_index is not None:
+            payload["step_indexes"] = sorted(set([
+                *list(payload.get("step_indexes") or []),
+                step_index,
+            ]))
+        if accession:
+            payload["main_enzyme_accessions"] = sorted(set([
+                *[str(value).upper() for value in payload.get(
+                    "main_enzyme_accessions", []
+                )],
+                accession.upper(),
+            ]))
+        payload["carrier_ids"] = sorted(set(payload.get("carrier_ids") or []))
+        payload["evidence"] = list(dict.fromkeys(payload.get("evidence") or []))
+        result.append(AuxiliaryRoleRequirement.model_validate(payload))
+    return sorted(result, key=lambda item: item.role)
+
+
 class MainEnzymeCandidate(BaseModel):
     """One reaction-verified candidate for one selected-route step."""
 
@@ -91,11 +172,36 @@ class MainEnzymeCandidate(BaseModel):
     matched_rhea_ids: list[str] = Field(default_factory=list)
     matched_ko_ids: list[str] = Field(default_factory=list)
     reaction_confidence: str = ""
+    enzyme_system_type: str = ""
+    auxiliary_requirement_status: AuxiliaryRequirementStatus = "not_required"
+    auxiliary_requirements: list[AuxiliaryRoleRequirement] = Field(
+        default_factory=list
+    )
     sequence_version: int | None = Field(default=None, ge=1)
     sequence_sha256: str = ""
     sequence: str = ""
     warnings: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_auxiliary_status(self) -> "MainEnzymeCandidate":
+        statuses = {
+            item.selection_status for item in self.auxiliary_requirements
+        }
+        expected: AuxiliaryRequirementStatus
+        if not statuses:
+            expected = "not_required"
+        elif statuses == {"integrated_in_main_enzyme"}:
+            expected = "integrated"
+        elif statuses == {"pending_user_selection"}:
+            expected = "pending_user_selection"
+        else:
+            expected = "mixed"
+        if self.auxiliary_requirement_status != expected:
+            raise ValueError(
+                "auxiliary_requirement_status does not match requirements"
+            )
+        return self
 
     @classmethod
     def from_candidate_row(
@@ -104,11 +210,13 @@ class MainEnzymeCandidate(BaseModel):
     ) -> "MainEnzymeCandidate":
         """Validate and project one in-memory candidate table row."""
 
+        step_index = int(float(_string(row.get("step_index")) or 0))
+        accession = _string(row.get("accession")).upper()
         return cls(
-            step_index=int(float(_string(row.get("step_index")) or 0)),
+            step_index=step_index,
             reaction_id=_string(row.get("reaction_id")),
             ec_number=_string(row.get("ec_number")) or None,
-            accession=_string(row.get("accession")).upper(),
+            accession=accession,
             protein_name=_string(row.get("protein_name")),
             organism_name=_string(row.get("organism_name")),
             reviewed=_bool(row.get("reviewed")),
@@ -125,6 +233,16 @@ class MainEnzymeCandidate(BaseModel):
             matched_rhea_ids=_values(row.get("matched_rhea_ids")),
             matched_ko_ids=_values(row.get("matched_ko_ids")),
             reaction_confidence=_string(row.get("reaction_confidence")),
+            enzyme_system_type=_string(row.get("enzyme_system_type")),
+            auxiliary_requirement_status=(
+                _string(row.get("auxiliary_requirement_status"))
+                or "not_required"
+            ),
+            auxiliary_requirements=_auxiliary_requirements(
+                row.get("auxiliary_requirements_json"),
+                step_index=step_index,
+                accession=accession,
+            ),
             sequence_version=_optional_int(row.get("sequence_version")),
             sequence_sha256=_string(row.get("sequence_sha256")),
             sequence=_string(row.get("sequence")),
@@ -150,7 +268,7 @@ class MainEnzymeSelectionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_selection.v1"] = (
+    schema_version: Literal["main_enzyme_selection.v2"] = (
         MAIN_ENZYME_SELECTION_SCHEMA_VERSION
     )
     ok: bool
@@ -246,6 +364,10 @@ class MainEnzymeSetProtein(BaseModel):
     cofactors: list[str] = Field(default_factory=list)
     capable_step_indexes: list[int]
     assigned_step_indexes: list[int]
+    enzyme_system_types: list[str] = Field(default_factory=list)
+    auxiliary_requirements: list[AuxiliaryRoleRequirement] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MainEnzymeSetProtein":
@@ -270,6 +392,19 @@ class MainEnzymeSetProtein(BaseModel):
             raise ValueError("cofactors must not contain empty values")
         if self.cofactors != sorted(set(self.cofactors)):
             raise ValueError("cofactors must be sorted and unique")
+        if self.enzyme_system_types != sorted(set(self.enzyme_system_types)):
+            raise ValueError("enzyme_system_types must be sorted and unique")
+        for requirement in self.auxiliary_requirements:
+            if requirement.main_enzyme_accessions != [self.accession]:
+                raise ValueError(
+                    "protein auxiliary requirement must reference its accession"
+                )
+            if not set(requirement.step_indexes).issubset(
+                self.assigned_step_indexes
+            ):
+                raise ValueError(
+                    "protein auxiliary requirement references unassigned steps"
+                )
         return self
 
 
@@ -295,6 +430,8 @@ class MainEnzymeSetMetrics(BaseModel):
     warning_count: int = Field(ge=0)
     carrier_compatibility_status: str = Field(min_length=1)
     electron_reassessment_status: str = Field(min_length=1)
+    auxiliary_requirement_status: AuxiliaryRequirementStatus
+    pending_auxiliary_role_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_score_ranges(self) -> "MainEnzymeSetMetrics":
@@ -330,6 +467,10 @@ class MainEnzymeSet(BaseModel):
     step_assignments: list[MainEnzymeStepAssignment]
     review_required_step_indexes: list[int] = Field(default_factory=list)
     electron_assessment: str = Field(min_length=1)
+    auxiliary_requirement_status: AuxiliaryRequirementStatus
+    auxiliary_requirements: list[AuxiliaryRoleRequirement] = Field(
+        default_factory=list
+    )
     metrics: MainEnzymeSetMetrics
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -400,6 +541,17 @@ class MainEnzymeSet(BaseModel):
             raise ValueError(
                 "every step assignment must reference a set protein"
             )
+        for requirement in self.auxiliary_requirements:
+            if not set(requirement.main_enzyme_accessions).issubset(
+                known_accessions
+            ):
+                raise ValueError(
+                    "set auxiliary requirement references an unknown protein"
+                )
+            if not set(requirement.step_indexes).issubset(covered):
+                raise ValueError(
+                    "set auxiliary requirement references an uncovered step"
+                )
 
         assignments_by_accession: dict[str, list[int]] = {
             accession: [] for accession in protein_accessions
@@ -442,6 +594,21 @@ class MainEnzymeSet(BaseModel):
             )
         if self.metrics.warning_count != len(self.warnings):
             raise ValueError("metrics.warning_count must equal len(warnings)")
+        if (
+            self.metrics.auxiliary_requirement_status
+            != self.auxiliary_requirement_status
+        ):
+            raise ValueError(
+                "metrics auxiliary status must agree with the set"
+            )
+        pending_auxiliary_count = sum(
+            item.selection_status == "pending_user_selection"
+            for item in self.auxiliary_requirements
+        )
+        if self.metrics.pending_auxiliary_role_count != pending_auxiliary_count:
+            raise ValueError(
+                "pending_auxiliary_role_count must agree with requirements"
+            )
 
         reaction_fit_scores = [
             assignment.reaction_fit_score
@@ -583,10 +750,11 @@ class MainEnzymeSet(BaseModel):
             )
         if (
             self.status == "complete"
-            and self.metrics.electron_reassessment_status != "not_required"
+            and self.metrics.electron_reassessment_status
+            not in {"not_required", "auxiliary_role_identified"}
         ):
             raise ValueError(
-                "complete set requires electron_reassessment_status=not_required"
+                "complete set has an unresolved electron reassessment"
             )
         if self.status == "review_required" and not requires_review:
             raise ValueError(
@@ -600,10 +768,10 @@ class MainEnzymeSetsResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_sets.v1"] = (
+    schema_version: Literal["main_enzyme_sets.v2"] = (
         MAIN_ENZYME_SETS_SCHEMA_VERSION
     )
-    algorithm_version: Literal["evidence_constrained_assignment.v1"] = (
+    algorithm_version: Literal["evidence_constrained_assignment.v2"] = (
         MAIN_ENZYME_SETS_ALGORITHM_VERSION
     )
     ok: bool
@@ -752,6 +920,7 @@ class MainEnzymeSetsResult(BaseModel):
 
 
 __all__ = [
+    "AuxiliaryRoleRequirement",
     "MAIN_ENZYME_SELECTION_SCHEMA_VERSION",
     "MAIN_ENZYME_SETS_ALGORITHM_VERSION",
     "MAIN_ENZYME_SETS_SCHEMA_VERSION",

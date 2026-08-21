@@ -257,12 +257,24 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
         )
 
     proteins = _main_proteins(selection)
+    pending_auxiliary_roles = sorted({
+        str(item.get("role") or "").strip()
+        for item in selection.get("auxiliary_requirements", [])
+        if isinstance(item, Mapping)
+        and item.get("selection_status") == "pending_user_selection"
+        and str(item.get("role") or "").strip()
+    })
     auxiliary_raw = manifest.get("auxiliary_protein_selection")
     auxiliary_source_fingerprint = ""
     if auxiliary_raw is None:
         warnings.append(
             "auxiliary_protein_selection is absent; only selected main enzymes were processed"
         )
+        if pending_auxiliary_roles:
+            warnings.append(
+                "main enzyme selection has pending auxiliary roles: "
+                + ", ".join(pending_auxiliary_roles)
+            )
     else:
         auxiliary = _mapping(auxiliary_raw, "auxiliary_protein_selection")
         if auxiliary.get("can_advance") is not True:

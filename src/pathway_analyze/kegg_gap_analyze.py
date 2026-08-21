@@ -87,7 +87,7 @@ DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE = 5
 
 EndogenousDirectionIndex = Dict[str, frozenset[str]]
 SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
-ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v2"
+ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v3"
 REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
 ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS = "gem_bounds"
@@ -230,6 +230,18 @@ class ReactionScreening:
 
 
 @dataclass(frozen=True)
+class AuxiliaryRoleRequirement:
+    """One protein role implied by a directed biochemical reaction."""
+
+    role: str
+    necessity: str
+    confidence: str
+    selection_status: str
+    carrier_ids: Tuple[str, ...]
+    evidence: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ElectronRequirement:
     """一个定向反应的电子载体需求及其工程风险。"""
 
@@ -240,6 +252,7 @@ class ElectronRequirement:
     evidence: Tuple[str, ...]
     carrier_net_stoichiometry: Tuple[Tuple[str, float], ...]
     avoid_if_alternative_exists: bool
+    auxiliary_requirements: Tuple[AuxiliaryRoleRequirement, ...]
 
 
 @dataclass(frozen=True)
@@ -455,6 +468,105 @@ def dedupe_keep_order(values: Iterable[str]) -> Tuple[str, ...]:
     return tuple(ordered)
 
 
+def _auxiliary_role_requirement(
+    role: str,
+    *,
+    necessity: str,
+    confidence: str,
+    carrier_ids: Iterable[str],
+    evidence: Iterable[str],
+) -> AuxiliaryRoleRequirement:
+    return AuxiliaryRoleRequirement(
+        role=role,
+        necessity=necessity,
+        confidence=confidence,
+        selection_status="pending_user_selection",
+        carrier_ids=dedupe_keep_order(carrier_ids),
+        evidence=dedupe_keep_order(evidence),
+    )
+
+
+def infer_reaction_auxiliary_requirements(
+    *,
+    carrier_ids: Sequence[str],
+    requirement_classes: Sequence[str],
+    evidence: Sequence[str],
+) -> Tuple[AuxiliaryRoleRequirement, ...]:
+    """Map explicit carriers and conservative annotations to protein roles."""
+
+    carrier_set = set(carrier_ids)
+    class_set = set(requirement_classes)
+    explicit_evidence = tuple(
+        item for item in evidence if item.startswith("explicit_carrier:")
+    )
+    annotation_evidence = tuple(
+        item for item in evidence if item.startswith("annotation:")
+    )
+    requirements: list[AuxiliaryRoleRequirement] = []
+
+    if "hemoprotein_reductase" in class_set:
+        requirements.append(_auxiliary_role_requirement(
+            "p450_reductase",
+            necessity="required",
+            confidence="high" if {"C03024", "C03161"} & carrier_set else "medium",
+            carrier_ids=(item for item in carrier_ids if item in {"C03024", "C03161"}),
+            evidence=(*explicit_evidence, *annotation_evidence),
+        ))
+    if "ferredoxin" in class_set:
+        confidence = "high" if carrier_set & {"C00138", "C00139", "C14818"} else "medium"
+        ferredoxin_carriers = tuple(
+            item for item in carrier_ids if item in {"C00138", "C00139", "C14818"}
+        )
+        for role in ("ferredoxin", "ferredoxin_reductase"):
+            requirements.append(_auxiliary_role_requirement(
+                role,
+                necessity="required",
+                confidence=confidence,
+                carrier_ids=ferredoxin_carriers,
+                evidence=(*explicit_evidence, *annotation_evidence),
+            ))
+    if "thioredoxin" in class_set:
+        confidence = "high" if carrier_set & {"C00342", "C00343"} else "medium"
+        thioredoxin_carriers = tuple(
+            item for item in carrier_ids if item in {"C00342", "C00343"}
+        )
+        for role in ("thioredoxin", "thioredoxin_reductase"):
+            requirements.append(_auxiliary_role_requirement(
+                role,
+                necessity="required",
+                confidence=confidence,
+                carrier_ids=thioredoxin_carriers,
+                evidence=(*explicit_evidence, *annotation_evidence),
+            ))
+    if "generic_electron_acceptor" in class_set:
+        requirements.append(_auxiliary_role_requirement(
+            "generic_electron_transfer_partner",
+            necessity="possibly_required",
+            confidence="medium",
+            carrier_ids=(item for item in carrier_ids if item in {"C00028", "C00030"}),
+            evidence=(*explicit_evidence, *annotation_evidence),
+        ))
+
+    specific_roles = {
+        "p450_reductase",
+        "ferredoxin",
+        "thioredoxin",
+    }
+    if (
+        "oxygenase_electron_partner" in class_set
+        and not specific_roles.intersection(item.role for item in requirements)
+    ):
+        requirements.append(_auxiliary_role_requirement(
+            "oxygenase_electron_partner",
+            necessity="possibly_required",
+            confidence="medium",
+            carrier_ids=(),
+            evidence=annotation_evidence,
+        ))
+
+    return tuple(sorted(requirements, key=lambda item: item.role))
+
+
 def infer_electron_requirement(
     *,
     consumed_stoichiometry: Sequence[Tuple[str, float]],
@@ -492,13 +604,9 @@ def infer_electron_requirement(
     if "thioredoxin" in searchable_text and "thioredoxin" not in requirement_classes:
         requirement_classes.append("thioredoxin")
         evidence.append("annotation:thioredoxin")
-    if (
-        "cytochrome p450" in searchable_text
-        or "p450" in searchable_text
-        or any(str(ec).startswith("1.14.") for ec in enzyme_ecs)
-    ):
+    if "cytochrome p450" in searchable_text or "p450" in searchable_text:
         requirement_classes.append("oxygenase_electron_partner")
-        evidence.append("annotation:oxygenase_or_p450")
+        evidence.append("annotation:cytochrome_p450")
 
     requirement_classes = list(dedupe_keep_order(requirement_classes))
     high_risk_classes = {
@@ -535,6 +643,11 @@ def infer_electron_requirement(
         evidence=tuple(evidence),
         carrier_net_stoichiometry=carrier_net_stoichiometry,
         avoid_if_alternative_exists=risk_score >= HIGH_ELECTRON_RISK_SCORE,
+        auxiliary_requirements=infer_reaction_auxiliary_requirements(
+            carrier_ids=carrier_ids,
+            requirement_classes=requirement_classes,
+            evidence=evidence,
+        ),
     )
 
 
@@ -593,6 +706,12 @@ def summarize_solution_electron_requirements(
         for row in rows
         for class_name in str(row.get("electron_requirement_classes", "")).split(";")
         if class_name
+    )
+    auxiliary_roles = dedupe_keep_order(
+        role
+        for row in rows
+        for role in str(row.get("required_auxiliary_roles", "")).split(";")
+        if role
     )
     carrier_net_totals: Dict[str, float] = {}
     for row in rows:
@@ -684,6 +803,10 @@ def summarize_solution_electron_requirements(
         "unresolved_electron_carrier_ids": ";".join(unresolved_carrier_ids),
         "annotation_only_electron_requirements": ";".join(
             annotation_only_classes
+        ),
+        "required_auxiliary_roles": ";".join(auxiliary_roles),
+        "auxiliary_requirement_status": (
+            "pending_user_selection" if auxiliary_roles else "not_required"
         ),
     }
 
@@ -3399,6 +3522,17 @@ def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
     """把单步电子需求转换为路线汇总所需的标量字典。"""
 
     requirement = step.option.electron_requirement
+    auxiliary_payload = [
+        {
+            "role": item.role,
+            "necessity": item.necessity,
+            "confidence": item.confidence,
+            "selection_status": item.selection_status,
+            "carrier_ids": list(item.carrier_ids),
+            "evidence": list(item.evidence),
+        }
+        for item in requirement.auxiliary_requirements
+    ]
     return {
         "electron_carrier_ids": ";".join(requirement.carrier_ids),
         "electron_requirement_classes": ";".join(requirement.requirement_classes),
@@ -3409,6 +3543,18 @@ def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
             requirement.carrier_net_stoichiometry
         ),
         "avoid_if_alternative_exists": requirement.avoid_if_alternative_exists,
+        "required_auxiliary_roles": ";".join(
+            item.role for item in requirement.auxiliary_requirements
+        ),
+        "auxiliary_requirement_status": (
+            "pending_user_selection" if auxiliary_payload else "not_required"
+        ),
+        "auxiliary_requirements_json": json.dumps(
+            auxiliary_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     }
 
 
@@ -3528,6 +3674,12 @@ def build_solution_summary_rows(
                 "requires_carrier_compatibility_check": electron_summary[
                     "requires_carrier_compatibility_check"
                 ],
+                "required_auxiliary_roles": electron_summary[
+                    "required_auxiliary_roles"
+                ],
+                "auxiliary_requirement_status": electron_summary[
+                    "auxiliary_requirement_status"
+                ],
             }
         )
 
@@ -3576,6 +3728,7 @@ def build_solution_step_rows(
             "expansion_anchor_compounds": ";".join(
                 step.expansion_anchor_compounds
             ),
+            **step_electron_fields(step),
         }
         # These source annotations are optional in KEGG.  Keep them when they
         # exist instead of manufacturing empty evidence in every exported row.
@@ -3642,6 +3795,30 @@ def build_electron_requirement_rows(result: SearchExecutionResult) -> List[Dict[
                         format_electron_carrier_net_changes(
                             requirement.carrier_net_stoichiometry
                         )
+                    ),
+                    "required_auxiliary_roles": ";".join(
+                        item.role for item in requirement.auxiliary_requirements
+                    ),
+                    "auxiliary_requirement_status": (
+                        "pending_user_selection"
+                        if requirement.auxiliary_requirements
+                        else "not_required"
+                    ),
+                    "auxiliary_requirements_json": json.dumps(
+                        [
+                            {
+                                "role": item.role,
+                                "necessity": item.necessity,
+                                "confidence": item.confidence,
+                                "selection_status": item.selection_status,
+                                "carrier_ids": list(item.carrier_ids),
+                                "evidence": list(item.evidence),
+                            }
+                            for item in requirement.auxiliary_requirements
+                        ],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
                     ),
                 }
             )

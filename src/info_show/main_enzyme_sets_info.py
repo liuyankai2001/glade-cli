@@ -21,6 +21,8 @@ from src.main_protein_selection.common import (
     read_manifest,
 )
 from src.main_protein_selection.models import (
+    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
+    MAIN_ENZYME_SETS_SCHEMA_VERSION,
     MainEnzymeSelectionResult,
     MainEnzymeSet,
     MainEnzymeSetsResult,
@@ -63,8 +65,49 @@ CARRIER_STATUS_NAMES = {
 
 ELECTRON_STATUS_NAMES = {
     "not_required": "无需重新评估",
+    "auxiliary_role_identified": "已识别辅助角色，待用户选择具体蛋白",
     "review_required": "需要重新评估",
 }
+
+AUXILIARY_ROLE_NAMES = {
+    "p450_reductase": "P450还原酶（CPR）",
+    "ferredoxin": "铁氧还蛋白（ferredoxin）",
+    "ferredoxin_reductase": "铁氧还蛋白还原酶",
+    "thioredoxin": "硫氧还蛋白（thioredoxin）",
+    "thioredoxin_reductase": "硫氧还蛋白还原酶",
+    "generic_electron_transfer_partner": "通用电子转移伙伴",
+    "oxygenase_electron_partner": "加氧酶电子转移伙伴",
+}
+
+AUXILIARY_STATUS_NAMES = {
+    "not_required": "无需辅助蛋白",
+    "pending_user_selection": "待用户选择",
+    "integrated": "已融合在主酶中",
+    "mixed": "部分已融合，部分待选择",
+    "integrated_in_main_enzyme": "已融合在主酶中",
+}
+
+
+def _auxiliary_requirement_info(requirement: Any) -> dict[str, Any]:
+    return {
+        "辅助角色": AUXILIARY_ROLE_NAMES.get(
+            requirement.role, requirement.role
+        ),
+        "必要性": "必需" if requirement.necessity == "required" else "可能需要",
+        "置信度": {
+            "high": "高",
+            "medium": "中",
+            "low": "低",
+        }.get(requirement.confidence, requirement.confidence),
+        "选择状态": AUXILIARY_STATUS_NAMES.get(
+            requirement.selection_status,
+            requirement.selection_status,
+        ),
+        "相关步骤": requirement.step_indexes,
+        "支持的主酶": requirement.main_enzyme_accessions,
+        "载体ID": requirement.carrier_ids,
+        "判定依据": requirement.evidence,
+    }
 
 _MESSAGE_TRANSLATIONS = {
     "covers every required heterologous step": (
@@ -124,10 +167,13 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
         raise FileNotFoundError(
             "未找到主酶组合，请先运行：main-enzyme-sets -i <输入文件>"
         )
-    try:
-        return MainEnzymeSetsResult.model_validate_json(
-            path.read_text(encoding="utf-8-sig")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
+        raise ValueError(
+            "主酶组合使用旧版辅助角色格式，请重新运行 main-enzyme-sets"
         )
+    try:
+        return MainEnzymeSetsResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
 
@@ -137,10 +183,13 @@ def _read_selection(path: Path) -> MainEnzymeSelectionResult:
         raise FileNotFoundError(
             "未找到主酶候选，请重新运行：main-enzyme -i <输入文件>"
         )
-    try:
-        return MainEnzymeSelectionResult.model_validate_json(
-            path.read_text(encoding="utf-8-sig")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
+        raise ValueError(
+            "主酶候选使用旧版辅助角色格式，请重新运行 main-enzyme"
         )
+    try:
+        return MainEnzymeSelectionResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶候选结果格式无效：{path}") from exc
 
@@ -348,6 +397,11 @@ def _protein_assignments(enzyme_set: MainEnzymeSet) -> list[str]:
 
 
 def _compact_set(enzyme_set: MainEnzymeSet) -> dict[str, Any]:
+    pending_roles = sorted({
+        AUXILIARY_ROLE_NAMES.get(item.role, item.role)
+        for item in enzyme_set.auxiliary_requirements
+        if item.selection_status == "pending_user_selection"
+    })
     return {
         "组合编号": enzyme_set.set_id,
         "状态": SET_STATUS_NAMES.get(enzyme_set.status, enzyme_set.status),
@@ -365,6 +419,11 @@ def _compact_set(enzyme_set: MainEnzymeSet) -> dict[str, Any]:
             enzyme_set.metrics.carrier_compatibility_status,
             enzyme_set.metrics.carrier_compatibility_status,
         ),
+        "辅助蛋白需求": AUXILIARY_STATUS_NAMES.get(
+            enzyme_set.auxiliary_requirement_status,
+            enzyme_set.auxiliary_requirement_status,
+        ),
+        "待选择辅助角色": pending_roles,
     }
 
 
@@ -447,6 +506,11 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
                 "来源物种": protein.organism_name,
                 "Reviewed": protein.reviewed,
                 "辅因子": protein.cofactors,
+                "酶系统类型": protein.enzyme_system_types,
+                "辅助蛋白需求": [
+                    _auxiliary_requirement_info(item)
+                    for item in protein.auxiliary_requirements
+                ],
                 "可催化步骤": protein.capable_step_indexes,
                 "实际负责步骤": protein.assigned_step_indexes,
             }
@@ -494,6 +558,11 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
             "低方向置信度数": metrics.low_direction_confidence_count,
             "特异性待确认数": metrics.specificity_risk_count,
             "精确特异性匹配数": metrics.exact_specificity_count,
+            "辅助蛋白需求状态": AUXILIARY_STATUS_NAMES.get(
+                enzyme_set.auxiliary_requirement_status,
+                enzyme_set.auxiliary_requirement_status,
+            ),
+            "待选择辅助角色数": metrics.pending_auxiliary_role_count,
         },
         "电子系统": {
             "载体兼容性": CARRIER_STATUS_NAMES.get(
@@ -506,6 +575,10 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
             ),
             "说明": _translate_message(enzyme_set.electron_assessment),
         },
+        "辅助蛋白角色": [
+            _auxiliary_requirement_info(item)
+            for item in enzyme_set.auxiliary_requirements
+        ],
         "推荐理由": _translated_messages(enzyme_set.reasons),
         "警告": _translated_messages(enzyme_set.warnings),
         "组合指纹": enzyme_set.set_fingerprint,

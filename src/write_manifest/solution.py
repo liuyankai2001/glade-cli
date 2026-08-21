@@ -38,6 +38,7 @@ SOLUTION_STEP_FIELDS = (
     "status",
     "reaction_id",
     "reaction_name",
+    "reaction_comment",
     "equation",
     "direction",
     "produced_compound_id",
@@ -54,6 +55,7 @@ SOLUTION_STEP_FIELDS = (
     "source_reaction_ids",
     "resolution_action",
     "resolution_evidence",
+    "auxiliary_requirements",
 )
 
 VALIDATION_FIELDS = (
@@ -94,6 +96,8 @@ ELECTRON_SUMMARY_FIELDS = (
     "unbalanced_electron_carrier_pairs",
     "unresolved_electron_carrier_ids",
     "annotation_only_electron_requirements",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
 )
 
 ELECTRON_RISK_STEP_FIELDS = (
@@ -106,6 +110,9 @@ ELECTRON_RISK_STEP_FIELDS = (
     "electron_risk_score",
     "electron_risk_evidence",
     "electron_carrier_net_changes",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
+    "auxiliary_requirements",
 )
 
 SOLUTION_DOWNSTREAM_SECTIONS = (
@@ -187,6 +194,32 @@ def _split_values(value: Any) -> list[str]:
     return [item.strip() for item in str(value or "").split(";") if item.strip()]
 
 
+def _parse_auxiliary_requirements(value: Any) -> list[dict[str, Any]]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("路线辅助蛋白需求字段不是有效 JSON") from exc
+    if not isinstance(payload, list) or any(
+        not isinstance(item, dict) for item in payload
+    ):
+        raise ValueError("路线辅助蛋白需求字段必须是对象列表")
+    required_fields = {
+        "role",
+        "necessity",
+        "confidence",
+        "selection_status",
+        "carrier_ids",
+        "evidence",
+    }
+    for item in payload:
+        if required_fields.difference(item):
+            raise ValueError("路线辅助蛋白需求字段缺少必要信息")
+    return payload
+
+
 def _integer_step_index(value: Any) -> int:
     try:
         return int(float(str(value).strip()))
@@ -257,6 +290,11 @@ def _renumber_steps_forward(
         forward_row = dict(row)
         forward_row["gap_step_index"] = gap_step_index
         forward_row["step_index"] = forward_index
+        forward_row["auxiliary_requirements"] = (
+            _parse_auxiliary_requirements(
+                forward_row.get("auxiliary_requirements_json")
+            )
+        )
         forward_rows.append(forward_row)
     return forward_rows, gap_to_forward
 
@@ -275,6 +313,11 @@ def _remap_electron_steps(
         remapped_row = dict(row)
         remapped_row["gap_step_index"] = gap_step_index
         remapped_row["step_index"] = gap_to_forward[gap_step_index]
+        remapped_row["auxiliary_requirements"] = (
+            _parse_auxiliary_requirements(
+                remapped_row.get("auxiliary_requirements_json")
+            )
+        )
         remapped_rows.append(remapped_row)
     remapped_rows.sort(key=lambda row: int(row["step_index"]))
     return remapped_rows

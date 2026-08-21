@@ -26,6 +26,8 @@ from src.main_protein_selection.common import (
     read_csv,
 )
 from src.main_protein_selection.models import (
+    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
+    MAIN_ENZYME_SETS_SCHEMA_VERSION,
     MainEnzymeSelectionResult,
     MainEnzymeSet,
     MainEnzymeSetsResult,
@@ -44,7 +46,7 @@ from src.write_manifest.store import (
 )
 
 
-MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v1"
+MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v2"
 LITERATURE_SCHEMA_VERSION = "literature_activity_evidence.v1"
 LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
 
@@ -291,10 +293,13 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
         raise FileNotFoundError(
             "未找到主酶组合，请先运行：main-enzyme-sets -i <输入文件>"
         )
-    try:
-        return MainEnzymeSetsResult.model_validate_json(
-            path.read_text(encoding="utf-8-sig")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
+        raise ValueError(
+            "主酶组合使用旧版辅助角色格式，请重新运行 main-enzyme-sets"
         )
+    try:
+        return MainEnzymeSetsResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
 
@@ -304,10 +309,13 @@ def _read_candidate_selection(path: Path) -> MainEnzymeSelectionResult:
         raise FileNotFoundError(
             "未找到主酶候选，请重新运行：main-enzyme -i <输入文件>"
         )
-    try:
-        return MainEnzymeSelectionResult.model_validate_json(
-            path.read_text(encoding="utf-8-sig")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
+        raise ValueError(
+            "主酶候选使用旧版辅助角色格式，请重新运行 main-enzyme"
         )
+    try:
+        return MainEnzymeSelectionResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶候选结果格式无效：{path}") from exc
 
@@ -650,6 +658,11 @@ def _manifest_payload(
             "cofactors": protein.cofactors,
             "capable_step_indexes": protein.capable_step_indexes,
             "assigned_step_indexes": protein.assigned_step_indexes,
+            "enzyme_system_types": protein.enzyme_system_types,
+            "auxiliary_requirements": [
+                item.model_dump(mode="json")
+                for item in protein.auxiliary_requirements
+            ],
         }
         evidence_ids = sorted({
             str(item["evidence_id"])
@@ -720,11 +733,21 @@ def _manifest_payload(
         },
         "proteins": protein_payloads,
         "step_assignments": assignment_payloads,
+        "auxiliary_requirement_status": (
+            selected.auxiliary_requirement_status
+        ),
+        "auxiliary_requirements": [
+            item.model_dump(mode="json")
+            for item in selected.auxiliary_requirements
+        ],
         "evaluation": {
             "set_status": selected.status,
             "search_complete": result.search_complete,
             "metrics": selected.metrics.model_dump(mode="json"),
             "electron_assessment": selected.electron_assessment,
+            "auxiliary_requirement_status": (
+                selected.auxiliary_requirement_status
+            ),
             "reasons": selected.reasons,
         },
         "unresolved_reviews": unresolved_reviews,
@@ -859,6 +882,11 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         ),
     )
     pending_review = bool(payload["unresolved_reviews"])
+    pending_auxiliary = [
+        item
+        for item in payload["auxiliary_requirements"]
+        if item["selection_status"] == "pending_user_selection"
+    ]
     return {
         "运行成功": True,
         "目标化合物": target_compound,
@@ -882,6 +910,11 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
             item["review_type"]
             for item in payload["unresolved_reviews"]
         ],
+        "辅助蛋白需求状态": payload["auxiliary_requirement_status"],
+        "待用户选择的辅助角色": sorted({
+            item["role"] for item in pending_auxiliary
+        }),
+        "待选择辅助角色数量": len(pending_auxiliary),
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path.resolve()),
         "清单版本": updated_manifest["revision"],

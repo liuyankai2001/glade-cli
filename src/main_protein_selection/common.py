@@ -14,6 +14,10 @@ from src.main_protein_selection.biochemical_realizability import (
 from src.main_protein_selection.reaction_direction_verifier import (
     direction_decision_for_candidate,
 )
+from src.main_protein_selection.auxiliary_roles import (
+    annotate_candidate_auxiliary_roles,
+    merge_auxiliary_requirements,
+)
 from src.main_protein_selection.uniprot_protein_candidates import (
     PROTEIN_CANDIDATE_COLUMNS,
     STEP_CANDIDATE_COLUMNS,
@@ -172,6 +176,11 @@ def heterologous_requirements(steps: list[dict[str, Any]]) -> list[dict[str, Any
             ),
             "ec_status": str(step.get("ec_status") or ""),
             "enzyme_search_eligible": str(step.get("enzyme_search_eligible") or ""),
+            "auxiliary_requirements": (
+                list(step.get("auxiliary_requirements") or [])
+                if isinstance(step.get("auxiliary_requirements"), list)
+                else []
+            ),
         })
     return result
 
@@ -232,6 +241,7 @@ def candidate_rows_for_requirements(
                 "reaction_fit_rule_ids": _join(fit["rule_ids"]),
                 "reaction_fit_evidence": " | ".join(fit["evidence"]),
             })
+            annotate_candidate_auxiliary_roles(requirement, row)
             rows.append(row)
 
         step_rows = [
@@ -341,6 +351,9 @@ _MERGED_LIST_FIELDS = (
     "direction_evidence",
     "required_rhea_direction_ids",
     "reaction_confidence",
+    "enzyme_system_type",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
     "selenzyme_risk_status",
     "selenzyme_matched_reaction_id",
     "selenzyme_direction_used",
@@ -358,6 +371,7 @@ _MERGED_LIST_FIELDS = (
     "publication_ids",
     "cross_references",
     "subcellular_locations",
+    "taxonomic_lineage",
     "rhea_ids",
     "reasons",
     "warnings",
@@ -604,6 +618,25 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             _float(row.get("selenzyme_reaction_similarity"))
             for row in matches if str(row.get("selenzyme_reaction_similarity") or "").strip()
         ]
+        auxiliary_requirement_rows: list[dict[str, Any]] = []
+        for row in matches:
+            try:
+                raw_requirements = json.loads(
+                    str(row.get("auxiliary_requirements_json") or "[]")
+                )
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "invalid auxiliary requirements in candidate rows"
+                ) from exc
+            for raw_requirement in raw_requirements:
+                auxiliary_requirement_rows.append({
+                    **dict(raw_requirement),
+                    "step_indexes": [_int(row.get("step_index"))],
+                    "main_enzyme_accessions": [accession],
+                })
+        auxiliary_requirements = merge_auxiliary_requirements(
+            auxiliary_requirement_rows
+        )
         merged.append({
             "accession": accession,
             "entry_name": first.get("entry_name", ""),
@@ -616,6 +649,14 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "covered_reaction_ids": _join(_unique([str(row.get("reaction_id") or "") for row in matches])),
             "covered_ec_numbers": _join(_unique([str(row.get("ec_number") or "") for row in matches])),
             "roles": "main",
+            "enzyme_system_types": _join(values("enzyme_system_type")),
+            "required_auxiliary_roles": _join(
+                item["role"] for item in auxiliary_requirements
+            ),
+            "auxiliary_requirement_statuses": _join(
+                values("auxiliary_requirement_status")
+            ),
+            "auxiliary_requirements_json": _json(auxiliary_requirements),
             "best_score": round(max(scores), 2),
             "mean_score": round(sum(scores) / len(scores), 2),
             "min_score": round(min(scores), 2),
@@ -650,7 +691,8 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "catalytic_activity_records_json", "cofactors", "subunit",
                     "function_comments", "ptm_comments", "feature_annotations",
                     "domain_ids", "keywords", "protein_existence", "sequence_version",
-                    "sequence_sha256", "subcellular_locations", "rhea_ids", "sequence",
+                    "sequence_sha256", "subcellular_locations", "taxonomic_lineage",
+                    "rhea_ids", "sequence",
                 )
             },
             "warnings": " | ".join(values("warnings")),

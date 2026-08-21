@@ -31,7 +31,9 @@ from .common import (
     write_csv,
     write_json_atomic,
 )
+from .auxiliary_roles import merge_auxiliary_requirements
 from .models import (
+    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_ALGORITHM_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
     MainEnzymeSelectionResult,
@@ -81,6 +83,9 @@ _SUMMARY_COLUMNS = [
     "exact_specificity_count",
     "carrier_compatibility_status",
     "electron_reassessment_status",
+    "auxiliary_requirement_status",
+    "pending_auxiliary_role_count",
+    "required_auxiliary_roles",
     "set_fingerprint",
     "warnings",
 ]
@@ -97,6 +102,10 @@ _MEMBER_COLUMNS = [
     "capable_step_indexes",
     "assigned_step_indexes",
     "assigned_reaction_ids",
+    "enzyme_system_types",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
+    "auxiliary_requirements_json",
 ]
 
 
@@ -388,6 +397,10 @@ class _Protein:
     annotation_texts: set[str] = field(default_factory=set)
     multistep_supported: bool = False
     multistep_evidence_reason: str = ""
+    enzyme_system_types: set[str] = field(default_factory=set)
+    auxiliary_requirements_by_step: dict[int, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
     @property
     def capable_steps(self) -> tuple[int, ...]:
@@ -483,6 +496,14 @@ def _multistep_annotation_evidence(
 def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     """Project only fields that affect filtering, scoring, or audit output."""
 
+    try:
+        auxiliary_requirements = json.loads(
+            _text(row.get("auxiliary_requirements_json")) or "[]"
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("candidate auxiliary requirements are invalid JSON") from exc
+    if not isinstance(auxiliary_requirements, list):
+        raise ValueError("candidate auxiliary requirements must be a list")
     return {
         "step_index": _int(row.get("step_index")),
         "reaction_id": _text(row.get("reaction_id")).upper(),
@@ -523,6 +544,11 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "reasons": _split_values(row.get("reasons")),
         "sequence_sha256": _text(row.get("sequence_sha256")).lower(),
         "sequence": _text(row.get("sequence")),
+        "enzyme_system_type": _text(row.get("enzyme_system_type")),
+        "auxiliary_requirement_status": _text(
+            row.get("auxiliary_requirement_status")
+        ),
+        "auxiliary_requirements": auxiliary_requirements,
     }
 
 
@@ -683,6 +709,17 @@ def _build_protein_pool(
             )
         protein.reviewed = protein.reviewed and row["reviewed"]
         protein.cofactors.update(row["cofactors"])
+        if row["enzyme_system_type"]:
+            protein.enzyme_system_types.add(row["enzyme_system_type"])
+        protein.auxiliary_requirements_by_step[step_index] = [
+            {
+                **dict(item),
+                "step_indexes": [step_index],
+                "main_enzyme_accessions": [accession],
+            }
+            for item in row["auxiliary_requirements"]
+            if isinstance(item, Mapping)
+        ]
         protein.annotation_texts.update(
             value
             for value in (
@@ -944,6 +981,14 @@ def _build_set_payload(
             set_warnings.add(f"Step {step_index} {edge.accession}: {warning}")
             review_steps.add(step_index)
 
+    selected_auxiliary_requirements = merge_auxiliary_requirements(
+        requirement
+        for protein in selected
+        for step_index in assigned_by_accession[protein.accession]
+        for requirement in protein.auxiliary_requirements_by_step.get(
+            step_index, []
+        )
+    )
     risk_steps = [
         step for step in _electron_risk_steps(electron_inference) if step in requirements
     ]
@@ -977,12 +1022,22 @@ def _build_set_payload(
                 "Electron-carrier compatibility remains unresolved across "
                 "the selected proteins."
             )
-        electron_status = "review_required"
-        review_steps.update(risk_steps)
-        set_warnings.add(electron_assessment)
+        if selected_auxiliary_requirements:
+            electron_status = "auxiliary_role_identified"
+        else:
+            electron_status = "review_required"
+            review_steps.update(risk_steps)
+            set_warnings.add(electron_assessment)
 
     proteins_payload: list[dict[str, Any]] = []
     for protein in sorted(selected, key=lambda item: item.accession):
+        protein_auxiliary_requirements = merge_auxiliary_requirements(
+            requirement
+            for step_index in assigned_by_accession[protein.accession]
+            for requirement in protein.auxiliary_requirements_by_step.get(
+                step_index, []
+            )
+        )
         proteins_payload.append(
             {
                 "accession": protein.accession,
@@ -995,8 +1050,22 @@ def _build_set_payload(
                 "assigned_step_indexes": sorted(
                     assigned_by_accession[protein.accession]
                 ),
+                "enzyme_system_types": sorted(protein.enzyme_system_types),
+                "auxiliary_requirements": protein_auxiliary_requirements,
             }
         )
+
+    auxiliary_statuses = {
+        item["selection_status"] for item in selected_auxiliary_requirements
+    }
+    if not auxiliary_statuses:
+        auxiliary_requirement_status = "not_required"
+    elif auxiliary_statuses == {"integrated_in_main_enzyme"}:
+        auxiliary_requirement_status = "integrated"
+    elif auxiliary_statuses == {"pending_user_selection"}:
+        auxiliary_requirement_status = "pending_user_selection"
+    else:
+        auxiliary_requirement_status = "mixed"
 
     fit_scores = [item["reaction_fit_score"] for item in assignments]
     protein_scores = [item["protein_score"] for item in assignments]
@@ -1046,6 +1115,11 @@ def _build_set_payload(
         "warning_count": len(warnings),
         "carrier_compatibility_status": carrier_status,
         "electron_reassessment_status": electron_status,
+        "auxiliary_requirement_status": auxiliary_requirement_status,
+        "pending_auxiliary_role_count": sum(
+            item["selection_status"] == "pending_user_selection"
+            for item in selected_auxiliary_requirements
+        ),
     }
     set_fingerprint = stable_json_hash(
         {
@@ -1082,6 +1156,8 @@ def _build_set_payload(
         "step_assignments": assignments,
         "review_required_step_indexes": review_indexes,
         "electron_assessment": electron_assessment,
+        "auxiliary_requirement_status": auxiliary_requirement_status,
+        "auxiliary_requirements": selected_auxiliary_requirements,
         "metrics": metrics,
         "reasons": reasons,
         "warnings": warnings,
@@ -1097,6 +1173,8 @@ def _set_ranking_key(payload: Mapping[str, Any]) -> tuple[Any, ...]:
         "compatibility_review_required": 2,
         "external_regeneration_required": 3,
     }.get(metrics["carrier_compatibility_status"], 4)
+    if payload.get("auxiliary_requirement_status") == "integrated":
+        electron_severity = 0
     return (
         0 if payload["status"] == "complete" else 1,
         metrics["specificity_risk_count"],
@@ -1801,6 +1879,16 @@ def _write_set_outputs(
                 "electron_reassessment_status": metrics[
                     "electron_reassessment_status"
                 ],
+                "auxiliary_requirement_status": enzyme_set[
+                    "auxiliary_requirement_status"
+                ],
+                "pending_auxiliary_role_count": metrics[
+                    "pending_auxiliary_role_count"
+                ],
+                "required_auxiliary_roles": ";".join(
+                    item["role"]
+                    for item in enzyme_set["auxiliary_requirements"]
+                ),
                 "set_fingerprint": enzyme_set["set_fingerprint"],
                 "warnings": enzyme_set["warnings"],
             }
@@ -1811,6 +1899,13 @@ def _write_set_outputs(
                 assignment["reaction_id"]
             )
         for protein in enzyme_set["proteins"]:
+            protein_auxiliary_requirements = protein[
+                "auxiliary_requirements"
+            ]
+            protein_auxiliary_statuses = {
+                item["selection_status"]
+                for item in protein_auxiliary_requirements
+            }
             member_rows.append(
                 {
                     "set_id": enzyme_set["set_id"],
@@ -1825,6 +1920,26 @@ def _write_set_outputs(
                     ),
                     "assigned_reaction_ids": ";".join(
                         reactions_by_accession[protein["accession"]]
+                    ),
+                    "enzyme_system_types": ";".join(
+                        protein["enzyme_system_types"]
+                    ),
+                    "required_auxiliary_roles": ";".join(
+                        item["role"] for item in protein_auxiliary_requirements
+                    ),
+                    "auxiliary_requirement_status": (
+                        "pending_user_selection"
+                        if "pending_user_selection" in protein_auxiliary_statuses
+                        else "integrated"
+                        if protein_auxiliary_statuses
+                        == {"integrated_in_main_enzyme"}
+                        else "not_required"
+                    ),
+                    "auxiliary_requirements_json": json.dumps(
+                        protein_auxiliary_requirements,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
                     ),
                 }
             )
@@ -1891,6 +2006,10 @@ def build_main_enzyme_sets(
     )
     try:
         raw_selection = json.loads(selection_path.read_text(encoding="utf-8"))
+        if raw_selection.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
+            raise ValueError(
+                "old auxiliary-role schema; rerun main-enzyme"
+            )
         selection = MainEnzymeSelectionResult.model_validate(raw_selection)
     except Exception as exc:
         result = _failure_result(
