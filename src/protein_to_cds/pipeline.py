@@ -122,14 +122,6 @@ def run_protein_to_cds(
                     "UniProt response accession does not match the manifest: "
                     f"{selected.accession} -> {protein.primary_accession}"
                 )
-            if (
-                selected.expected_sequence_sha256 is not None
-                and protein.sequence_sha256 != selected.expected_sequence_sha256
-            ):
-                raise ValueError(
-                    "downloaded protein sequence hash does not match the manifest: "
-                    f"{selected.accession}"
-                )
             optimization = optimize_protein_cds(
                 protein,
                 host,

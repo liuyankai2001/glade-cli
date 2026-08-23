@@ -81,7 +81,7 @@ def _read_research_result(path: Path) -> AuxiliaryProteinCombinationResult:
         )
     except (OSError, ValidationError, ValueError) as exc:
         raise ValueError(
-            "辅助蛋白研究结果无效或不是当前v3格式，请重新运行："
+            "辅助蛋白研究结果无效或不是当前v4格式，请重新运行："
             "auxiliary-protein -i <输入文件>"
         ) from exc
 
@@ -166,8 +166,6 @@ def _validate_manifest_binding(
     for item, unit in zip(result.main_enzyme_results, units, strict=True):
         if item.accession != str(unit["accession"]).upper():
             raise ValueError("辅助蛋白研究结果的主酶 accession 已过期")
-        if item.sequence_sha256 != str(unit["sequence_sha256"]).lower():
-            raise ValueError("辅助蛋白研究结果的主酶序列已经变化")
         if item.assigned_step_indexes != list(unit["assigned_step_indexes"]):
             raise ValueError("辅助蛋白研究结果的主酶步骤分配已经变化")
         if item.reaction_ids != _unit_reaction_ids(unit):
@@ -211,7 +209,6 @@ def _manifest_payload(
         research = item.research_result
         main_enzymes.append({
             "accession": item.accession,
-            "sequence_sha256": item.sequence_sha256,
             "assigned_step_indexes": item.assigned_step_indexes,
             "reaction_ids": item.reaction_ids,
             "research_status": item.status,

@@ -23,8 +23,8 @@ from src.protein_selection.reaction_scope import (
 from src.protein_selection.state import ReactionScope, ResearchMode
 
 
-AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v3"
-AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v3"
+AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION = "auxiliary_protein_research.v4"
+AUXILIARY_PROTEIN_PIPELINE_VERSION = "auxiliary_protein_pipeline.v4"
 
 AuxiliaryRequirementClassification = Literal[
     "confirmed_required",
@@ -331,7 +331,6 @@ class MainEnzymeAuxiliaryResearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     accession: str = Field(min_length=1)
-    sequence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     reaction_scope: ReactionScope
     assigned_step_indexes: list[int] = Field(min_length=1)
     reaction_ids: list[str] = Field(min_length=1)
@@ -344,11 +343,6 @@ class MainEnzymeAuxiliaryResearchResult(BaseModel):
     @classmethod
     def normalize_accession(cls, value: str) -> str:
         return value.upper()
-
-    @field_validator("sequence_sha256")
-    @classmethod
-    def normalize_sequence_sha256(cls, value: str) -> str:
-        return value.lower()
 
     @field_validator("assigned_step_indexes")
     @classmethod
@@ -436,10 +430,10 @@ class AuxiliaryProteinCombinationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["auxiliary_protein_research.v3"] = (
+    schema_version: Literal["auxiliary_protein_research.v4"] = (
         AUXILIARY_PROTEIN_RESEARCH_SCHEMA_VERSION
     )
-    pipeline_version: Literal["auxiliary_protein_pipeline.v3"] = (
+    pipeline_version: Literal["auxiliary_protein_pipeline.v4"] = (
         AUXILIARY_PROTEIN_PIPELINE_VERSION
     )
     generated_at: str = Field(min_length=1)

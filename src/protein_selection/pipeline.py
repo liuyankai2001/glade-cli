@@ -129,7 +129,6 @@ def _service_error_unit(
     error = message.strip() or "unknown research service error"
     return MainEnzymeAuxiliaryResearchResult(
         accession=unit["accession"],
-        sequence_sha256=unit["sequence_sha256"],
         reaction_scope=unit["reaction_scope"],
         assigned_step_indexes=unit["assigned_step_indexes"],
         reaction_ids=_unit_reaction_ids(unit),
@@ -171,7 +170,6 @@ def _unit_result_from_state(
         assessment = assess_auxiliary_requirement(result)
         return MainEnzymeAuxiliaryResearchResult(
             accession=unit["accession"],
-            sequence_sha256=unit["sequence_sha256"],
             reaction_scope=unit["reaction_scope"],
             assigned_step_indexes=unit["assigned_step_indexes"],
             reaction_ids=_unit_reaction_ids(unit),
@@ -234,7 +232,6 @@ def auxiliary_protein_input_fingerprint(
             "units": [
                 {
                     "accession": unit["accession"],
-                    "sequence_sha256": unit["sequence_sha256"],
                     "reaction_scope": unit["reaction_scope"],
                     "assigned_step_indexes": unit["assigned_step_indexes"],
                     "reaction_steps": unit["reaction_steps"],

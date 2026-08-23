@@ -142,13 +142,6 @@ def _validated_success_payload(
     protein_hash = _sha256_text(protein_sequence)
     if protein_sequence != protein.sequence or protein_hash != protein.sequence_sha256:
         raise ValueError(f"protein FASTA changed after validation: {accession}")
-    if (
-        selected.expected_sequence_sha256 is not None
-        and protein_hash != selected.expected_sequence_sha256
-    ):
-        raise ValueError(
-            f"protein sequence hash no longer matches manifest: {accession}"
-        )
 
     raw_record_id, raw_sequence = _read_single_fasta(
         optimization.raw_fasta_path,
@@ -221,7 +214,6 @@ def _validated_success_payload(
         "protein_sequence": {
             "path": _relative_path(project_output_path, protein.fasta_path),
             "file_sha256": _sha256_file(protein.fasta_path),
-            "sequence_sha256": protein_hash,
             "length_aa": len(protein_sequence),
             "source_url": protein.source_url,
             "reused_existing": protein.reused_existing,

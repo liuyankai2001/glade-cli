@@ -12,9 +12,6 @@ from typing import Any
 
 from src.write_manifest.store import read_design_manifest
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-
-
 @dataclass(frozen=True, slots=True)
 class SelectedProteinForCds:
     accession: str
@@ -23,7 +20,6 @@ class SelectedProteinForCds:
     organism_name: str
     assigned_step_indexes: tuple[int, ...]
     required_by_main_accessions: tuple[str, ...]
-    expected_sequence_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,15 +71,6 @@ def _step_indexes(value: Any, field_name: str) -> tuple[int, ...]:
     return indexes
 
 
-def _sha256_or_none(value: Any, field_name: str) -> str | None:
-    if value is None or str(value).strip() == "":
-        return None
-    normalized = str(value).strip().lower()
-    if _SHA256_RE.fullmatch(normalized) is None:
-        raise ValueError(f"manifest field is not a SHA-256 digest: {field_name}")
-    return normalized
-
-
 def _stable_fingerprint(payload: Mapping[str, Any]) -> str:
     canonical = json.dumps(
         payload,
@@ -120,10 +107,6 @@ def _main_proteins(
                 f"main_enzyme_selection.proteins[{index}].assigned_step_indexes",
             ),
             required_by_main_accessions=(),
-            expected_sequence_sha256=_sha256_or_none(
-                item.get("sequence_sha256"),
-                f"main_enzyme_selection.proteins[{index}].sequence_sha256",
-            ),
         )
     return proteins
 
@@ -188,7 +171,6 @@ def _auxiliary_details(
                     organism_name=str(aux.get("organism_name") or "").strip(),
                     assigned_step_indexes=main.assigned_step_indexes,
                     required_by_main_accessions=(main_accession,),
-                    expected_sequence_sha256=None,
                 )
             else:
                 details[accession] = replace(
@@ -321,7 +303,6 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
                 "organism_name": item.organism_name,
                 "assigned_step_indexes": item.assigned_step_indexes,
                 "required_by_main_accessions": (item.required_by_main_accessions),
-                "expected_sequence_sha256": item.expected_sequence_sha256,
             }
             for item in ordered
         ],

@@ -654,7 +654,6 @@ def _manifest_payload(
             "protein_name": protein.protein_name,
             "organism_name": protein.organism_name,
             "reviewed": protein.reviewed,
-            "sequence_sha256": protein.sequence_sha256,
             "cofactors": protein.cofactors,
             "capable_step_indexes": protein.capable_step_indexes,
             "assigned_step_indexes": protein.assigned_step_indexes,
@@ -857,12 +856,7 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
     current_selection = manifest.get("main_enzyme_selection")
     unchanged = (
         isinstance(current_selection, Mapping)
-        and current_selection.get("schema_version")
-        == MAIN_ENZYME_MANIFEST_SCHEMA_VERSION
-        and current_selection.get("selected_set_fingerprint")
-        == selected.set_fingerprint
-        and current_selection.get("literature_activity")
-        == payload.get("literature_activity")
+        and dict(current_selection) == payload
     )
     if unchanged:
         updated_manifest = manifest

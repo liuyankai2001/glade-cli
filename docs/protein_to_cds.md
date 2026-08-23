@@ -31,7 +31,7 @@ uv run python main.py protein-to-cds -i config.json --device cpu `
 - 若存在 `auxiliary_protein_selection`，只有 `auxiliary_proteins_to_introduce` 中的蛋白会被加入，并从 `main_enzymes[*].confirmed_auxiliary_proteins` 读取详情。
 - `auxiliary_protein_selection.can_advance` 必须为 `true`；该区段不存在时只处理主酶并写入警告。
 - 目前仅支持 `ecoli_mg1655`，映射到 CodonTransformer organism ID 52。
-- 主酶 FASTA 的序列哈希必须与 manifest 中的 `sequence_sha256` 一致。
+- 主酶写入 manifest 时不再记录氨基酸序列哈希；运行本流程时直接读取或下载 FASTA。
 
 ## 下载、缓存与输出
 

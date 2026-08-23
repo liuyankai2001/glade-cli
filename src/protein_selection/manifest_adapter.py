@@ -94,15 +94,6 @@ def _split_values(value: Any) -> list[str]:
     return list(dict.fromkeys(normalized))
 
 
-def _sha256(value: Any, accession: str) -> str:
-    normalized = _string(value).lower()
-    if not _SHA256_PATTERN.fullmatch(normalized):
-        raise ValueError(
-            f"主酶 {accession} 缺少有效的 sequence_sha256"
-        )
-    return normalized
-
-
 def _route_step_index(
     steps: list[Mapping[str, Any]],
 ) -> dict[int, Mapping[str, Any]]:
@@ -399,7 +390,6 @@ def build_main_enzyme_research_units(
             raise ValueError("主酶组合包含缺少 accession 的蛋白")
         if accession in proteins:
             raise ValueError(f"主酶组合包含重复 accession：{accession}")
-        _sha256(protein.get("sequence_sha256"), accession)
         assigned_steps = _sorted_unique_step_indexes(
             protein.get("assigned_step_indexes"),
             f"{accession}.assigned_step_indexes",
@@ -447,9 +437,6 @@ def build_main_enzyme_research_units(
         ]
         unit: MainEnzymeResearchUnit = {
             "accession": accession,
-            "sequence_sha256": _sha256(
-                protein.get("sequence_sha256"), accession
-            ),
             "reaction_scope": (
                 "single_step"
                 if len(reaction_steps) == 1

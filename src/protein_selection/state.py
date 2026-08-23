@@ -66,7 +66,6 @@ class MainEnzymeResearchUnit(TypedDict):
     """Serializable research input for one unique main-enzyme accession."""
 
     accession: str
-    sequence_sha256: str
     reaction_scope: ReactionScope
     assigned_step_indexes: list[int]
     reaction_steps: list[AssignedReactionStep]
