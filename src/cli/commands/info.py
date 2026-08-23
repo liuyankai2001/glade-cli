@@ -42,6 +42,16 @@ def register(subparsers):
         metavar="N",
         help="查看排名第 N 的主酶组合详情",
     )
+    view_group.add_argument(
+        "--proteins",
+        action="store_true",
+        help="查看当前 manifest 中的主酶和辅助蛋白",
+    )
+    view_group.add_argument(
+        "--protein",
+        metavar="ID",
+        help="查看当前 manifest 中指定蛋白的详情",
+    )
 
     p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
     p.add_argument(

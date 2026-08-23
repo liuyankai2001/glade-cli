@@ -50,6 +50,15 @@ uv run python main.py remove-auxiliary-protein -i config.json `
 
 删除会同步移除 manifest 记录、当前及历史项目快照，并清除旧 CDS、表达盒、质粒和组装选择；不会删除 `inputs` 中的原始上传文件。最后一个辅助蛋白删除后，`auxiliary_protein_selection` 整段移除，后续恢复为只处理主酶。
 
+删除前可以查看当前全部蛋白或某个蛋白详情：
+
+```powershell
+uv run python main.py info -i config.json --proteins
+uv run python main.py info -i config.json --protein HELPER
+```
+
+列表会区分主酶、手动辅助蛋白和研究辅助蛋白，并显示序列类型、负责步骤、CDS 状态、是否可删除及对应删除命令。详情只显示序列长度和短预览，不默认输出完整长序列。
+
 ## 输入规则
 
 - 主酶来自 `main_enzyme_selection.proteins`。

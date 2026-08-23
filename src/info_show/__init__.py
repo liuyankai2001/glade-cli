@@ -26,6 +26,12 @@ from src.info_show.main_enzyme_sets_info import (
     run_main_enzyme_set_info,
     run_main_enzyme_sets_info,
 )
+from src.info_show.protein_info import (
+    get_protein_info,
+    get_proteins_info,
+    run_protein_info,
+    run_proteins_info,
+)
 from src.info_show.solution_info import get_solution_info, run_solution_info
 
 
@@ -60,6 +66,10 @@ def run_info(config: Any) -> dict[str, Any]:
         return run_chassis_expansion_info(config, depth)
     if getattr(config, "gap", False):
         return run_gap_info(config)
+    if getattr(config, "protein", None) is not None:
+        return run_protein_info(config)
+    if getattr(config, "proteins", False):
+        return run_proteins_info(config)
     if main_enzyme_set is not None:
         return run_main_enzyme_set_info(config)
     if getattr(config, "main_enzyme_sets", False):
@@ -73,7 +83,7 @@ def run_info(config: Any) -> dict[str, Any]:
     raise ValueError(
         "未指定信息查看类型，请使用 --chassis、--gap、--solution、"
         "--main-enzyme-candidates、--main-enzyme-candidate、"
-        "--main-enzyme-sets 或 --main-enzyme-set"
+        "--main-enzyme-sets、--main-enzyme-set、--proteins 或 --protein"
     )
 
 
@@ -86,6 +96,8 @@ __all__ = [
     "get_main_enzyme_candidates_info",
     "get_main_enzyme_set_info",
     "get_main_enzyme_sets_info",
+    "get_protein_info",
+    "get_proteins_info",
     "get_solution_info",
     "run_chassis_expansion_info",
     "run_chassis_info",
@@ -94,6 +106,8 @@ __all__ = [
     "run_main_enzyme_candidates_info",
     "run_main_enzyme_set_info",
     "run_main_enzyme_sets_info",
+    "run_protein_info",
+    "run_proteins_info",
     "run_solution_info",
     "run_info",
 ]
