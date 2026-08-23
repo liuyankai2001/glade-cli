@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
+import uuid
 from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
@@ -404,8 +406,288 @@ def add_manual_auxiliary_protein(config: Any) -> dict[str, Any]:
     }
 
 
+def _requested_protein_ids(value: Any) -> list[str]:
+    raw_values = [value] if isinstance(value, str) else list(value or [])
+    normalized: list[str] = []
+    for index, raw in enumerate(raw_values, start=1):
+        text = str(raw or "").strip()
+        if not text:
+            raise ValueError("--protein-id 不能为空")
+        normalized.append(_safe_protein_id(text, index))
+    normalized = list(dict.fromkeys(normalized))
+    if not normalized:
+        raise ValueError("至少需要一个 --protein-id")
+    return normalized
+
+
+def _uploaded_sequence_root(project_root: Path) -> Path:
+    return (
+        project_root
+        / "protein_to_cds"
+        / "uploaded_sequences"
+    ).resolve()
+
+
+def _assert_within(path: Path, root: Path, label: str) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"{label} 路径超出项目上传序列目录：{path}") from exc
+    return resolved
+
+
+def _snapshot_paths_for_removal(
+    *,
+    project_root: Path,
+    proteins: list[Mapping[str, Any]],
+    accessions: list[str],
+) -> list[Path]:
+    uploaded_root = _uploaded_sequence_root(project_root)
+    targets: set[Path] = set()
+    requested = set(accessions)
+
+    for protein in proteins:
+        accession = str(protein.get("accession") or "").strip().upper()
+        if accession not in requested:
+            continue
+        sequence_file = protein.get("sequence_file")
+        if not isinstance(sequence_file, Mapping):
+            continue
+        relative_path = str(sequence_file.get("path") or "").strip()
+        if not relative_path:
+            continue
+        current_path = _assert_within(
+            project_root / relative_path,
+            uploaded_root,
+            f"辅助蛋白 {accession}",
+        )
+        if current_path.is_file():
+            targets.add(current_path)
+
+    if uploaded_root.is_dir():
+        for revision_dir in uploaded_root.iterdir():
+            if (
+                not revision_dir.is_dir()
+                or not revision_dir.name.startswith("manifest_revision_")
+            ):
+                continue
+            safe_revision_dir = _assert_within(
+                revision_dir,
+                uploaded_root,
+                "历史上传目录",
+            )
+            for accession in accessions:
+                for sequence_type in ("protein", "cds"):
+                    candidate = _assert_within(
+                        safe_revision_dir
+                        / f"{accession}.{sequence_type}.fasta",
+                        uploaded_root,
+                        f"辅助蛋白 {accession}",
+                    )
+                    if candidate.is_file():
+                        targets.add(candidate)
+    return sorted(targets, key=lambda item: str(item).lower())
+
+
+def _restore_quarantined_files(
+    moved: list[tuple[Path, Path]],
+    quarantine_root: Path,
+) -> list[str]:
+    errors: list[str] = []
+    for original, quarantined in reversed(moved):
+        if not quarantined.exists():
+            continue
+        try:
+            original.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(quarantined, original)
+        except OSError as exc:
+            errors.append(
+                f"{quarantined} -> {original}: {exc}"
+            )
+    if quarantine_root.exists() and not errors:
+        shutil.rmtree(quarantine_root, ignore_errors=True)
+    return errors
+
+
+def _cleanup_empty_snapshot_directories(
+    uploaded_root: Path,
+    original_paths: list[Path],
+) -> None:
+    for directory in sorted(
+        {path.parent for path in original_paths},
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        if directory.parent != uploaded_root:
+            continue
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    quarantine_parent = uploaded_root / ".delete_quarantine"
+    try:
+        quarantine_parent.rmdir()
+    except OSError:
+        pass
+
+
+def remove_manual_auxiliary_proteins(config: Any) -> dict[str, Any]:
+    """Delete selected manual auxiliary records and project snapshots."""
+
+    target_compound = validate_target_compound_id(config.target_name)
+    requested = _requested_protein_ids(getattr(config, "protein_id", None))
+    manifest_path = Path(config.manifest_output_path).expanduser().resolve()
+    project_root = Path(config.project_output_path).expanduser().resolve()
+    manifest = read_design_manifest(manifest_path)
+    recorded_target = str(manifest.get("target_compound_id") or "").strip()
+    if recorded_target != target_compound:
+        raise ValueError(
+            f"manifest 目标化合物为 {recorded_target or '空'}，"
+            f"与当前输入目标 {target_compound} 不一致"
+        )
+    selection = _mapping(
+        manifest.get("auxiliary_protein_selection"),
+        "auxiliary_protein_selection；当前没有手动导入的辅助蛋白",
+    )
+    if (
+        str(selection.get("schema_version") or "")
+        != MANUAL_AUXILIARY_PROTEIN_SCHEMA_VERSION
+    ):
+        raise ValueError("当前辅助蛋白选择不是手动导入格式，不能使用删除命令")
+    raw_proteins = selection.get("proteins")
+    if not isinstance(raw_proteins, list):
+        raise ValueError("auxiliary_protein_selection.proteins 必须是列表")
+    proteins = [
+        dict(item) for item in raw_proteins if isinstance(item, Mapping)
+    ]
+    by_accession = {
+        str(item.get("accession") or "").strip().upper(): item
+        for item in proteins
+        if str(item.get("accession") or "").strip()
+    }
+    missing = [accession for accession in requested if accession not in by_accession]
+    if missing:
+        available = sorted(by_accession)
+        raise ValueError(
+            f"未找到手动辅助蛋白：{missing}；当前可删除 ID：{available}"
+        )
+    try:
+        current_revision = int(manifest.get("revision", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("manifest revision 必须是整数") from exc
+
+    remaining = [
+        item
+        for item in proteins
+        if str(item.get("accession") or "").strip().upper() not in set(requested)
+    ]
+    referenced_inputs = list(dict.fromkeys(
+        str(item.get("source_input_file") or "").strip()
+        for item in remaining
+        if str(item.get("source_input_file") or "").strip()
+    ))
+    if remaining:
+        payload = _payload(
+            proteins=remaining,
+            input_files=referenced_inputs,
+            main_context=_main_enzyme_context(manifest),
+        )
+        sections: Mapping[str, Any] = {
+            "auxiliary_protein_selection": payload,
+        }
+        discard_sections = MANUAL_AUXILIARY_DOWNSTREAM_SECTIONS
+    else:
+        sections = {}
+        discard_sections = (
+            "auxiliary_protein_selection",
+            *MANUAL_AUXILIARY_DOWNSTREAM_SECTIONS,
+        )
+
+    snapshots = _snapshot_paths_for_removal(
+        project_root=project_root,
+        proteins=proteins,
+        accessions=requested,
+    )
+    uploaded_root = _uploaded_sequence_root(project_root)
+    quarantine_root = (
+        uploaded_root
+        / ".delete_quarantine"
+        / uuid.uuid4().hex
+    )
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for original in snapshots:
+            relative_path = original.relative_to(uploaded_root)
+            quarantined = quarantine_root / relative_path
+            quarantined.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(original, quarantined)
+            moved.append((original, quarantined))
+    except OSError as exc:
+        rollback_errors = _restore_quarantined_files(moved, quarantine_root)
+        detail = f"；回滚失败：{rollback_errors}" if rollback_errors else ""
+        raise OSError(f"无法隔离待删除辅助序列：{exc}{detail}") from exc
+
+    try:
+        updated = update_design_manifest(
+            manifest_path,
+            target_compound_id=target_compound,
+            sections=sections,
+            discard_sections=discard_sections,
+            expected_revision=current_revision,
+        )
+    except Exception as exc:
+        rollback_errors = _restore_quarantined_files(moved, quarantine_root)
+        if rollback_errors:
+            raise RuntimeError(
+                "manifest 更新失败，且辅助序列快照回滚不完整："
+                + "；".join(rollback_errors)
+            ) from exc
+        raise
+
+    cleanup_warnings: list[str] = []
+    if quarantine_root.exists():
+        try:
+            shutil.rmtree(quarantine_root)
+        except OSError as exc:
+            cleanup_warnings.append(
+                f"隔离文件未能彻底清理：{quarantine_root}: {exc}"
+            )
+    _cleanup_empty_snapshot_directories(uploaded_root, snapshots)
+    deleted = [
+        {
+            "accession": accession,
+            "sequence_type": str(
+                by_accession[accession].get("sequence_type") or ""
+            ),
+        }
+        for accession in requested
+    ]
+    return {
+        "运行成功": not cleanup_warnings,
+        "目标化合物": target_compound,
+        "已删除辅助蛋白": deleted,
+        "已删除项目快照": [
+            _relative(project_root, path) for path in snapshots
+        ],
+        "保留 inputs 原文件": True,
+        "剩余辅助蛋白": [
+            str(item.get("accession") or "") for item in remaining
+        ],
+        "清单文件": str(manifest_path),
+        "清单版本": updated["revision"],
+        "清理警告": cleanup_warnings,
+    }
+
+
 def run_add_manual_auxiliary_protein(config: Any) -> dict[str, Any]:
     result = add_manual_auxiliary_protein(config)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def run_remove_manual_auxiliary_proteins(config: Any) -> dict[str, Any]:
+    result = remove_manual_auxiliary_proteins(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -413,5 +695,7 @@ def run_add_manual_auxiliary_protein(config: Any) -> dict[str, Any]:
 __all__ = [
     "MANUAL_AUXILIARY_PROTEIN_SCHEMA_VERSION",
     "add_manual_auxiliary_protein",
+    "remove_manual_auxiliary_proteins",
     "run_add_manual_auxiliary_protein",
+    "run_remove_manual_auxiliary_proteins",
 ]

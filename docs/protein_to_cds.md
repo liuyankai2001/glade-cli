@@ -41,6 +41,15 @@ uv run python main.py add-auxiliary-protein -i config.json `
 
 FASTA 可以包含多条记录，ID 取 header 的第一个字段；纯文本按一条序列处理，ID 取文件名。多次导入会累积，同 ID 以最后一次上传的类型和内容为准。系统只去除空白并转为大写，不检查上传 CDS 的字符、三联体、起止密码子或内部终止密码子。
 
+删除一个或多个手动辅助蛋白：
+
+```powershell
+uv run python main.py remove-auxiliary-protein -i config.json `
+  --protein-id HELPER --protein-id CPR
+```
+
+删除会同步移除 manifest 记录、当前及历史项目快照，并清除旧 CDS、表达盒、质粒和组装选择；不会删除 `inputs` 中的原始上传文件。最后一个辅助蛋白删除后，`auxiliary_protein_selection` 整段移除，后续恢复为只处理主酶。
+
 ## 输入规则
 
 - 主酶来自 `main_enzyme_selection.proteins`。

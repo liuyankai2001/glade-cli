@@ -13,6 +13,7 @@ from src.cli.commands import (
     main_enzyme_sets,
     plasmid,
     protein_to_cds,
+    remove_auxiliary_protein,
     validate,
     write,
 )
@@ -33,6 +34,7 @@ COMMAND_MODULES = [
     main_enzyme_sets,
     auxiliary_protein,
     protein_to_cds,
+    remove_auxiliary_protein,
     plasmid,
 ]
 
