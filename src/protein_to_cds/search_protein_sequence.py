@@ -326,10 +326,62 @@ def search_protein_sequence(
     )
 
 
+def load_uploaded_protein_sequence(
+    accession: str,
+    path: str | Path,
+) -> ProteinSequenceRecord:
+    """Load one user-uploaded amino-acid FASTA without a UniProt lookup."""
+
+    requested_accession = str(accession or "").strip().upper()
+    if not requested_accession:
+        raise InvalidProteinSequenceError("uploaded protein ID must not be empty")
+    fasta_path = Path(path).expanduser().resolve()
+    if not fasta_path.is_file():
+        raise FileNotFoundError(fasta_path)
+    try:
+        with fasta_path.open("r", encoding="utf-8") as handle:
+            records = list(SeqIO.parse(handle, "fasta"))
+    except (OSError, UnicodeError) as exc:
+        raise InvalidProteinSequenceError(
+            f"uploaded protein FASTA could not be read: {fasta_path}"
+        ) from exc
+    if len(records) != 1:
+        raise InvalidProteinSequenceError(
+            "uploaded protein FASTA must contain exactly one record; "
+            f"found {len(records)}: {fasta_path}"
+        )
+    record = records[0]
+    record_accession = str(record.id or "").strip().upper()
+    if record_accession != requested_accession:
+        raise InvalidProteinSequenceError(
+            "uploaded protein FASTA header does not match the manifest: "
+            f"{record_accession or 'empty'} != {requested_accession}"
+        )
+    sequence = _normalize_protein_sequence(str(record.seq))
+    description = str(record.description or "").strip()
+    entry_name = (
+        description.split(maxsplit=1)[1]
+        if len(description.split(maxsplit=1)) == 2
+        else requested_accession
+    )
+    return ProteinSequenceRecord(
+        requested_accession=requested_accession,
+        primary_accession=requested_accession,
+        entry_name=entry_name,
+        sequence=sequence,
+        length_aa=len(sequence),
+        sequence_sha256=_sequence_sha256(sequence),
+        source_url=f"uploaded:{fasta_path.name}",
+        fasta_path=fasta_path,
+        reused_existing=True,
+    )
+
+
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "InvalidProteinSequenceError",
     "InvalidUniProtAccessionError",
+    "load_uploaded_protein_sequence",
     "ProteinSequenceConflictError",
     "ProteinSequenceError",
     "ProteinSequenceRecord",

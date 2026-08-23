@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from src.protein_to_cds.get_protein_selection_context import (
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
-CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v1"
+CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v2"
 CDS_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_box_selection",
     "expression_cassette_assembly",
@@ -42,6 +43,15 @@ class CompletedProteinCds:
     selected: SelectedProteinForCds
     protein: ProteinSequenceRecord
     optimization: CdsOptimizationResult
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedDirectCds:
+    """One user-supplied CDS that intentionally skipped optimization."""
+
+    selected: SelectedProteinForCds
+    cds_path: Path
+    sequence: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +221,14 @@ def _validated_success_payload(
         "organism_name": selected.organism_name,
         "assigned_step_indexes": list(selected.assigned_step_indexes),
         "required_by_main_accessions": list(selected.required_by_main_accessions),
+        "sequence_input": {
+            "type": "protein",
+            "source": (
+                "user_uploaded"
+                if selected.source_sequence_path is not None
+                else "uniprot"
+            ),
+        },
         "protein_sequence": {
             "path": _relative_path(project_output_path, protein.fasta_path),
             "file_sha256": _sha256_file(protein.fasta_path),
@@ -252,6 +270,58 @@ def _validated_success_payload(
                 "changes": report.get("changes", {}),
             },
             "reused_existing": optimization.reused_existing,
+            "optimization_skipped": False,
+        },
+    }
+
+
+def _read_uploaded_cds(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"could not read uploaded CDS: {path}") from exc
+    sequence = "".join(
+        re.sub(r"\s+", "", line)
+        for line in lines
+        if line.strip() and not line.lstrip().startswith(">")
+    ).upper()
+    if not sequence:
+        raise ValueError(f"uploaded CDS is empty: {path}")
+    return sequence
+
+
+def _validated_direct_cds_payload(
+    direct: CompletedDirectCds,
+    *,
+    project_output_path: Path,
+) -> dict[str, Any]:
+    selected = direct.selected
+    path = direct.cds_path.resolve()
+    sequence = _read_uploaded_cds(path)
+    if sequence != direct.sequence:
+        raise ValueError(
+            f"uploaded CDS changed during protein-to-CDS processing: {selected.accession}"
+        )
+    return {
+        "accession": selected.accession,
+        "roles": list(selected.roles),
+        "protein_name": selected.protein_name,
+        "organism_name": selected.organism_name,
+        "assigned_step_indexes": list(selected.assigned_step_indexes),
+        "required_by_main_accessions": list(
+            selected.required_by_main_accessions
+        ),
+        "sequence_input": {
+            "type": "cds",
+            "source": "user_uploaded",
+        },
+        "optimized_cds": {
+            "path": _relative_path(project_output_path, path),
+            "file_sha256": _sha256_file(path),
+            "sequence_sha256": _sha256_text(sequence),
+            "length_nt": len(sequence),
+            "source_type": "user_uploaded",
+            "optimization_skipped": True,
         },
     }
 
@@ -278,6 +348,7 @@ def write_cds_selection_to_manifest(
     failures: Iterable[FailedProteinCds],
     warnings: Iterable[str],
     run_summary_path: str | Path,
+    direct_cds: Iterable[CompletedDirectCds] = (),
 ) -> dict[str, Any]:
     """Validate the full batch and atomically replace ``cds_selection``."""
 
@@ -304,6 +375,14 @@ def write_cds_selection_to_manifest(
         )
         for success in successes
     ]
+    direct_items = [
+        _validated_direct_cds_payload(
+            item,
+            project_output_path=project_root,
+        )
+        for item in direct_cds
+    ]
+    success_items.extend(direct_items)
     failure_items = [_failure_payload(failure) for failure in failures]
     selected_accessions = {item.accession for item in context.proteins}
     recorded_accessions = {item["accession"] for item in success_items + failure_items}
@@ -365,6 +444,7 @@ def write_cds_selection_to_manifest(
 __all__ = [
     "CDS_SELECTION_DOWNSTREAM_SECTIONS",
     "CDS_SELECTION_SCHEMA_VERSION",
+    "CompletedDirectCds",
     "CompletedProteinCds",
     "FailedProteinCds",
     "write_cds_selection_to_manifest",

@@ -20,6 +20,8 @@ class SelectedProteinForCds:
     organism_name: str
     assigned_step_indexes: tuple[int, ...]
     required_by_main_accessions: tuple[str, ...]
+    sequence_type: str = "protein"
+    source_sequence_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +199,74 @@ def _auxiliary_details(
     return details
 
 
+def _manual_auxiliary_details(
+    auxiliary: Mapping[str, Any],
+) -> dict[str, SelectedProteinForCds]:
+    raw_introduce = auxiliary.get("auxiliary_proteins_to_introduce")
+    if not isinstance(raw_introduce, list):
+        raise ValueError(
+            "auxiliary_protein_selection.auxiliary_proteins_to_introduce must be a list"
+        )
+    introduce = [
+        str(value or "").strip().upper()
+        for value in raw_introduce
+        if str(value or "").strip()
+    ]
+    if introduce != list(dict.fromkeys(introduce)):
+        raise ValueError("manual auxiliary protein IDs must be unique")
+
+    raw_proteins = auxiliary.get("proteins")
+    if not isinstance(raw_proteins, list):
+        raise ValueError("auxiliary_protein_selection.proteins must be a list")
+    details: dict[str, SelectedProteinForCds] = {}
+    for index, raw in enumerate(raw_proteins):
+        item = _mapping(raw, f"auxiliary_protein_selection.proteins[{index}]")
+        accession = _nonempty_text(
+            item.get("accession"),
+            f"auxiliary_protein_selection.proteins[{index}].accession",
+        ).upper()
+        sequence_type = _nonempty_text(
+            item.get("sequence_type"),
+            f"auxiliary_protein_selection.proteins[{index}].sequence_type",
+        ).lower()
+        if sequence_type not in {"protein", "cds"}:
+            raise ValueError(
+                f"unsupported uploaded sequence type for {accession}: {sequence_type}"
+            )
+        sequence_file = _mapping(
+            item.get("sequence_file"),
+            f"auxiliary_protein_selection.proteins[{index}].sequence_file",
+        )
+        source_path = _nonempty_text(
+            sequence_file.get("path"),
+            f"auxiliary_protein_selection.proteins[{index}].sequence_file.path",
+        )
+        if accession in details:
+            raise ValueError(f"duplicate manual auxiliary protein: {accession}")
+        details[accession] = SelectedProteinForCds(
+            accession=accession,
+            roles=("auxiliary_protein",),
+            protein_name=str(item.get("protein_name") or "").strip(),
+            organism_name=str(item.get("organism_name") or "").strip(),
+            assigned_step_indexes=_step_indexes(
+                item.get("assigned_step_indexes"),
+                f"auxiliary_protein_selection.proteins[{index}].assigned_step_indexes",
+            ),
+            required_by_main_accessions=(),
+            sequence_type=sequence_type,
+            source_sequence_path=source_path,
+        )
+
+    missing = sorted(set(introduce) - set(details))
+    extra = sorted(set(details) - set(introduce))
+    if missing or extra:
+        raise ValueError(
+            "manual auxiliary protein list does not match details; "
+            f"missing={missing}, extra={extra}"
+        )
+    return details
+
+
 def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
     """Return the unique manifest-selected proteins that require CDS design."""
 
@@ -261,14 +331,30 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
         auxiliary = _mapping(auxiliary_raw, "auxiliary_protein_selection")
         if auxiliary.get("can_advance") is not True:
             raise ValueError("auxiliary protein selection cannot advance to CDS design")
-        source = auxiliary.get("source")
-        if isinstance(source, Mapping):
-            auxiliary_source_fingerprint = str(
-                source.get("result_fingerprint") or ""
-            ).strip()
-        for accession, auxiliary_protein in _auxiliary_details(
-            auxiliary, proteins
-        ).items():
+        if (
+            str(auxiliary.get("schema_version") or "")
+            == "manual_auxiliary_protein_selection.v1"
+        ):
+            auxiliary_source_fingerprint = _stable_fingerprint(dict(auxiliary))
+            auxiliary_details = _manual_auxiliary_details(auxiliary)
+            direct_cds_accessions = sorted(
+                accession
+                for accession, item in auxiliary_details.items()
+                if item.sequence_type == "cds"
+            )
+            if direct_cds_accessions:
+                warnings.append(
+                    "user-uploaded CDS sequences skipped codon optimization and "
+                    "CDS validation: " + ", ".join(direct_cds_accessions)
+                )
+        else:
+            source = auxiliary.get("source")
+            if isinstance(source, Mapping):
+                auxiliary_source_fingerprint = str(
+                    source.get("result_fingerprint") or ""
+                ).strip()
+            auxiliary_details = _auxiliary_details(auxiliary, proteins)
+        for accession, auxiliary_protein in auxiliary_details.items():
             if accession in proteins:
                 main = proteins[accession]
                 proteins[accession] = replace(
@@ -281,6 +367,8 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
                         )
                     ),
                     required_by_main_accessions=auxiliary_protein.required_by_main_accessions,
+                    sequence_type=auxiliary_protein.sequence_type,
+                    source_sequence_path=auxiliary_protein.source_sequence_path,
                 )
             else:
                 proteins[accession] = auxiliary_protein
@@ -303,6 +391,8 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
                 "organism_name": item.organism_name,
                 "assigned_step_indexes": item.assigned_step_indexes,
                 "required_by_main_accessions": (item.required_by_main_accessions),
+                "sequence_type": item.sequence_type,
+                "source_sequence_path": item.source_sequence_path,
             }
             for item in ordered
         ],

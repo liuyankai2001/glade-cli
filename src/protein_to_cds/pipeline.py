@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -16,14 +17,18 @@ from src.protein_to_cds.codon_optimization import (
 )
 from src.protein_to_cds.config import host_profile_for_chassis
 from src.protein_to_cds.get_protein_selection_context import get_proteins_for_cds
-from src.protein_to_cds.search_protein_sequence import search_protein_sequence
+from src.protein_to_cds.search_protein_sequence import (
+    load_uploaded_protein_sequence,
+    search_protein_sequence,
+)
 from src.protein_to_cds.write_protein_to_manifest import (
+    CompletedDirectCds,
     CompletedProteinCds,
     FailedProteinCds,
     write_cds_selection_to_manifest,
 )
 
-RUN_SUMMARY_SCHEMA_VERSION = "protein_to_cds.run_summary.v1"
+RUN_SUMMARY_SCHEMA_VERSION = "protein_to_cds.run_summary.v2"
 
 
 def _utc_now() -> str:
@@ -65,6 +70,38 @@ def _status(success_count: int, failure_count: int) -> str:
     if success_count:
         return "partial"
     return "failed"
+
+
+def _uploaded_sequence_path(
+    project_root: Path,
+    relative_path: str | None,
+) -> Path:
+    value = str(relative_path or "").strip()
+    if not value:
+        raise ValueError("uploaded sequence path is missing from the manifest")
+    path = (project_root / value).resolve()
+    try:
+        path.relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise ValueError("uploaded sequence path is outside the project output") from exc
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    return path
+
+
+def _read_direct_cds(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"could not read uploaded CDS: {path}") from exc
+    sequence = "".join(
+        re.sub(r"\s+", "", line)
+        for line in lines
+        if line.strip() and not line.lstrip().startswith(">")
+    ).upper()
+    if not sequence:
+        raise ValueError(f"uploaded CDS is empty: {path}")
+    return sequence
 
 
 def run_protein_to_cds(
@@ -110,13 +147,36 @@ def run_protein_to_cds(
         directory.mkdir(parents=True, exist_ok=True)
 
     successes: list[CompletedProteinCds] = []
+    direct_cds: list[CompletedDirectCds] = []
     failures: list[FailedProteinCds] = []
     for selected in context.proteins:
         try:
-            protein = search_protein_sequence(
-                selected.accession,
-                protein_sequence_dir,
-            )
+            if selected.sequence_type == "cds":
+                cds_path = _uploaded_sequence_path(
+                    project_root,
+                    selected.source_sequence_path,
+                )
+                direct_cds.append(
+                    CompletedDirectCds(
+                        selected=selected,
+                        cds_path=cds_path,
+                        sequence=_read_direct_cds(cds_path),
+                    )
+                )
+                continue
+            if selected.source_sequence_path is not None:
+                protein = load_uploaded_protein_sequence(
+                    selected.accession,
+                    _uploaded_sequence_path(
+                        project_root,
+                        selected.source_sequence_path,
+                    ),
+                )
+            else:
+                protein = search_protein_sequence(
+                    selected.accession,
+                    protein_sequence_dir,
+                )
             if protein.primary_accession != selected.accession:
                 raise ValueError(
                     "UniProt response accession does not match the manifest: "
@@ -145,7 +205,8 @@ def run_protein_to_cds(
                 )
             )
 
-    status = _status(len(successes), len(failures))
+    success_count = len(successes) + len(direct_cds)
+    status = _status(success_count, len(failures))
     summary_path = output_root / "run_summary.json"
     summary: dict[str, Any] = {
         "schema_version": RUN_SUMMARY_SCHEMA_VERSION,
@@ -164,13 +225,14 @@ def run_protein_to_cds(
         "additional_forbidden_motifs": list(motifs),
         "counts": {
             "selected": len(context.proteins),
-            "succeeded": len(successes),
+            "succeeded": success_count,
             "failed": len(failures),
         },
         "successes": [
             {
                 "accession": success.selected.accession,
                 "roles": list(success.selected.roles),
+                "processing_mode": "optimized_from_protein",
                 "protein_sequence": _relative(
                     project_root,
                     success.protein.fasta_path,
@@ -187,6 +249,16 @@ def run_protein_to_cds(
                 "optimization_reused": success.optimization.reused_existing,
             }
             for success in successes
+        ]
+        + [
+            {
+                "accession": item.selected.accession,
+                "roles": list(item.selected.roles),
+                "processing_mode": "user_uploaded_cds",
+                "uploaded_cds": _relative(project_root, item.cds_path),
+                "optimization_skipped": True,
+            }
+            for item in direct_cds
         ],
         "failures": [
             {
@@ -211,6 +283,7 @@ def run_protein_to_cds(
             failures=failures,
             warnings=context.warnings,
             run_summary_path=summary_path,
+            direct_cds=direct_cds,
         )
     except Exception as exc:
         summary["manifest_error"] = {
