@@ -10,10 +10,17 @@ wheels/
 .venv
 .env
 AGENTS.md
-inputs
-outputs
 
-cache
-other
-tests
-model
+inputs/*
+outputs/*
+cache/*
+other/*
+tests/*
+model/*
+
+!inputs/.gitkeep
+!outputs/.gitkeep
+!cache/.gitkeep
+!other/.gitkeep
+!tests/.gitkeep
+!model/.gitkeep
