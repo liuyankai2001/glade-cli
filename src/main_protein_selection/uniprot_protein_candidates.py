@@ -31,7 +31,6 @@ UNIPROT_FIELDS = ",".join([
     "gene_names",
     "organism_name",
     "organism_id",
-    "taxonomic_lineage",
     "reviewed",
     "protein_existence",
     "annotation_score",
