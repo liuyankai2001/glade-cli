@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client 已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -42,6 +42,73 @@ P0 验收记录：
 - 真实任务 `rp2-53cec4814e19468d87a8dd4194ecbe69` 完成 KNIME 执行并返回
   `no_solution`（Wrapper 退出码 11），证明运行环境可用且无环境依赖错误；
 - `/health` 已核对 Wrapper、workflow、KNIME、RDKit 和 RR02 SHA-256。
+
+### P1 预测数据模型（2026-08-25 更新）
+
+P1 已在 `src/pathway_analyze/retropath_models.py` 建立版本化领域模型，包含
+`PredictedCompound`、`PredictedReaction`、`CandidateRoute`、
+`RetroPathRuntimeProvenance` 和 `RetroPathRunResult`。模型使用冻结 dataclass，
+只依赖 Python 标准库，不引入 RetroPath、RDKit 或网络运行依赖。
+
+P1 验收记录：
+
+- schema version 固定为 `1`，运行结果支持显式 dict/JSON 往返；
+- 预测反应使用 `RP2:<64位SHA-256>`，预测中间体使用
+  `RP2CPD:<InChIKey或64位SHA-256>`，候选路线使用
+  `RP2ROUTE:<64位SHA-256>`；
+- 哈希输入使用键排序的规范 JSON；集合型证据排序去重，反应两侧保留计量重复，
+  路线步骤保留顺序；
+- 反应身份显式包含 `retrosynthetic`/`biosynthetic` 方向，反转方向或反应两侧会
+  生成不同 ID；
+- 成功、无解和 source-in-sink 结果必须保留 Wrapper、workflow、KNIME、RDKit
+  插件以及 RetroRules 版本和校验和；
+- `tests/test_retropath_models.py` 的 17 项离线测试通过，其中包含 v1 ID 黄金值，
+  防止哈希契约被静默修改。
+
+### P2 结构与输入生成（2026-08-25 更新）
+
+P2 已在 `src/pathway_analyze/retropath_structure.py` 和
+`src/pathway_analyze/retropath_input.py` 实现 KEGG MOL 获取、校验缓存、RDKit
+结构标准化、累计 sink 构建、结构去重以及拒绝审计。
+
+P2 验收记录：
+
+- uv 直接依赖固定为 `rdkit==2026.3.5`，Python 3.12 环境已验证；
+- KEGG MOL 缓存保存在 `cache/kegg/mol/`，元数据记录 URL、获取时间和 MOL
+  SHA-256，损坏或元数据不一致的缓存会重新获取；
+- 结构输出包含标准 InChI、完整 InChIKey、canonical isomeric SMILES、分子式、
+  总形式电荷、MOL SHA-256 和 RDKit 版本 provenance；
+- depth 0 使用 A0，depth N 直接使用 `ExpansionBundle.reachable_compounds` 与
+  `depth_by_compound`，不会自动重新执行 expand；
+- sink 先按 Cxxxxx 取最小 depth，再按完整 InChIKey 去重；同结构代表 ID 按
+  “最小 depth、再按字典序”选择，全部别名保留在 mapping；
+- target 结构失败或有效 sink 为空会阻断；单个 sink 失败会排除并写入拒绝表；
+- 9 项结构测试和 12 项输入测试通过；联合 P1、expansion 与电子平衡回归共
+  55 项通过；真实 KEGG `C00001`、`C05432` 冒烟通过。
+
+### P3 本地 HTTP client（2026-08-25 更新）
+
+P3 已在 `src/pathway_analyze/retropath_client.py` 实现 GLADE 到 P0 本地 Docker
+服务的同步 HTTP client。客户端默认只允许 loopback HTTP 地址，使用
+`httpx==0.28.1` 且禁用环境代理和重定向。
+
+P3 验收记录：
+
+- 参数范围与 P0 服务一致，默认请求超时 30 秒、GET 三次重试、0.5 秒指数退避、
+  1 秒轮询和 3900 秒客户端等待上限；
+- POST 不自动重试；提交响应丢失会写入 `submission_uncertain` 状态并要求人工确认
+  或显式 `force=True`，避免生成重复 KNIME 任务；
+- `queued`/`running` 可在进程重启或客户端等待超时后用原 job ID 继续轮询；客户端
+  等待超时不会伪装成服务端 `timed_out`；
+- 服务 manifest 的 job、参数、输入 SHA-256、Wrapper、workflow、KNIME、RDKit
+  节点、RetroRules 版本及规则 SHA-256 均与 P2/health 交叉校验；
+- artifact 使用服务白名单、路径越界检查、流式临时文件、原子替换和本地
+  SHA-256 复核；
+- 仅当服务健康信息、输入、参数、运行栈和全部本地 artifact 校验和一致时复用
+  `succeeded`、`no_solution` 或 `source_in_sink`；失败和服务超时不缓存；
+- 本地 artifact 损坏时优先从已完成的同一服务 job 重新下载，不重复运行 KNIME；
+- 14 项 MockTransport 离线协议测试通过；联合 P1–P3、expansion 与电子平衡回归
+  共 69 项。P3 实施时 Docker Desktop 未运行，因此没有重复执行 P0 真实服务冒烟。
 
 ## 2. 用户工作流
 
@@ -86,9 +153,9 @@ P0 验收记录：
 | 阶段 | 优先级 | 目标 | 主要修改 | 文件落点 | 主要输出 | 测试与验收 | 前置条件/权限 | 状态 |
 |---|---:|---|---|---|---|---|---|---|
 | P0 资源与版本约定 | P0 | 固定可复现的本地服务环境 | 构建本地 Docker HTTP 服务，固定 Wrapper 3.9.1、KNIME 4.7.0、workflow r20260212、RR02 哈希、单 Worker 和超时策略 | services/retropath；compose.retropath.yml；docs | 健康检查、异步任务、原始结果、日志与 run manifest | 镜像和规则缺失时给出可操作错误；真实 KNIME 冒烟通过 | 已授权服务目录；RR02 已安装 | 已完成 |
-| P1 预测数据模型 | P0 | 建立非 KEGG 反应/化合物表示 | 定义预测化合物、预测反应、候选路线、运行结果及 RP2 命名规则 | 新增 src/pathway_analyze/retropath_models.py | 可序列化数据对象 | ID 稳定、结构字段完整、相同输入产生相同哈希 | 已授权目录 | 待办 |
-| P2 结构与输入生成 | P0 | 自动生成 source/sink | KEGG MOL 获取、MOL→InChI/InChIKey/SMILES、depth 0/累计 depth sink、映射表和拒绝表 | 新增 retropath_structure.py、retropath_input.py | target_source.csv、chassis_sink.csv、compound_mapping.csv、rejected_compounds.csv | depth 0 等于 A0；depth N 包含 A0 和全部 frontier；立体化学与去重正确 | RDKit 需修改 pyproject.toml，需单次授权 | 待办 |
-| P3 RetroPath client | P0 | 稳定调用本地服务 | HTTP 提交、轮询、超时、状态映射、日志、输入哈希缓存 | 新增 retropath_client.py | raw results/scope、日志、run manifest | 区分成功、有结果、无 scope、服务不可用、超时和执行失败 | P0 服务与规则可用 | 待办 |
+| P1 预测数据模型 | P0 | 建立非 KEGG 反应/化合物表示 | 定义预测化合物、预测反应、候选路线、运行 provenance、运行结果及 RP2 命名规则 | 新增 src/pathway_analyze/retropath_models.py | 可序列化数据对象 | 17 项离线测试通过；ID 黄金值稳定、可 JSON 往返、相同输入产生相同哈希 | 已授权目录 | 已完成 |
+| P2 结构与输入生成 | P0 | 自动生成 source/sink | KEGG MOL 校验缓存、RDKit 标准化、depth 0/累计 depth sink、映射表和拒绝表 | 新增 retropath_structure.py、retropath_input.py；锁定 RDKit 2026.3.5 | target_source.csv、chassis_sink.csv、compound_mapping.csv、rejected_compounds.csv | 21 项 P2 离线测试通过；真实 KEGG 冒烟通过 | 一次性依赖与 .gitignore 授权已使用 | 已完成 |
+| P3 RetroPath client | P0 | 稳定调用本地服务 | loopback HTTP 提交、轮询、恢复、超时、状态映射、artifact 下载、manifest 校验和健康一致缓存 | 新增 retropath_client.py；锁定 httpx 0.28.1 | raw results/scope、服务日志、client state、P1 run result 和审计 manifest | 14 项离线协议测试通过；区分正常终态、服务错误和客户端错误 | P0 协议已验证；真实服务冒烟沿用 P0 记录 | 已完成 |
 | P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；通过 RP2Paths 适配器或等价枚举器得到路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 只保留真正命中 sink 的路径；环路与重复处理正确 | P3 | 待办 |
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | Target→X 翻转为 X→Target；恢复 expansion witness；组合多个 witness 与预测路径；限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | depth 0 不生成 prefix；depth N prefix 和方向正确；不伪造 KEGG ID | P2、P4 | 待办 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加程序、规则、步数和超时配置；不自动 expand | 修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式和审计字段 | 不加参数时现有行为及结果不变；depth 校验符合约定 | 两目录需单次授权 | 待办 |
@@ -112,14 +179,11 @@ P0 验收记录：
     ├── test_retropath_structure.py
     └── test_retropath_input.py
 
-建议核心接口：
+P2 实际核心接口：
 
-    build_target_source(target_compound_id, structure_provider, output_dir)
-
-    build_chassis_sink(
-        base_a0_path,
+    build_retropath_inputs(
+        target_compound_id,
         expansion_bundle,
-        depth,
         structure_provider,
         output_dir,
     )
@@ -132,13 +196,16 @@ P0 验收记录：
 - 无结构、解析失败、重复和结构冲突均有审计记录；
 - 测试不依赖实时 KEGG 或真实 RetroPath 程序。
 
+P2 已满足以上完成标准。P6 调用前先使用现有 `load_expansion_bundle()` 读取并校验
+指定 depth；P2 不会自动生成缺失或过期的 expansion。
+
 ## 6. 内部数据契约
 
 ### 6.1 预测化合物
 
 | 字段 | 说明 |
 |---|---|
-| compound_id | KEGG Cxxxxx 或 RP2CPD:哈希 |
+| compound_id | KEGG Cxxxxx、RP2CPD:InChIKey 或 RP2CPD:完整 SHA-256 |
 | name | 化合物名称，可为空但不得伪造 |
 | inchi | 标准 InChI |
 | inchikey | 结构映射与去重键 |
@@ -160,12 +227,14 @@ P0 验收记录：
 | reaction_smiles | 具体底物和产物预测转换 |
 | substrate_compounds | 预测底物结构标识 |
 | product_compounds | 预测产物结构标识 |
+| orientation | retrosynthetic 或 biosynthetic；作为反应身份的一部分 |
 | source_reaction_ids | 规则来源 MNXR/Rhea/KEGG 等反应 |
 | source_ec_numbers | 规则关联 EC，可为空或不完整 |
 | source_uniprot_ids | 规则关联序列，可为空 |
-| rule_specificity | 版本化保存 radius/diameter 及其语义 |
+| rule_specificity | 非负 radius/diameter 数值，可在后续解析阶段补充 |
+| rule_specificity_semantics | radius 或 diameter；与 rule_specificity 同时出现 |
 | rule_score_raw | 原始分数 |
-| score_semantics | higher-is-better 或 lower-is-better |
+| score_semantics | higher_is_better 或 lower_is_better；与原始分数同时出现 |
 | balance_status | 后续计算的元素/电荷平衡状态 |
 | cofactor_reconstruction_status | 共底物和辅因子恢复状态 |
 
@@ -173,18 +242,33 @@ P0 验收记录：
 
 | 字段 | 说明 |
 |---|---|
-| candidate_id | 稳定候选路线 ID |
+| candidate_id | RP2ROUTE:完整 SHA-256 稳定候选路线 ID |
+| target_compound_id | 路线目标，允许 KEGG Cxxxxx 或 RP2CPD 标识 |
 | matched_sink_kegg_id | RetroPath 命中的可信边界 Cxxxxx |
 | matched_sink_depth | 边界最小 depth |
-| kegg_prefix_steps | expansion witness 步数 |
-| retropath_steps | 预测步数 |
+| kegg_prefix_reaction_ids | 按合成方向排列的 KEGG Rxxxxx 前缀 |
+| retropath_reaction_ids | 按合成方向排列的 RP2 预测反应后缀 |
+| kegg_prefix_steps | 由前缀反应列表计算的 expansion witness 步数 |
+| retropath_steps | 由后缀反应列表计算的预测步数 |
 | total_steps | 拼接后总步数 |
 | route_source | kegg_retropath |
 | contains_predicted_steps | True |
 | minimum_rule_specificity | 路线上最差预测规则的特异性 |
-| validation_status | raw、structure、stoichiometry、GEM、enzyme、promoted |
+| validation_status | raw、structure、stoichiometry、gem、enzyme、promoted、rejected |
 | review_required | 含预测步骤时默认为 True |
 | rejection_reasons | 所有硬门禁失败原因 |
+
+### 6.4 运行 provenance 与结果封装
+
+`RetroPathRuntimeProvenance` 保存 Wrapper 实际固定版本、Wrapper 自报版本、workflow、
+KNIME、RDKit 插件、RetroRules 版本及规则 SHA-256。`RetroPathRunResult` 使用 schema
+version 1 封装任务 ID、运行状态、返回码、参数、产物、预测实体、候选路线和错误。
+状态包含 `queued`、`running`、`succeeded`、`no_solution`、`source_in_sink`、
+`failed` 和 `timed_out`。
+
+ID 哈希统一使用 UTF-8 编码的规范 JSON：`sort_keys=True`、紧凑分隔符、
+`ensure_ascii=True`，随后计算完整小写 SHA-256。未来若修改任何身份字段或哈希输入，
+必须升级 schema version，不得静默改变 v1 ID。
 
 ## 7. 运行输出目录
 
@@ -195,10 +279,13 @@ P0 验收记录：
     │   ├── compound_mapping.csv
     │   └── rejected_compounds.csv
     ├── raw/
+    │   ├── service_results.json
+    │   ├── service_run_manifest.json
     │   ├── results.csv
     │   ├── scope.csv
     │   ├── stdout.log
     │   └── stderr.log
+    ├── client_state.json
     ├── candidate_routes.csv
     ├── candidate_steps.csv
     ├── rejected_routes.csv
@@ -218,6 +305,23 @@ run_manifest.json 至少记录：
 - 执行状态和退出码；
 - scope 是否存在；
 - 命中 sink 和候选路线数量。
+
+P2 CSV 格式固定如下：
+
+- `target_source.csv`、`chassis_sink.csv`：`Name,InChI`，Name 使用目标或代表
+  Cxxxxx；
+- `compound_mapping.csv`：记录 role、原始 Cxxxxx、代表 Cxxxxx、最小 depth、
+  InChI、InChIKey、立体 SMILES、分子式、电荷和结构 provenance；
+- `rejected_compounds.csv`：记录 role、Cxxxxx、最小 depth、稳定原因代码和详情。
+
+CSV 使用 UTF-8、LF 和稳定排序；source 必须恰好一行，sink 必须至少一行，且均
+已通过 P0 本地服务的输入校验器测试。
+
+P3 的 `run_manifest.json` 使用 `retropath_client_run.v1`，包含 request fingerprint、
+P2 输入 SHA-256、目标与 expansion depth、任务参数、健康检查、终态 job、远端到
+本地 artifact 映射、所有本地 artifact SHA-256 以及 P1 `RetroPathRunResult`。
+`client_state.json` 使用 `retropath_client_state.v1`，在提交前、提交后、轮询、终态、
+失败和完成阶段原子更新，用于安全恢复。
 
 ## 8. 假阳性门禁
 
@@ -340,17 +444,22 @@ RetroPath depth N：
 |---|---|
 | src/cli/commands/gap.py | 增加 <code>--retropath</code> |
 | src/config/run_config.py | 增加程序、规则、步数、超时等默认配置 |
-| pyproject.toml | 增加 RDKit，用于 MOL、InChI、InChIKey、SMILES 和结构校验 |
+
+P2 已使用一次性授权修改 `pyproject.toml`、`uv.lock` 和 `.gitignore`：固定
+`rdkit==2026.3.5`，并仅放行 P1/P2 的三个 RetroPath 测试文件。
+
+P3 已使用新的一次性授权修改相同根文件：固定 `httpx==0.28.1`，并仅额外放行
+`tests/test_retropath_client.py`。
 
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
 
 - [x] P0：确定 RetroPath、RetroRules 和 RDKit 版本及存放策略
-- [ ] P1：定义 RP2 数据模型和稳定哈希 ID
-- [ ] P2：完成目标 source、A0/AN sink 和 mapping 生成
-- [ ] P2：完成离线单元测试，不依赖实时网络
-- [ ] P3：实现 runner、超时、日志、退出状态和缓存
+- [x] P1：定义 RP2 数据模型和稳定哈希 ID
+- [x] P2：完成目标 source、A0/AN sink 和 mapping 生成
+- [x] P2：完成离线单元测试，不依赖实时网络
+- [x] P3：实现 HTTP client、超时、恢复、日志、退出状态和缓存
 - [ ] P4：解析 scope 并枚举命中 sink 的完整路径
 - [ ] P5：翻转 RetroPath 路线并拼接 expansion witness
 - [ ] P5：输出独立候选文件，不进入正式 solution
