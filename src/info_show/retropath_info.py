@@ -24,6 +24,12 @@ from src.pathway_analyze.retropath_pipeline import (
     PIPELINE_RESULT_FILE_NAME,
     RETROPATH_PIPELINE_SCHEMA,
 )
+from src.pathway_analyze.retropath_gem_validation import (
+    RETROPATH_GEM_VALIDATION_SCHEMA,
+    VALIDATION_FLUX_FILE_NAME,
+    VALIDATION_MANIFEST_FILE_NAME,
+    VALIDATION_SUMMARY_FILE_NAME,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
@@ -108,6 +114,15 @@ class _RetroPathViewContext:
     candidate_routes: tuple[Mapping[str, str], ...] = tuple()
     candidate_steps: tuple[Mapping[str, str], ...] = tuple()
     rejected_routes: tuple[Mapping[str, str], ...] = tuple()
+
+
+@dataclass(frozen=True)
+class _P8Overlay:
+    state: str
+    candidate_statuses: Mapping[int, str]
+    passing_combinations: Mapping[int, tuple[str, ...]]
+    flux_by_candidate_step: Mapping[tuple[int, str], float]
+    warning: str = ""
 
 
 def _rerun_hint(depth: int) -> str:
@@ -628,6 +643,121 @@ def _success_warnings(context: _RetroPathViewContext) -> list[str]:
     return _unique(warnings)
 
 
+def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
+    validation_dir = context.output_dir / "gem_validation"
+    manifest_path = validation_dir / VALIDATION_MANIFEST_FILE_NAME
+    if not manifest_path.is_file():
+        return _P8Overlay(
+            "not_run",
+            {},
+            {},
+            {},
+            "尚未运行 P8 严格计量和 GEM 验证",
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != RETROPATH_GEM_VALIDATION_SCHEMA
+            or manifest.get("target_compound") != context.target_compound
+            or _as_int(manifest.get("expansion_depth"), "P8 expansion_depth")
+            != context.depth
+        ):
+            raise ValueError("P8 manifest identity mismatch")
+        inputs = _required_mapping(manifest.get("inputs"), "P8 inputs")
+        pipeline_record = _required_mapping(
+            inputs.get("pipeline_result"),
+            "P8 inputs.pipeline_result",
+        )
+        if pipeline_record.get("sha256") != _sha256_file(
+            context.output_dir / PIPELINE_RESULT_FILE_NAME
+        ):
+            raise ValueError("P8 input pipeline hash is stale")
+        pipeline_artifacts = _required_mapping(
+            context.pipeline.get("artifacts"),
+            "artifacts",
+        )
+        if inputs.get("candidate_routes_sha256") != _required_mapping(
+            pipeline_artifacts.get("candidate_routes"),
+            "artifacts.candidate_routes",
+        ).get("sha256") or inputs.get("candidate_steps_sha256") != _required_mapping(
+            pipeline_artifacts.get("candidate_steps"),
+            "artifacts.candidate_steps",
+        ).get("sha256"):
+            raise ValueError("P8 candidate input hashes are stale")
+        artifacts = _required_mapping(manifest.get("artifacts"), "P8 artifacts")
+
+        def artifact_path(name: str) -> Path:
+            record = _required_mapping(artifacts.get(name), f"P8 artifacts.{name}")
+            expected = (validation_dir / name).resolve()
+            if Path(str(record.get("path") or "")).expanduser().resolve() != expected:
+                raise ValueError(f"P8 artifact path is stale: {name}")
+            if not expected.is_file() or record.get("sha256") != _sha256_file(expected):
+                raise ValueError(f"P8 artifact checksum mismatch: {name}")
+            return expected
+
+        summary_path = artifact_path(VALIDATION_SUMMARY_FILE_NAME)
+        flux_path = artifact_path(VALIDATION_FLUX_FILE_NAME)
+        with summary_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            summary_rows = tuple(dict(row) for row in csv.DictReader(handle))
+        with flux_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            flux_rows = tuple(dict(row) for row in csv.DictReader(handle))
+        raw_statuses = _required_mapping(
+            manifest.get("candidate_statuses"),
+            "P8 candidate_statuses",
+        )
+        statuses = {
+            _as_int(rank, "P8 candidate rank", minimum=1): str(status)
+            for rank, status in raw_statuses.items()
+        }
+        passing: dict[int, tuple[str, ...]] = {}
+        for rank in statuses:
+            passing[rank] = tuple(
+                sorted(
+                    {
+                        str(row.get("combination_id") or "")
+                        for row in summary_rows
+                        if _as_int(
+                            row.get("candidate_rank"),
+                            "P8 candidate_rank",
+                            minimum=1,
+                        )
+                        == rank
+                        and row.get("validation_status")
+                        == "PASS_STRICT_ROUTE_FLUX"
+                        and str(row.get("combination_id") or "")
+                    }
+                )
+            )
+        flux_by_step: dict[tuple[int, str], float] = {}
+        for rank, combinations in passing.items():
+            if not combinations:
+                continue
+            selected_combination = combinations[0]
+            for row in flux_rows:
+                if (
+                    _as_int(
+                        row.get("candidate_rank"),
+                        "P8 flux candidate_rank",
+                        minimum=1,
+                    )
+                    == rank
+                    and row.get("combination_id") == selected_combination
+                ):
+                    flux_by_step[(rank, str(row.get("step_id") or ""))] = float(
+                        row.get("directed_fba_flux") or "nan"
+                    )
+        return _P8Overlay("current", statuses, passing, flux_by_step)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return _P8Overlay(
+            "stale",
+            {},
+            {},
+            {},
+            f"P8 验证结果已过期或损坏，未应用其状态：{exc}",
+        )
+
+
 def get_retropath_info(config: Any) -> dict[str, Any]:
     """Return a compact Chinese summary of one P6 RetroPath run."""
 
@@ -655,6 +785,17 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         }
 
     input_summary = _required_mapping(pipeline.get("input_summary"), "input_summary")
+    overlay = _p8_overlay(context)
+    route_summaries = [_route_summary(row) for row in context.candidate_routes]
+    for route_summary in route_summaries:
+        rank = int(route_summary["候选排名"])
+        route_summary["P8严格GEM状态"] = overlay.candidate_statuses.get(
+            rank,
+            "未验证",
+        )
+        route_summary["P8可行计量假设数"] = len(
+            overlay.passing_combinations.get(rank, tuple())
+        )
     return {
         **common,
         "RetroPath任务ID": str(pipeline.get("job_id") or "").strip(),
@@ -680,11 +821,10 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         ),
         "候选路线数": len(context.candidate_routes),
         "拒绝路线数": len(context.rejected_routes),
-        "候选路线摘要": [
-            _route_summary(row) for row in context.candidate_routes
-        ],
+        "P8验证状态": overlay.state,
+        "候选路线摘要": route_summaries,
         "拒绝原因统计": _rejection_summary(context.rejected_routes),
-        "警告": _success_warnings(context),
+        "警告": _unique([*_success_warnings(context), overlay.warning]),
     }
 
 
@@ -733,6 +873,12 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
         "候选排名": rank,
         "候选ID": candidate_id,
     }
+    overlay = _p8_overlay(context)
+    common["P8验证状态"] = overlay.state
+    common["P8严格GEM状态"] = overlay.candidate_statuses.get(rank, "未验证")
+    common["P8可行计量假设"] = list(
+        overlay.passing_combinations.get(rank, tuple())
+    )
     raw_step = getattr(config, "step", None)
     if raw_step is not None:
         step_index = _as_int(raw_step, "step", minimum=1)
@@ -741,14 +887,22 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
                 f"RetroPath 候选 {rank} 中没有步骤 {step_index}；"
                 f"可用步骤：{list(range(1, len(candidate_steps) + 1))}"
             )
+        step_detail = _step_display(candidate_steps[step_index - 1])
+        step_detail["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(
+            (rank, str(candidate_steps[step_index - 1].get("step_id") or ""))
+        )
         return {
             **common,
             "步骤编号": step_index,
-            "步骤详情": _step_display(candidate_steps[step_index - 1]),
+            "步骤详情": step_detail,
         }
 
     route_summary = _route_summary(route)
     displayed_steps = [_step_display(row) for row in candidate_steps]
+    for row, displayed in zip(candidate_steps, displayed_steps):
+        displayed["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(
+            (rank, str(row.get("step_id") or ""))
+        )
     return {
         **common,
         "候选概览": route_summary,
@@ -776,6 +930,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
                     for step in displayed_steps
                     for warning in step["风险提示"]
                 ],
+                overlay.warning,
             ]
         ),
     }

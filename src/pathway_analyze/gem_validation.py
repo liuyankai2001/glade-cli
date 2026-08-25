@@ -1182,6 +1182,13 @@ def gem_validate(config: Any) -> dict[str, Any]:
 def run_validation(config: Any) -> dict[str, Any]:
     """命令行入口；JSON 读取和 ``RunConfig`` 构造由 ``main.py`` 负责。"""
 
-    result = gem_validate(config)
+    if getattr(config, "retropath_candidates", None) is not None:
+        from src.pathway_analyze.retropath_gem_validation import (
+            validate_retropath_candidates,
+        )
+
+        result = validate_retropath_candidates(config)
+    else:
+        result = gem_validate(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result

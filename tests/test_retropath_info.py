@@ -29,6 +29,12 @@ from src.pathway_analyze.retropath_pipeline import (
     PIPELINE_RESULT_FILE_NAME,
     RETROPATH_PIPELINE_SCHEMA,
 )
+from src.pathway_analyze.retropath_gem_validation import (
+    RETROPATH_GEM_VALIDATION_SCHEMA,
+    VALIDATION_FLUX_FILE_NAME,
+    VALIDATION_MANIFEST_FILE_NAME,
+    VALIDATION_SUMMARY_FILE_NAME,
+)
 
 
 class RetroPathInfoTests(unittest.TestCase):
@@ -467,6 +473,98 @@ class RetroPathInfoTests(unittest.TestCase):
         (self.retropath_dir / REJECTED_ROUTES_FILE_NAME).unlink()
         with self.assertRaisesRegex(FileNotFoundError, "缺少 RetroPath 候选文件"):
             get_retropath_info(self.config)
+
+    def test_current_p8_status_and_flux_are_overlaid_but_stale_data_is_not(self) -> None:
+        validation_dir = self.retropath_dir / "gem_validation"
+        validation_dir.mkdir()
+        summary_path = validation_dir / VALIDATION_SUMMARY_FILE_NAME
+        with summary_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=(
+                    "candidate_rank",
+                    "combination_id",
+                    "validation_status",
+                ),
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "candidate_rank": 1,
+                    "combination_id": "RP2GEM:test",
+                    "validation_status": "PASS_STRICT_ROUTE_FLUX",
+                }
+            )
+        flux_path = validation_dir / VALIDATION_FLUX_FILE_NAME
+        with flux_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=(
+                    "candidate_rank",
+                    "combination_id",
+                    "step_id",
+                    "directed_fba_flux",
+                ),
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "candidate_rank": 1,
+                    "combination_id": "RP2GEM:test",
+                    "step_id": "RP2STEP:3",
+                    "directed_fba_flux": 0.5,
+                }
+            )
+        pipeline_path = self.retropath_dir / PIPELINE_RESULT_FILE_NAME
+        pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+        manifest = {
+            "schema_version": RETROPATH_GEM_VALIDATION_SCHEMA,
+            "target_compound": "C12345",
+            "expansion_depth": 2,
+            "candidate_statuses": {"1": "PASS_STRICT_HYPOTHESIS_EXISTS"},
+            "inputs": {
+                "pipeline_result": {
+                    "path": str(pipeline_path),
+                    "sha256": self.sha256(pipeline_path),
+                },
+                "candidate_routes_sha256": pipeline["artifacts"][
+                    "candidate_routes"
+                ]["sha256"],
+                "candidate_steps_sha256": pipeline["artifacts"][
+                    "candidate_steps"
+                ]["sha256"],
+            },
+            "artifacts": {
+                VALIDATION_SUMMARY_FILE_NAME: {
+                    "path": str(summary_path),
+                    "sha256": self.sha256(summary_path),
+                },
+                VALIDATION_FLUX_FILE_NAME: {
+                    "path": str(flux_path),
+                    "sha256": self.sha256(flux_path),
+                },
+            },
+        }
+        (validation_dir / VALIDATION_MANIFEST_FILE_NAME).write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+        summary = get_retropath_info(self.config)
+        self.assertEqual("current", summary["P8验证状态"])
+        self.assertEqual(
+            "PASS_STRICT_HYPOTHESIS_EXISTS",
+            summary["候选路线摘要"][0]["P8严格GEM状态"],
+        )
+        self.config.retropath_candidate = 1
+        candidate = get_retropath_candidate_info(self.config)
+        self.assertEqual(0.5, candidate["反应DAG步骤"][2]["P8严格验证定向通量"])
+
+        with flux_path.open("a", encoding="utf-8") as handle:
+            handle.write("tampered\n")
+        stale = get_retropath_info(self.config)
+        self.assertEqual("stale", stale["P8验证状态"])
+        self.assertEqual("未验证", stale["候选路线摘要"][0]["P8严格GEM状态"])
 
     def test_candidate_and_step_indexes_must_be_positive_and_available(self) -> None:
         self.config.retropath_candidate = 0

@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示、P8 计量与严格 GEM 验证已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -208,6 +208,31 @@ P7 验收记录：
 - 7 项 P7 离线测试通过；当前 P1–P7 RetroPath 测试模块共 95 项通过；全仓库回归
   442 项通过、2 项需显式本地服务地址的测试按设计跳过。
 
+### P8 计量补全与严格 GEM 验证（2026-08-25 更新）
+
+P8 已实现 RR02 来源模板驱动的 RP2 计量/辅因子补全，并将独立 RetroPath 候选接入
+严格 COBRA/GEM 验证。P8 仍不修改 P5 候选，也不允许直接写正式 manifest。
+
+P8 验收记录：
+
+- 固定使用与 RR02 一致的 MNXref v3.0，不根据 EC 或元素差额猜测 NAD(P)、ATP、
+  CoA、水、质子或电子；多个来源支持的完整方程保留为独立假设；
+- 安装器校验 MetaNetX 官方 MD5并记录 SHA-256，从 213 MB RR02 和约 450 MB
+  MNXref 源文件构建紧凑 SQLite 子集；临时 TSV 已删除；
+- 真实索引包含 234,384 条 rule-template 链接、16,139 个可用 MNXR、79,147 个
+  反应参与项、12,017 个化合物和 84,582 条化合物映射；索引大小约 83 MB；
+- 真实规则 `RR-02-fbdda75e23f518b6-02-F` 成功映射 `MNXR94682`，从核心结构
+  变化恢复 `MNXM2/H2O` 并得到唯一元素/电荷平衡假设；
+- 每个 RP2 步骤最多保留 8 个完整假设，每条候选最多验证 32 个组合，所有裁剪均
+  审计；不完整公式、R-group、transport、未平衡或无法对齐的来源模板被拒绝；
+- 严格 GEM 同时要求至少 10% 基线生长、目标正通量以及候选 DAG 每一步按指定方向
+  至少 `1e-4` 通量；不会开放 generic cofactor sink，也不会因底盘旁路产生假通过；
+- `--retropath-candidates` 不带编号时验证全部候选，带编号时只验证指定候选；原
+  KEGG `validate` 分支不变，RetroPath v1 拒绝 pooled/both 和 relaxed 模式；
+- 输出计量假设、逐项参与物、拒绝原因、严格验证摘要、逐步通量和带哈希 manifest；
+  P7 只在输入哈希一致时叠加 P8 状态和定向通量；
+- P1–P8 定向测试 107 项通过；全仓库 454 项通过、2 项本地 Docker 测试按设计跳过。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -258,7 +283,7 @@ P7 验收记录：
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | 将 Target→sink 分支图翻转为 sink→Target；恢复全部 expansion witness；合并共享步骤并限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | 13 项 P5 测试通过；depth 0 无 prefix、depth N 多 sink DAG 和方向正确、不伪造 KEGG ID | P2、P4 | 已完成 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加本地服务、规则、步数和超时配置；不自动 expand | 新增 retropath_pipeline.py；修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式、pipeline_result.json 和审计字段 | 7 项 P6 测试通过；不加参数时直接调用原 KEGG 入口；depth 0/N 符合约定 | 单次授权已使用 | 已完成 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
-| P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 恢复共底物/辅因子；分子式、电荷和平衡；GEM 从本地预测反应记录读取计量；运行 strict_l1 | 修改 gem_validation.py | 结构、计量和 GEM 验证结果 | 不平衡或辅因子不完整的路线禁止晋升；relaxed 不作为正式通过 | P5 | 待办 |
+| P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、拒绝原因、严格验证与逐步通量 | P1–P8 定向 107 项、全仓库 454 项通过；真实来源模板冒烟通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为 RP2 步骤生成候选酶 | 支持 namespaced ID；优先正式反应映射，其次规则来源 EC/UniProt，最后用 Reaction SMILES/SMARTS 查询 SelenzymeRF | src/main_protein_selection、src/protein_selection | 候选酶及相似反应证据 | 保存 reaction similarity、sim_RF、匹配反应、方向和风险；无结构/无命中时阻断 | P8 | 待办 |
 | P10 manifest 晋升 | P2 | 将通过门禁的混合路线纳入正式设计 | 增加预测 provenance、验证状态、人工复核状态；只有 promoted 路线可写正式 manifest | src/write_manifest、src/info_show | 正式混合路线 manifest | 未验证预测路线不能进入表达设计 | P8、P9 | 待办 |
 | P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 待办 |
@@ -584,6 +609,10 @@ P6 已使用本阶段单次授权修改 `src/cli/commands/gap.py`、
 P7 已使用本阶段单次授权修改 `src/cli/commands/info.py` 和 `.gitignore`；根目录文件
 仅额外放行 `tests/test_retropath_info.py`，未修改项目依赖。
 
+P8 已使用本阶段单次授权写入 `data/retropath/mnxref/3.0/`，修改
+`src/cli/commands/validate.py` 和 `.gitignore`；MNXref 原始 TSV 未保留且数据目录
+继续忽略，Git 只放行三个 P8 测试文件，未增加项目依赖。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -598,7 +627,7 @@ P7 已使用本阶段单次授权修改 `src/cli/commands/info.py` 和 `.gitigno
 - [x] P5：输出独立候选文件，不进入正式 solution
 - [x] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
 - [x] P7：增加候选路线信息展示
-- [ ] P8：补全计量并接 strict_l1 GEM
+- [x] P8：补全计量并接 strict GEM
 - [ ] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
 - [ ] P10：加入人工复核和 promoted 晋升门禁
 - [ ] P11：完成隐藏反应、promiscuity 和青蒿素等回测

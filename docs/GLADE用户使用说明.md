@@ -323,6 +323,53 @@ outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
 
 只有状态以 `PASS_` 开头的独立验证结果才能写入 manifest。
 
+### 7.1 RetroPath 候选计量补全与严格验证
+
+首次使用 P8 前安装与 RR02 同版本的 MNXref v3.0 子集：
+
+```powershell
+uv run python -m src.pathway_analyze.retropath_mnxref install
+```
+
+安装器下载并校验官方源文件，只保留 RR02 实际引用的反应、化合物和映射。检查安装：
+
+```powershell
+uv run python -m src.pathway_analyze.retropath_mnxref status
+```
+
+验证当前 depth 的全部 RetroPath 候选：
+
+```powershell
+python main.py validate -i demo01.json --retropath-candidates -d 0
+```
+
+只验证候选 1 和 2：
+
+```powershell
+python main.py validate -i demo01.json --retropath-candidates 1 2 -d 0
+```
+
+RetroPath 验证只支持独立候选和严格辅因子模式；不能使用 `-m pooled`、`-m both` 或
+`-c relaxed`。系统只使用 RR02 明确指向的 MNXR/KEGG/Rhea 来源模板，不会根据 EC
+或元素差额自行猜测 NAD/NADP 等辅因子。
+
+主要输出：
+
+```text
+outputs/C00811/kegg_gap_C00811/depth0/retropath/gem_validation/
+├── stoichiometry_hypotheses.csv
+├── stoichiometry_terms.csv
+├── rejected_hypotheses.csv
+├── gem_validation_summary.csv
+├── gem_validation_route_fluxes.csv
+└── validation_manifest.json
+```
+
+`PASS_STRICT_HYPOTHESIS_EXISTS` 表示至少一个来源支持的完整计量假设同时满足底盘生长、
+目标产出和候选全部步骤通量；它仍不是正式路线，不能使用 `write --solution`，还需要
+P9 酶证据和人工复核。运行后可继续使用 `info --retropath` 或
+`info --retropath-candidate N` 查看 P8 状态和步骤定向通量。
+
 ## 8. 选择并写入路线
 
 路线 1 通过独立验证后执行：

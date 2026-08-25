@@ -34,4 +34,7 @@ data/retropath/
 !tests/test_retropath_analyze.py
 !tests/test_retropath_pipeline.py
 !tests/test_retropath_info.py
+!tests/test_retropath_mnxref.py
+!tests/test_retropath_stoichiometry.py
+!tests/test_retropath_gem_validation.py
 !model/.gitkeep
