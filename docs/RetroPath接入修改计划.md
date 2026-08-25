@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示、P8 计量与严格 GEM 验证已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示、P8 计量与严格 GEM 验证、P9 预测步骤主酶候选检索已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -233,6 +233,29 @@ P8 验收记录：
   P7 只在输入哈希一致时叠加 P8 状态和定向通量；
 - P1–P8 定向测试 107 项通过；全仓库 454 项通过、2 项本地 Docker 测试按设计跳过。
 
+### P9 预测步骤主酶候选检索（2026-08-25 更新）
+
+P9 已将通过 P8 的混合路线接入现有主酶检索能力，但继续保持预测路线与正式
+manifest 隔离：
+
+- 用户使用 `main-enzyme --retropath-candidate N --depth D` 选择路线，系统自动处理该
+  路线全部 `PASS_STRICT_ROUTE_FLUX` 计量组合；默认 `main-enzyme` 的 KEGG 行为不变；
+- 检索身份固定为 candidate、combination、step、hypothesis 四级绑定，不同 NADH/
+  NADPH 等辅因子假设生成不同结构签名和独立候选组；
+- 只有目标完整计量/结构与来源 MNXR 完全一致时，才将 KEGG/Rhea 映射视为正式反应；
+  否则来源 MNXR、EC、Rhea 和 UniProt 仅属于模板证据；
+- SelenzymeRF REST client 支持 `smarts` 结构请求，按完整平衡 Reaction SMILES、核心
+  Reaction SMILES、RR02 Rule SMARTS 的顺序回退，并以结构和请求参数哈希缓存；
+- SelenzymeRF 结构命中即使 reaction similarity 为 1，也固定为 `manual_review`，不会
+  标记成已验证酶；缺失、零或非法相似度以及 EC/方向冲突进入审计表；
+- 所有组合按覆盖完整性、最差步骤证据、最低相似度确定性排序，只作推荐，不自动选择；
+- 输出 requirements、Top-N 候选、完整审计、Selenzyme 查询证据和带输入/输出 SHA-256
+  的 `retropath_enzyme_selection.v1`；`formal_promotion_allowed` 固定为 false；
+- `info --retropath-candidate N [--step N]` 只在哈希仍有效时显示 P9 组合和候选酶；
+  最终人工确认与正式 manifest 晋升留给 P10；
+- P1–P9 RetroPath 定向测试 116 项通过、2 项本地 Docker 测试按设计跳过；全仓库
+  463 项通过、2 项跳过，真实 RR02/MNXref 完整反应身份冒烟通过。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -284,7 +307,7 @@ P8 验收记录：
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加本地服务、规则、步数和超时配置；不自动 expand | 新增 retropath_pipeline.py；修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式、pipeline_result.json 和审计字段 | 7 项 P6 测试通过；不加参数时直接调用原 KEGG 入口；depth 0/N 符合约定 | 单次授权已使用 | 已完成 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、拒绝原因、严格验证与逐步通量 | P1–P8 定向 107 项、全仓库 454 项通过；真实来源模板冒烟通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
-| P9 SelenzymeRF 与主酶选择 | P1 | 为 RP2 步骤生成候选酶 | 支持 namespaced ID；优先正式反应映射，其次规则来源 EC/UniProt，最后用 Reaction SMILES/SMARTS 查询 SelenzymeRF | src/main_protein_selection、src/protein_selection | 候选酶及相似反应证据 | 保存 reaction similarity、sim_RF、匹配反应、方向和风险；无结构/无命中时阻断 | P8 | 待办 |
+| P9 SelenzymeRF 与主酶选择 | P1 | 为 P8 可行混合路线生成候选酶 | candidate/combination/step/hypothesis 身份绑定；精确反应、来源模板、完整/核心 Reaction SMILES、Rule SMARTS 分级检索；结构命中只供人工复核 | 新增 RetroPath enzyme selection；扩展 Selenzyme client、main-enzyme CLI 和 P7 | requirements、Top-N/审计候选、Selenzyme 证据、带哈希 selection manifest | P1–P9 定向 116 项、全仓库 463 项通过；P8 防篡改、多假设分离、结构请求缓存、相似度 1 不误判、真实 MNXref 身份冒烟通过 | P8；CLI/.gitignore 单次授权已使用 | 已完成 |
 | P10 manifest 晋升 | P2 | 将通过门禁的混合路线纳入正式设计 | 增加预测 provenance、验证状态、人工复核状态；只有 promoted 路线可写正式 manifest | src/write_manifest、src/info_show | 正式混合路线 manifest | 未验证预测路线不能进入表达设计 | P8、P9 | 待办 |
 | P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 待办 |
 
@@ -503,7 +526,7 @@ P5 返回三个候选文件的 SHA-256、候选/拒绝数量和 `RetroPathMergeR
 | 无明确结构或 SelenzymeRF 无候选 | 无法自动选择主酶 | 阻断 |
 | 非酶促步骤 | 不进入主酶选择 | 工艺/人工步骤 |
 
-后续需为 src/main_protein_selection/selenzyme_retrieval.py 增加 Reaction SMILES/SMARTS 查询，并保留：
+P9 已为 src/main_protein_selection/selenzyme_retrieval.py 增加 Reaction SMILES/SMARTS 查询，并保留：
 
 - reaction_similarity；
 - sim_RF 和 sim_2018；
@@ -512,6 +535,10 @@ P5 返回三个候选文件的 SHA-256、候选/拒绝数量和 `RetroPathMergeR
 - host taxonomic distance；
 - 方向证据；
 - substrate specificity unverified 标记。
+
+结构查询通过 JSON `smarts` 字段调用现有 `/REST/Query`；对 RP2 步骤，任何结构相似
+结果都只进入人工复核候选，不使用任意相似度阈值自动验证。只有正且合法的相似度、
+有效 UniProt 记录和无明确 EC/方向冲突的候选才会进入 Top-N。
 
 ## 10. 测试计划表
 
@@ -613,6 +640,10 @@ P8 已使用本阶段单次授权写入 `data/retropath/mnxref/3.0/`，修改
 `src/cli/commands/validate.py` 和 `.gitignore`；MNXref 原始 TSV 未保留且数据目录
 继续忽略，Git 只放行三个 P8 测试文件，未增加项目依赖。
 
+P9 已使用本阶段单次授权修改 `src/cli/commands/main_enzyme.py` 和 `.gitignore`；根目录
+仅放行 `tests/test_retropath_enzyme_selection.py`。复用现有远端 SelenzymeRF 配置，
+未修改 `services/`、`data/`、`.env` 或项目依赖。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -628,7 +659,7 @@ P8 已使用本阶段单次授权写入 `data/retropath/mnxref/3.0/`，修改
 - [x] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
 - [x] P7：增加候选路线信息展示
 - [x] P8：补全计量并接 strict GEM
-- [ ] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
+- [x] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
 - [ ] P10：加入人工复核和 promoted 晋升门禁
 - [ ] P11：完成隐藏反应、promiscuity 和青蒿素等回测
 

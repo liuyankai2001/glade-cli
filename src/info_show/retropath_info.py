@@ -11,6 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.main_protein_selection.retropath_enzyme_selection import (
+    ENZYME_CANDIDATE_COLUMNS,
+    ENZYME_REQUIREMENTS_FILE_NAME,
+    ENZYME_SELECTION_DIR_NAME,
+    ENZYME_SELECTION_FILE_NAME,
+    RETROPATH_ENZYME_SELECTION_SCHEMA,
+    SELENZYME_EVIDENCE_FILE_NAME,
+    STEP_ENZYME_AUDIT_FILE_NAME,
+    STEP_ENZYME_CANDIDATES_FILE_NAME,
+)
 from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
 from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_ROUTE_COLUMNS,
@@ -20,18 +30,17 @@ from src.pathway_analyze.retropath_analyze import (
     REJECTED_ROUTE_COLUMNS,
     REJECTED_ROUTES_FILE_NAME,
 )
-from src.pathway_analyze.retropath_pipeline import (
-    PIPELINE_RESULT_FILE_NAME,
-    RETROPATH_PIPELINE_SCHEMA,
-)
 from src.pathway_analyze.retropath_gem_validation import (
     RETROPATH_GEM_VALIDATION_SCHEMA,
     VALIDATION_FLUX_FILE_NAME,
     VALIDATION_MANIFEST_FILE_NAME,
     VALIDATION_SUMMARY_FILE_NAME,
 )
+from src.pathway_analyze.retropath_pipeline import (
+    PIPELINE_RESULT_FILE_NAME,
+    RETROPATH_PIPELINE_SCHEMA,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
-
 
 STATUS_NAMES = {
     "retropath_candidates_found": "已找到 RetroPath 候选路线",
@@ -122,6 +131,16 @@ class _P8Overlay:
     candidate_statuses: Mapping[int, str]
     passing_combinations: Mapping[int, tuple[str, ...]]
     flux_by_candidate_step: Mapping[tuple[int, str], float]
+    warning: str = ""
+
+
+@dataclass(frozen=True)
+class _P9Overlay:
+    state: str
+    status: str
+    recommended_combination_id: str
+    combinations: tuple[Mapping[str, Any], ...]
+    candidates_by_step: Mapping[int, tuple[Mapping[str, str], ...]]
     warning: str = ""
 
 
@@ -524,7 +543,7 @@ def _step_display(row: Mapping[str, str]) -> dict[str, Any]:
     cofactor_status = str(row.get("cofactor_reconstruction_status") or "").strip()
     warnings: list[str] = []
     if step_source == "retropath":
-        warnings.append("该步骤为 RetroPath 预测反应，尚未完成实验或 GEM 验证")
+        warnings.append("该步骤为 RetroPath 预测反应，需结合 P8/P9 结果和人工复核")
     if balance_status != "balanced":
         warnings.append(f"反应平衡状态：{balance_status or '未知'}")
     if cofactor_status != "complete":
@@ -554,6 +573,7 @@ def _step_display(row: Mapping[str, str]) -> dict[str, Any]:
         "RetroRules规则ID": _split(row.get("rule_ids")),
         "来源反应ID": _split(row.get("source_reaction_ids")),
         "来源EC编号": _split(row.get("source_ec_numbers")),
+        "来源UniProt": _split(row.get("source_uniprot_ids")),
         "最小规则特异性": (
             None
             if str(row.get("minimum_rule_specificity") or "").strip() == ""
@@ -758,6 +778,204 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
         )
 
 
+def _p9_overlay(
+    context: _RetroPathViewContext,
+    rank: int,
+    candidate_id: str,
+) -> _P9Overlay:
+    output_dir = (
+        context.output_dir
+        / ENZYME_SELECTION_DIR_NAME
+        / f"candidate_{rank}"
+    )
+    selection_path = output_dir / ENZYME_SELECTION_FILE_NAME
+    if not selection_path.is_file():
+        return _P9Overlay(
+            "not_run",
+            "not_run",
+            "",
+            tuple(),
+            {},
+            "尚未运行 P9 RetroPath 主酶候选检索",
+        )
+    try:
+        selection = json.loads(selection_path.read_text(encoding="utf-8-sig"))
+        if (
+            not isinstance(selection, dict)
+            or selection.get("schema_version") != RETROPATH_ENZYME_SELECTION_SCHEMA
+            or selection.get("target_compound") != context.target_compound
+            or _as_int(selection.get("expansion_depth"), "P9 expansion_depth")
+            != context.depth
+            or _as_int(selection.get("candidate_rank"), "P9 candidate_rank", minimum=1)
+            != rank
+            or selection.get("candidate_id") != candidate_id
+        ):
+            raise ValueError("P9 manifest identity mismatch")
+        inputs = _required_mapping(selection.get("inputs"), "P9 inputs")
+        pipeline_record = _required_mapping(
+            inputs.get("pipeline_result"),
+            "P9 inputs.pipeline_result",
+        )
+        if pipeline_record.get("sha256") != _sha256_file(
+            context.output_dir / PIPELINE_RESULT_FILE_NAME
+        ):
+            raise ValueError("P9 pipeline input hash is stale")
+        p8_record = _required_mapping(
+            inputs.get("p8_validation_manifest"),
+            "P9 inputs.p8_validation_manifest",
+        )
+        expected_p8 = (
+            context.output_dir / "gem_validation" / VALIDATION_MANIFEST_FILE_NAME
+        ).resolve()
+        if (
+            Path(str(p8_record.get("path") or "")).expanduser().resolve()
+            != expected_p8
+            or not expected_p8.is_file()
+            or p8_record.get("sha256") != _sha256_file(expected_p8)
+        ):
+            raise ValueError("P9 P8-validation input hash is stale")
+        pipeline_artifacts = _required_mapping(
+            context.pipeline.get("artifacts"),
+            "pipeline artifacts",
+        )
+        if inputs.get("candidate_routes_sha256") != _required_mapping(
+            pipeline_artifacts.get("candidate_routes"),
+            "pipeline artifacts.candidate_routes",
+        ).get("sha256") or inputs.get("candidate_steps_sha256") != _required_mapping(
+            pipeline_artifacts.get("candidate_steps"),
+            "pipeline artifacts.candidate_steps",
+        ).get("sha256"):
+            raise ValueError("P9 candidate input hashes are stale")
+        artifacts = _required_mapping(selection.get("artifacts"), "P9 artifacts")
+        verified_paths: dict[str, Path] = {}
+        for name in (
+            ENZYME_REQUIREMENTS_FILE_NAME,
+            STEP_ENZYME_CANDIDATES_FILE_NAME,
+            STEP_ENZYME_AUDIT_FILE_NAME,
+            SELENZYME_EVIDENCE_FILE_NAME,
+        ):
+            record = _required_mapping(
+                artifacts.get(name),
+                f"P9 artifacts.{name}",
+            )
+            expected = (output_dir / name).resolve()
+            if (
+                Path(str(record.get("path") or "")).expanduser().resolve()
+                != expected
+                or not expected.is_file()
+                or record.get("sha256") != _sha256_file(expected)
+            ):
+                raise ValueError(f"P9 artifact checksum mismatch: {name}")
+            verified_paths[name] = expected
+        candidate_path = verified_paths[STEP_ENZYME_CANDIDATES_FILE_NAME]
+        with candidate_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if tuple(reader.fieldnames or ()) != ENZYME_CANDIDATE_COLUMNS:
+                raise ValueError("P9 candidate artifact schema mismatch")
+            candidate_rows = tuple(dict(row) for row in reader)
+        by_step: dict[int, list[Mapping[str, str]]] = defaultdict(list)
+        for row in candidate_rows:
+            if (
+                _as_int(row.get("candidate_rank"), "P9 row candidate_rank", minimum=1)
+                != rank
+                or row.get("candidate_id") != candidate_id
+                or row.get("selection_status") != "selected"
+            ):
+                raise ValueError("P9 candidate row binding mismatch")
+            by_step[_as_int(row.get("step_index"), "P9 step_index", minimum=1)].append(
+                row
+            )
+        combinations_value = selection.get("combinations")
+        if not isinstance(combinations_value, list) or any(
+            not isinstance(item, Mapping) for item in combinations_value
+        ):
+            raise ValueError("P9 combinations are invalid")
+        combinations = tuple(dict(item) for item in combinations_value)
+        combination_ids = {
+            str(item.get("combination_id") or "") for item in combinations
+        }
+        if any(row.get("combination_id") not in combination_ids for row in candidate_rows):
+            raise ValueError("P9 candidate references an unknown combination")
+        status = str(selection.get("status") or "").strip()
+        if status not in {
+            "ready_for_review",
+            "partial_no_candidate",
+            "source_unavailable",
+        }:
+            raise ValueError("P9 status is invalid")
+        if (
+            selection.get("review_required") is not True
+            or selection.get("formal_promotion_allowed") is not False
+        ):
+            raise ValueError("P9 promotion/review gate is invalid")
+        return _P9Overlay(
+            "current",
+            status,
+            str(selection.get("recommended_combination_id") or ""),
+            combinations,
+            {
+                step_index: tuple(sorted(
+                    rows,
+                    key=lambda row: (
+                        _as_int(
+                            row.get("combination_rank"),
+                            "P9 combination_rank",
+                            minimum=1,
+                        ),
+                        _as_int(
+                            row.get("protein_candidate_rank"),
+                            "P9 protein_candidate_rank",
+                            minimum=1,
+                        ),
+                    ),
+                ))
+                for step_index, rows in by_step.items()
+            },
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return _P9Overlay(
+            "stale",
+            "stale",
+            "",
+            tuple(),
+            {},
+            f"P9 主酶候选结果已过期或损坏，未应用：{exc}",
+        )
+
+
+def _p9_candidate_display(row: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "计量组合排名": _as_int(
+            row.get("combination_rank"),
+            "P9 combination_rank",
+            minimum=1,
+        ),
+        "计量组合ID": str(row.get("combination_id") or ""),
+        "计量假设ID": str(row.get("hypothesis_id") or ""),
+        "蛋白候选排名": _as_int(
+            row.get("protein_candidate_rank"),
+            "P9 protein_candidate_rank",
+            minimum=1,
+        ),
+        "UniProt": str(row.get("accession") or ""),
+        "蛋白名称": str(row.get("protein_name") or ""),
+        "来源物种": str(row.get("organism_name") or ""),
+        "Reviewed": _as_bool(row.get("reviewed"), "P9 reviewed"),
+        "证据等级": str(row.get("evidence_tier") or ""),
+        "反应匹配状态": str(row.get("fit_status") or ""),
+        "必须人工复核": _as_bool(
+            row.get("manual_review_required"),
+            "P9 manual_review_required",
+        ),
+        "Reaction similarity": str(row.get("reaction_similarity") or ""),
+        "sim_RF": str(row.get("sim_rf") or ""),
+        "匹配反应": str(row.get("matched_reaction_id") or ""),
+        "EC": _split(row.get("ec_numbers")),
+        "Rhea": _split(row.get("matched_rhea_ids")),
+        "警告": _split(str(row.get("warnings") or "").replace(" | ", ";")),
+    }
+
+
 def get_retropath_info(config: Any) -> dict[str, Any]:
     """Return a compact Chinese summary of one P6 RetroPath run."""
 
@@ -787,7 +1005,8 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
     input_summary = _required_mapping(pipeline.get("input_summary"), "input_summary")
     overlay = _p8_overlay(context)
     route_summaries = [_route_summary(row) for row in context.candidate_routes]
-    for route_summary in route_summaries:
+    p9_warnings: list[str] = []
+    for route_row, route_summary in zip(context.candidate_routes, route_summaries):
         rank = int(route_summary["候选排名"])
         route_summary["P8严格GEM状态"] = overlay.candidate_statuses.get(
             rank,
@@ -796,6 +1015,15 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         route_summary["P8可行计量假设数"] = len(
             overlay.passing_combinations.get(rank, tuple())
         )
+        p9 = _p9_overlay(
+            context,
+            rank,
+            str(route_row.get("candidate_id") or "").strip(),
+        )
+        route_summary["P9主酶候选状态"] = p9.status
+        route_summary["P9候选计量组合数"] = len(p9.combinations)
+        if p9.state == "stale" and p9.warning:
+            p9_warnings.append(p9.warning)
     return {
         **common,
         "RetroPath任务ID": str(pipeline.get("job_id") or "").strip(),
@@ -824,7 +1052,11 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         "P8验证状态": overlay.state,
         "候选路线摘要": route_summaries,
         "拒绝原因统计": _rejection_summary(context.rejected_routes),
-        "警告": _unique([*_success_warnings(context), overlay.warning]),
+        "警告": _unique([
+            *_success_warnings(context),
+            overlay.warning,
+            *p9_warnings,
+        ]),
     }
 
 
@@ -879,6 +1111,11 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
     common["P8可行计量假设"] = list(
         overlay.passing_combinations.get(rank, tuple())
     )
+    p9 = _p9_overlay(context, rank, candidate_id)
+    common["P9结果状态"] = p9.state
+    common["P9主酶候选状态"] = p9.status
+    common["P9推荐计量组合"] = p9.recommended_combination_id
+    common["P9计量组合摘要"] = list(p9.combinations)
     raw_step = getattr(config, "step", None)
     if raw_step is not None:
         step_index = _as_int(raw_step, "step", minimum=1)
@@ -891,6 +1128,10 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
         step_detail["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(
             (rank, str(candidate_steps[step_index - 1].get("step_id") or ""))
         )
+        step_detail["P9主酶候选"] = [
+            _p9_candidate_display(row)
+            for row in p9.candidates_by_step.get(step_index, tuple())
+        ]
         return {
             **common,
             "步骤编号": step_index,
@@ -900,8 +1141,24 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
     route_summary = _route_summary(route)
     displayed_steps = [_step_display(row) for row in candidate_steps]
     for row, displayed in zip(candidate_steps, displayed_steps):
+        step_index = _as_int(row.get("step_index"), "step_index", minimum=1)
         displayed["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(
             (rank, str(row.get("step_id") or ""))
+        )
+        displayed["P9主酶候选数"] = len(
+            p9.candidates_by_step.get(step_index, tuple())
+        )
+    if overlay.state != "current":
+        validation_warning = (
+            "该候选尚未完成有效的 P8 计量和严格 GEM 验证，不可进入正式设计"
+        )
+    elif p9.state != "current":
+        validation_warning = (
+            "该候选已有 P8 结果，但尚未完成有效的 P9 主酶候选检索"
+        )
+    else:
+        validation_warning = (
+            "P8/P9 仅提供计算可行性和候选酶证据，RP2 步骤仍需人工复核"
         )
     return {
         **common,
@@ -919,7 +1176,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
         "反应DAG步骤": displayed_steps,
         "风险提示": _unique(
             [
-                "该候选尚未完成计量、GEM 和酶证据验证，不可直接进入正式设计",
+                validation_warning,
                 *(
                     ["该候选包含辅助片段，共底物或辅因子仍需恢复"]
                     if route_summary["包含辅助片段"]
@@ -931,6 +1188,8 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
                     for warning in step["风险提示"]
                 ],
                 overlay.warning,
+                p9.warning,
+                "RP2 主酶候选即使结构相似度为 1 也仍需人工复核，P9 不允许正式晋升",
             ]
         ),
     }

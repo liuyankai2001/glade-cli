@@ -970,6 +970,13 @@ def select_main_enzymes(
 def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     """Run main-enzyme selection using this project's ``RunConfig`` paths."""
 
+    if getattr(config, "retropath_candidate", None) is not None:
+        from src.main_protein_selection.retropath_enzyme_selection import (
+            run_retropath_enzyme_selection,
+        )
+
+        return run_retropath_enzyme_selection(config)
+
     if hasattr(config, "top_n"):
         selection_options.setdefault("top_n", config.top_n)
     selection_options.setdefault(

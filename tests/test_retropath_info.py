@@ -17,6 +17,16 @@ from src.info_show import (
     get_retropath_info,
     run_info,
 )
+from src.main_protein_selection.retropath_enzyme_selection import (
+    ENZYME_CANDIDATE_COLUMNS,
+    ENZYME_REQUIREMENTS_FILE_NAME,
+    ENZYME_SELECTION_DIR_NAME,
+    ENZYME_SELECTION_FILE_NAME,
+    RETROPATH_ENZYME_SELECTION_SCHEMA,
+    SELENZYME_EVIDENCE_FILE_NAME,
+    STEP_ENZYME_AUDIT_FILE_NAME,
+    STEP_ENZYME_CANDIDATES_FILE_NAME,
+)
 from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_ROUTE_COLUMNS,
     CANDIDATE_ROUTES_FILE_NAME,
@@ -25,15 +35,15 @@ from src.pathway_analyze.retropath_analyze import (
     REJECTED_ROUTE_COLUMNS,
     REJECTED_ROUTES_FILE_NAME,
 )
-from src.pathway_analyze.retropath_pipeline import (
-    PIPELINE_RESULT_FILE_NAME,
-    RETROPATH_PIPELINE_SCHEMA,
-)
 from src.pathway_analyze.retropath_gem_validation import (
     RETROPATH_GEM_VALIDATION_SCHEMA,
     VALIDATION_FLUX_FILE_NAME,
     VALIDATION_MANIFEST_FILE_NAME,
     VALIDATION_SUMMARY_FILE_NAME,
+)
+from src.pathway_analyze.retropath_pipeline import (
+    PIPELINE_RESULT_FILE_NAME,
+    RETROPATH_PIPELINE_SCHEMA,
 )
 
 
@@ -565,6 +575,132 @@ class RetroPathInfoTests(unittest.TestCase):
         stale = get_retropath_info(self.config)
         self.assertEqual("stale", stale["P8验证状态"])
         self.assertEqual("未验证", stale["候选路线摘要"][0]["P8严格GEM状态"])
+
+    def test_current_p9_candidates_are_overlaid_but_tampered_data_is_not(self) -> None:
+        validation_dir = self.retropath_dir / "gem_validation"
+        validation_dir.mkdir()
+        p8_manifest_path = validation_dir / VALIDATION_MANIFEST_FILE_NAME
+        p8_manifest_path.write_text("{}", encoding="utf-8")
+        pipeline_path = self.retropath_dir / PIPELINE_RESULT_FILE_NAME
+        pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+        output_dir = (
+            self.retropath_dir
+            / ENZYME_SELECTION_DIR_NAME
+            / "candidate_1"
+        )
+        output_dir.mkdir(parents=True)
+        candidate_path = output_dir / STEP_ENZYME_CANDIDATES_FILE_NAME
+        with candidate_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=ENZYME_CANDIDATE_COLUMNS,
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerow({
+                "candidate_rank": 1,
+                "candidate_id": self.route_rows[0]["candidate_id"],
+                "combination_rank": 1,
+                "combination_id": "RP2COMB:test",
+                "step_index": 3,
+                "step_id": "RP2STEP:3",
+                "step_source": "retropath",
+                "hypothesis_id": "RP2STOICH:test",
+                "protein_candidate_rank": 1,
+                "accession": "P12345",
+                "protein_name": "fixture enzyme",
+                "organism_name": "Escherichia coli",
+                "reviewed": "true",
+                "evidence_tier": "full_reaction_similarity",
+                "fit_status": "manual_review",
+                "manual_review_required": "true",
+                "selection_status": "selected",
+                "reaction_similarity": 1.0,
+                "sim_rf": 0.9,
+                "matched_reaction_id": "MNXR1",
+                "ec_numbers": "1.1.1.1",
+            })
+        requirements_path = output_dir / ENZYME_REQUIREMENTS_FILE_NAME
+        requirements_path.write_text("{}", encoding="utf-8")
+        evidence_path = output_dir / SELENZYME_EVIDENCE_FILE_NAME
+        evidence_path.write_text("{}", encoding="utf-8")
+        audit_path = output_dir / STEP_ENZYME_AUDIT_FILE_NAME
+        with audit_path.open("w", encoding="utf-8", newline="") as handle:
+            csv.DictWriter(
+                handle,
+                fieldnames=ENZYME_CANDIDATE_COLUMNS,
+                lineterminator="\n",
+            ).writeheader()
+        selection = {
+            "schema_version": RETROPATH_ENZYME_SELECTION_SCHEMA,
+            "target_compound": "C12345",
+            "expansion_depth": 2,
+            "candidate_rank": 1,
+            "candidate_id": self.route_rows[0]["candidate_id"],
+            "status": "ready_for_review",
+            "recommended_combination_id": "RP2COMB:test",
+            "combinations": [{
+                "combination_rank": 1,
+                "combination_id": "RP2COMB:test",
+                "status": "ready_for_review",
+            }],
+            "inputs": {
+                "pipeline_result": {
+                    "path": str(pipeline_path.resolve()),
+                    "sha256": self.sha256(pipeline_path),
+                },
+                "p8_validation_manifest": {
+                    "path": str(p8_manifest_path.resolve()),
+                    "sha256": self.sha256(p8_manifest_path),
+                },
+                "candidate_routes_sha256": pipeline["artifacts"][
+                    "candidate_routes"
+                ]["sha256"],
+                "candidate_steps_sha256": pipeline["artifacts"][
+                    "candidate_steps"
+                ]["sha256"],
+            },
+            "artifacts": {
+                name: {
+                    "path": str(path.resolve()),
+                    "sha256": self.sha256(path),
+                }
+                for name, path in {
+                    ENZYME_REQUIREMENTS_FILE_NAME: requirements_path,
+                    STEP_ENZYME_CANDIDATES_FILE_NAME: candidate_path,
+                    STEP_ENZYME_AUDIT_FILE_NAME: audit_path,
+                    SELENZYME_EVIDENCE_FILE_NAME: evidence_path,
+                }.items()
+            },
+            "review_required": True,
+            "formal_promotion_allowed": False,
+        }
+        (output_dir / ENZYME_SELECTION_FILE_NAME).write_text(
+            json.dumps(selection),
+            encoding="utf-8",
+        )
+
+        summary = get_retropath_info(self.config)
+        self.assertEqual(
+            "ready_for_review",
+            summary["候选路线摘要"][0]["P9主酶候选状态"],
+        )
+        self.config.retropath_candidate = 1
+        candidate = get_retropath_candidate_info(self.config)
+        self.assertEqual("current", candidate["P9结果状态"])
+        self.assertEqual("RP2COMB:test", candidate["P9推荐计量组合"])
+        self.config.step = 3
+        step = get_retropath_candidate_info(self.config)
+        enzyme = step["步骤详情"]["P9主酶候选"][0]
+        self.assertEqual("P12345", enzyme["UniProt"])
+        self.assertTrue(enzyme["必须人工复核"])
+
+        with candidate_path.open("a", encoding="utf-8") as handle:
+            handle.write("tampered\n")
+        self.config.step = None
+        stale = get_retropath_candidate_info(self.config)
+        self.assertEqual("stale", stale["P9结果状态"])
+        self.assertEqual(0, stale["反应DAG步骤"][2]["P9主酶候选数"])
 
     def test_candidate_and_step_indexes_must_be_positive_and_available(self) -> None:
         self.config.retropath_candidate = 0

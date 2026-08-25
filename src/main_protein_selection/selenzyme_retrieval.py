@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -22,7 +23,6 @@ from src.main_protein_selection.uniprot_protein_candidates import (
     hard_filter_candidate_without_ec,
     search_uniprot_by_query,
 )
-
 
 EXACT_SIMILARITY_TOLERANCE = 1e-6
 COMPLETE_EC_PATTERN = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
@@ -79,10 +79,16 @@ def _decode_selenzyme_rows(value: Any) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for index in sorted(
             indexes,
-            key=lambda item: (not item.isdigit(), int(item) if item.isdigit() else item),
+            key=lambda item: (
+                not item.isdigit(),
+                int(item) if item.isdigit() else item,
+            ),
         ):
             row = {
-                str(column): values.get(index, values.get(int(index)) if index.isdigit() else None)
+                str(column): values.get(
+                    index,
+                    values.get(int(index)) if index.isdigit() else None,
+                )
                 for column, values in data.items()
                 if isinstance(values, dict)
             }
@@ -106,9 +112,10 @@ def _float_or_none(value: Any) -> float | None:
     if value is None or str(value).strip() == "":
         return None
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return None
+    return result if math.isfinite(result) else None
 
 
 def _ec_numbers(value: Any) -> set[str]:
@@ -129,7 +136,7 @@ def classify_selenzyme_ec_relation(
     candidate_ecs: Any,
     reported_ecs: Any,
 ) -> str:
-    """Classify protein EC evidence without confusing reaction and protein annotations."""
+    """Classify protein EC evidence without mixing reaction/protein annotations."""
 
     required = _ec_numbers(required_ecs)
     candidate = _ec_numbers(candidate_ecs)
@@ -192,7 +199,10 @@ def selenzyme_match_type(row: dict[str, Any]) -> str:
     if not isinstance(value, (int, float)):
         return "invalid"
     similarity = float(value)
-    if similarity < -EXACT_SIMILARITY_TOLERANCE or similarity > 1.0 + EXACT_SIMILARITY_TOLERANCE:
+    if (
+        similarity < -EXACT_SIMILARITY_TOLERANCE
+        or similarity > 1.0 + EXACT_SIMILARITY_TOLERANCE
+    ):
         return "invalid"
     if abs(similarity - 1.0) <= EXACT_SIMILARITY_TOLERANCE:
         return "exact"
@@ -228,6 +238,98 @@ class SelenzymeClient:
             else f"{self.rest_url}/Query"
         )
 
+    def _submit_query(
+        self,
+        *,
+        payload: dict[str, Any],
+        database: str,
+        query_type: str,
+        query_value: str,
+        result_field: str,
+        cache_schema: str,
+        query_token: str,
+        extra_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cache_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "cache_schema": cache_schema,
+                    "url": self.query_url,
+                    "payload": payload,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        query_id = f"selenzyme_{database}_{query_token}_{cache_key}"
+        cache_path = self.cache_root / f"{_safe_token(query_id)}.json"
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                cached = None
+            if (
+                isinstance(cached, dict)
+                and cached.get("cache_schema") == cache_schema
+            ):
+                cached["cache_hit"] = True
+                return cached
+
+        last_error: Exception | None = None
+        for attempt in range(SELENZYME_HTTP_CONFIG.retries):
+            try:
+                response = self.session.request(
+                    "POST",
+                    self.query_url,
+                    json=payload,
+                    timeout=SELENZYME_HTTP_CONFIG.timeout_seconds,
+                )
+                response.raise_for_status()
+                envelope = response.json()
+                if not isinstance(envelope, dict):
+                    raise ValueError("Selenzyme response root is not an object")
+                if envelope.get("data") is None:
+                    raise ValueError("Selenzyme response data is null")
+                rows = [
+                    _normalize_row(row, index)
+                    for index, row in enumerate(
+                        _decode_selenzyme_rows(envelope.get("data")),
+                        start=1,
+                    )
+                ]
+                raw_text = getattr(response, "text", "") or json.dumps(
+                    envelope,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                result = {
+                    "cache_schema": cache_schema,
+                    "query_id": query_id,
+                    "query_type": query_type,
+                    "query_database": database,
+                    "query_value": query_value,
+                    result_field: query_value,
+                    "status": "ok" if rows else "no_hit",
+                    "request": {"url": self.query_url, "payload": payload},
+                    "app": str(envelope.get("app") or ""),
+                    "version": str(envelope.get("version") or ""),
+                    "rows": rows,
+                    "response_sha256": hashlib.sha256(
+                        raw_text.encode("utf-8")
+                    ).hexdigest(),
+                    "cache_hit": False,
+                    **(extra_result or {}),
+                }
+                _json_atomic(cache_path, result)
+                return result
+            except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt + 1 < SELENZYME_HTTP_CONFIG.retries:
+                    time.sleep(SELENZYME_HTTP_CONFIG.sleep_seconds * (2**attempt))
+        raise SelenzymeSourceUnavailable(
+            f"Selenzyme query failed for {query_type}/{query_token}: "
+            f"{last_error or 'unknown error'}"
+        )
+
     def _query_identifier(
         self,
         identifier: str,
@@ -249,74 +351,14 @@ class SelenzymeClient:
             "noMSA": True,
             "direction": 0,
         }
-        cache_key = hashlib.sha256(
-            json.dumps(
-                {
-                    "cache_schema": "selenzyme_client.v3",
-                    "url": self.query_url,
-                    "payload": payload,
-                },
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()[:20]
-        query_id = f"selenzyme_{database}_{normalized}_{cache_key}"
-        cache_path = self.cache_root / f"{_safe_token(query_id)}.json"
-        if cache_path.exists():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if isinstance(cached, dict):
-                cached["cache_hit"] = True
-                return cached
-
-        last_error: Exception | None = None
-        for attempt in range(SELENZYME_HTTP_CONFIG.retries):
-            try:
-                response = self.session.request(
-                    "POST",
-                    self.query_url,
-                    json=payload,
-                    timeout=SELENZYME_HTTP_CONFIG.timeout_seconds,
-                )
-                response.raise_for_status()
-                envelope = response.json()
-                if not isinstance(envelope, dict):
-                    raise ValueError("Selenzyme response root is not an object")
-                rows = [
-                    _normalize_row(row, index)
-                    for index, row in enumerate(
-                        _decode_selenzyme_rows(envelope.get("data")),
-                        start=1,
-                    )
-                ]
-                raw_text = getattr(response, "text", "") or json.dumps(
-                    envelope,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                result = {
-                    "cache_schema": "selenzyme_client.v3",
-                    "query_id": query_id,
-                    "query_type": query_type,
-                    "query_database": database,
-                    "query_value": normalized,
-                    result_field: normalized,
-                    "status": "ok" if rows else "no_hit",
-                    "request": {"url": self.query_url, "payload": payload},
-                    "app": str(envelope.get("app") or ""),
-                    "version": str(envelope.get("version") or ""),
-                    "rows": rows,
-                    "response_sha256": hashlib.sha256(
-                        raw_text.encode("utf-8")
-                    ).hexdigest(),
-                    "cache_hit": False,
-                }
-                _json_atomic(cache_path, result)
-                return result
-            except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
-                last_error = exc
-                if attempt + 1 < SELENZYME_HTTP_CONFIG.retries:
-                    time.sleep(SELENZYME_HTTP_CONFIG.sleep_seconds * (2**attempt))
-        raise SelenzymeSourceUnavailable(
-            f"Selenzyme query failed for {normalized}: {last_error or 'unknown error'}"
+        return self._submit_query(
+            payload=payload,
+            database=database,
+            query_type=query_type,
+            query_value=normalized,
+            result_field=result_field,
+            cache_schema="selenzyme_client.v3",
+            query_token=normalized,
         )
 
     def query_kegg_reaction(
@@ -359,6 +401,51 @@ class SelenzymeClient:
             targets=targets,
         )
 
+    def query_reaction_smarts(
+        self,
+        reaction: str,
+        *,
+        query_kind: str,
+        host_taxon_id: int,
+        targets: int,
+    ) -> dict[str, Any]:
+        """Submit a concrete reaction SMILES or RR02 SMARTS query."""
+
+        normalized = str(reaction or "").strip()
+        allowed_kinds = {
+            "full_reaction_smiles",
+            "core_reaction_smiles",
+            "rule_smarts",
+        }
+        if query_kind not in allowed_kinds:
+            raise ValueError(
+                f"unsupported Selenzyme structural query kind: {query_kind}"
+            )
+        if normalized.count(">>") != 1:
+            raise ValueError("Selenzyme structural query must contain exactly one >>")
+        query_sha256 = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        payload = {
+            "smarts": normalized,
+            "targets": int(targets),
+            "host": str(int(host_taxon_id)),
+            "noMSA": True,
+            "direction": 0,
+            "fp": "Morgan",
+        }
+        return self._submit_query(
+            payload=payload,
+            database="smarts",
+            query_type=f"selenzyme_by_{query_kind}",
+            query_value=normalized,
+            result_field="reaction_smarts",
+            cache_schema="selenzyme_client.v4",
+            query_token=query_sha256[:20],
+            extra_result={
+                "query_kind": query_kind,
+                "query_sha256": query_sha256,
+            },
+        )
+
 
 def retrieve_selenzyme_candidates(
     requirement: dict[str, Any],
@@ -380,6 +467,8 @@ def retrieve_selenzyme_candidates(
     seen_accessions: set[str] = set()
     query_type = str(query_result.get("query_type") or "")
     is_ec_query = query_type == "selenzyme_by_ec_number"
+    query_kind = str(query_result.get("query_kind") or "")
+    is_structural_query = bool(query_kind)
     queried_ec = str(query_result.get("ec_number") or "").strip()
     required_ecs = _ec_numbers(
         requirement.get("ec_numbers")
@@ -407,7 +496,9 @@ def retrieve_selenzyme_candidates(
         row["gate_status"] = "rejected"
         row["rejection_reasons"] = []
         if row["match_type"] == "invalid":
-            row["rejection_reasons"] = ["missing_or_invalid_combined_reaction_similarity"]
+            row["rejection_reasons"] = [
+                "missing_or_invalid_combined_reaction_similarity"
+            ]
             audit_rows.append(row)
             continue
         if is_ec_query and queried_ec not in _ec_numbers(row.get("ec_number")):
@@ -466,6 +557,8 @@ def retrieve_selenzyme_candidates(
         retrieval_strategy = (
             "selenzyme_ec_risk"
             if is_ec_query
+            else f"selenzyme_{query_kind}_{match_type}"
+            if is_structural_query
             else f"selenzyme_kegg_{match_type}"
         )
         candidate = candidate_from_reaction_entry(
@@ -476,8 +569,14 @@ def retrieve_selenzyme_candidates(
             matched_rhea_ids=[],
             allow_transmembrane=allow_transmembrane,
             function_evidence_reason=(
-                "function: SelenzymeRF EC association; locked substrate specificity unverified"
+                "function: SelenzymeRF EC association; locked substrate "
+                "specificity unverified"
                 if is_ec_query
+                else (
+                    "function: SelenzymeRF structural prediction; "
+                    "catalytic specificity requires review"
+                )
+                if is_structural_query
                 else "function: exact SelenzymeRF reaction match"
                 if match_type == "exact"
                 else "function: SelenzymeRF similar-reaction candidate"
@@ -514,6 +613,8 @@ def retrieve_selenzyme_candidates(
         candidate.reaction_confidence = (
             "selenzyme_ec_risk"
             if is_ec_query
+            else "selenzyme_structural_prediction"
+            if is_structural_query
             else "selenzyme_exact"
             if match_type == "exact"
             else "selenzyme_risk"
@@ -536,17 +637,22 @@ def retrieve_selenzyme_candidates(
             candidate.selenzyme_risk_status = ec_relation
             relation_warning = {
                 EC_RELATION_EXACT: (
-                    "Current UniProt annotation contains the queried EC, but the locked substrate/product specificity remains unverified"
+                    "Current UniProt annotation contains the queried EC, but the "
+                    "locked substrate/product specificity remains unverified"
                 ),
                 EC_RELATION_SHARED_REACTION: (
-                    "Current UniProt EC and the queried EC overlap only through the same Selenzyme reaction record; the locked substrate/product specificity remains unverified"
+                    "Current UniProt EC and the queried EC overlap only through "
+                    "the same Selenzyme reaction record; the locked "
+                    "substrate/product specificity remains unverified"
                 ),
                 EC_RELATION_UNANNOTATED: (
-                    "SelenzymeRF EC association is not confirmed by the current UniProt EC annotation"
+                    "SelenzymeRF EC association is not confirmed by the current "
+                    "UniProt EC annotation"
                 ),
             }[ec_relation]
             current_activity = (
-                f"Current UniProt catalytic activity: {candidate.catalytic_activities[0]}"
+                "Current UniProt catalytic activity: "
+                f"{candidate.catalytic_activities[0]}"
                 if candidate.catalytic_activities
                 else ""
             )
@@ -561,7 +667,8 @@ def retrieve_selenzyme_candidates(
             candidate.warnings = list(dict.fromkeys(
                 candidate.warnings
                 + [
-                    "SelenzymeRF EC association does not establish the locked substrate/product reaction",
+                    "SelenzymeRF EC association does not establish the locked "
+                    "substrate/product reaction",
                     relation_warning,
                     *([current_activity] if current_activity else []),
                 ]
@@ -577,6 +684,16 @@ def retrieve_selenzyme_candidates(
                 + [
                     "SelenzymeRF risk fallback accepted: combined reaction similarity="
                     f"{similarity:.10g} (<1)"
+                ]
+            ))
+        if is_structural_query:
+            candidate.selenzyme_risk_status = "manual_review_required"
+            candidate.warnings = list(dict.fromkeys(
+                candidate.warnings
+                + [
+                    "SelenzymeRF structural similarity is predictive evidence only",
+                    "The RP2 substrate, cofactor, and direction specificity "
+                    "require human review",
                 ]
             ))
         row["gate_status"] = "passed"

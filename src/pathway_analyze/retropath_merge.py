@@ -66,6 +66,7 @@ class HybridCandidateStep:
     rule_ids: Tuple[str, ...] = tuple()
     source_reaction_ids: Tuple[str, ...] = tuple()
     source_ec_numbers: Tuple[str, ...] = tuple()
+    source_uniprot_ids: Tuple[str, ...] = tuple()
     minimum_rule_specificity: Optional[int] = None
     worst_rule_score: Optional[float] = None
     score_semantics: Optional[str] = None
@@ -105,6 +106,7 @@ class HybridCandidateStep:
             "rule_ids": list(self.rule_ids),
             "source_reaction_ids": list(self.source_reaction_ids),
             "source_ec_numbers": list(self.source_ec_numbers),
+            "source_uniprot_ids": list(self.source_uniprot_ids),
             "minimum_rule_specificity": self.minimum_rule_specificity,
             "worst_rule_score": self.worst_rule_score,
             "score_semantics": self.score_semantics,
@@ -443,6 +445,9 @@ def _retropath_step(
         source_ec_numbers=_stable_unique(
             value for item in flipped for value in item.source_ec_numbers
         ),
+        source_uniprot_ids=_stable_unique(
+            value for item in flipped for value in item.source_uniprot_ids
+        ),
         minimum_rule_specificity=min(specificities),
         worst_rule_score=_worst_score(scores, semantics[0]),
         score_semantics=semantics[0],
@@ -488,6 +493,7 @@ def _kegg_step(step: PlanStep) -> HybridCandidateStep:
         is_endogenous=bool(step.is_endogenous),
         source_reaction_ids=_stable_unique(step.source_reaction_ids or (reaction_id,)),
         source_ec_numbers=_stable_unique(step.option.reaction.enzyme_ecs),
+        source_uniprot_ids=tuple(),
     )
 
 

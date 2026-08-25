@@ -78,6 +78,7 @@ CANDIDATE_STEP_COLUMNS = (
     "rule_ids",
     "source_reaction_ids",
     "source_ec_numbers",
+    "source_uniprot_ids",
     "minimum_rule_specificity",
     "worst_rule_score",
     "score_semantics",
@@ -245,6 +246,7 @@ def _candidate_step_rows(
             "rule_ids": _join(step.rule_ids),
             "source_reaction_ids": _join(step.source_reaction_ids),
             "source_ec_numbers": _join(step.source_ec_numbers),
+            "source_uniprot_ids": _join(step.source_uniprot_ids),
             "minimum_rule_specificity": (
                 ""
                 if step.minimum_rule_specificity is None

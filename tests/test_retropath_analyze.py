@@ -89,6 +89,7 @@ class RetroPathAnalyzeTests(unittest.TestCase):
             rule_ids=("RULE-A", "RULE-B"),
             source_reaction_ids=("MNXR1", "MNXR2"),
             source_ec_numbers=("1.1.1.1", "1.1.1.2"),
+            source_uniprot_ids=("P12345", "Q67890"),
             minimum_rule_specificity=8,
             worst_rule_score=0.5,
             score_semantics="lower_is_better",
@@ -160,6 +161,7 @@ class RetroPathAnalyzeTests(unittest.TestCase):
             f"RP2:{'3' * 64};RP2:{'4' * 64}",
         )
         self.assertEqual(step_rows[1]["depends_on_step_ids"], step_rows[0]["step_id"])
+        self.assertEqual(step_rows[1]["source_uniprot_ids"], "P12345;Q67890")
         self.assertEqual(rejection_rows[0]["source_stage"], "p4")
 
     def test_output_bytes_and_hashes_are_deterministic_lf_utf8(self) -> None:

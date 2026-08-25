@@ -370,6 +370,57 @@ outputs/C00811/kegg_gap_C00811/depth0/retropath/gem_validation/
 P9 酶证据和人工复核。运行后可继续使用 `info --retropath` 或
 `info --retropath-candidate N` 查看 P8 状态和步骤定向通量。
 
+### 7.2 为 RetroPath 候选生成主酶候选
+
+候选 1 通过 P8 后执行：
+
+```powershell
+uv run python main.py main-enzyme -i demo01.json --retropath-candidate 1 -d 0
+```
+
+系统自动处理候选 1 下全部通过严格 GEM 验证的计量组合。用户不需要输入
+`combination_id` 或 `hypothesis_id`；不同辅因子假设会在内部独立检索和展示。使用
+`--top-n 10` 可以调整每一步保留的候选数量。
+
+主要输出：
+
+```text
+outputs/C00811/kegg_gap_C00811/depth0/retropath/enzyme_selection/candidate_1/
+├── retropath_enzyme_requirements.json
+├── retropath_step_enzyme_candidates.csv
+├── retropath_step_enzyme_candidate_audit.csv
+├── retropath_selenzyme_evidence.json
+└── retropath_enzyme_selection.json
+```
+
+检索优先使用正式 KEGG/Rhea 反应映射，其次使用 RR02 来源模板 EC/Rhea/UniProt，最后
+使用完整 Reaction SMILES、核心 Reaction SMILES 或 Rule SMARTS 查询 SelenzymeRF。
+只有完整计量和结构与来源反应完全相同，来源反应号才被视为精确映射。
+
+SelenzymeRF 结构相似结果始终是预测性证据：即使 reaction similarity 为 1，也必须
+人工复核底物、辅因子、方向和催化活性，不会自动标记为已验证酶。P9 结果固定包含：
+
+```json
+{
+  "review_required": true,
+  "formal_promotion_allowed": false
+}
+```
+
+查看路线全部 P9 状态和候选数量：
+
+```powershell
+uv run python main.py info -i demo01.json --retropath-candidate 1 -d 0
+```
+
+只查看第 3 步候选酶：
+
+```powershell
+uv run python main.py info -i demo01.json --retropath-candidate 1 --step 3 -d 0
+```
+
+P9 只生成和排序候选；最终路线、计量组合和酶的人工确认由 P10 写入流程完成。
+
 ## 8. 选择并写入路线
 
 路线 1 通过独立验证后执行：
@@ -986,6 +1037,11 @@ python main.py chassis -i demo01.json
 
 检查 KEGG、Rhea、UniProt 和 Selenzyme 服务是否可访问；如果启用了
 `--literature-search`，同时检查 `.env` 中的模型配置。
+
+RetroPath P9 返回 `source_unavailable` 时，已获得的来源模板候选仍会保留，但缺少
+外部服务支持的步骤不会假装完成。返回 `partial_no_candidate` 表示查询已完成但至少
+一个需酶步骤没有候选。检查 `.env` 中的 `SELENZYME_REST_URL` 后重试；P9 当前不支持
+将 `--literature-search` 与 `--retropath-candidate` 同时使用。
 
 ### 19.6 辅助蛋白研究失败
 

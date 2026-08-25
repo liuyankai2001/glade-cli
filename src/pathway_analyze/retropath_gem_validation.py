@@ -105,6 +105,7 @@ TERM_COLUMNS = (
     "charge",
     "inchi",
     "inchikey",
+    "smiles",
     "xrefs",
 )
 SUMMARY_COLUMNS = (
@@ -852,6 +853,7 @@ def _hypothesis_rows(
             "charge": term.compound.charge,
             "inchi": term.compound.inchi,
             "inchikey": term.compound.inchikey,
+            "smiles": term.compound.smiles,
             "xrefs": ";".join(term.compound.xrefs),
         }
         for term in hypothesis.terms

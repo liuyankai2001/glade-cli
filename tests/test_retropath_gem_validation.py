@@ -13,14 +13,15 @@ import cobra
 
 from src.cli.app import build_parser
 from src.pathway_analyze.gem_validation import KeggRestClient, run_validation
-from src.pathway_analyze.retropath_gem_validation import _validate_combination
-from src.pathway_analyze.retropath_gem_validation import (
-    validate_retropath_candidates,
-)
 from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_ROUTE_COLUMNS,
     CANDIDATE_STEP_COLUMNS,
     REJECTED_ROUTE_COLUMNS,
+)
+from src.pathway_analyze.retropath_gem_validation import (
+    STOICHIOMETRY_TERMS_FILE_NAME,
+    _validate_combination,
+    validate_retropath_candidates,
 )
 from src.pathway_analyze.retropath_pipeline import RETROPATH_PIPELINE_SCHEMA
 from src.pathway_analyze.retropath_stoichiometry import (
@@ -484,6 +485,14 @@ class RetroPathStrictGemTests(unittest.TestCase):
         )
         self.assertFalse(manifest["formal_promotion_allowed"])
         self.assertEqual(1, result["summary_row_count"])
+        with (validation_dir / STOICHIOMETRY_TERMS_FILE_NAME).open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            terms = list(csv.DictReader(handle))
+        self.assertTrue(terms)
+        self.assertTrue(all("smiles" in row for row in terms))
 
 
 if __name__ == "__main__":
