@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client 已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -110,6 +110,32 @@ P3 验收记录：
 - 14 项 MockTransport 离线协议测试通过；联合 P1–P3、expansion 与电子平衡回归
   共 69 项。P3 实施时 Docker Desktop 未运行，因此没有重复执行 P0 真实服务冒烟。
 
+### P4 网络解析与路径枚举（2026-08-25 更新）
+
+P4 已在 `src/pathway_analyze/retropath_parser.py` 和
+`src/pathway_analyze/retropath_routes.py` 实现 RetroPath scope/results 解析、RR02
+规则证据交叉校验和完整 sink 路径枚举。
+
+P4 验收记录：
+
+- 优先使用 `target_scope.json` 的二部图拓扑；没有 JSON 时可从
+  `target_scope.csv`、`scope.csv` 或 `results.csv` 重建；
+- transformation 的重复产物行按 ID 合并，多条 Rule ID 保留为同一化学转换的
+  `PredictedReaction` 证据变体；
+- 流式读取 P0 实际使用的 RR02 retro 文件，先核对 SHA-256，再提取规则级 EC、
+  Diameter、Score、Legacy ID/MNXR 和方向信息；真实 213 MB 文件冒烟通过；
+- 当前 RR02 与 Wrapper `score_mode=auto` 一致解析为 `lower_is_better`，原始
+  transformation score 和规则 score 均保留，不在 P4 设置经验阈值；
+- sink 仅按完整 InChIKey 与 P2 累计 sink 精确匹配，`In Sink` 和名称只作交叉
+  检查；伪 sink、结构冲突和规则缺失均产生稳定拒绝原因；
+- 使用 compound OR / transformation AND 枚举：一条反应产生多个有效前体时，
+  每个末端分支都必须命中可信 sink，未闭合分支不会被压成线性假路径；
+- 环路、no-op、iteration/depth 错误、重复路径和枚举上限均有确定性处理；质子等
+  无重原子片段只作为辅助片段审计，并将辅因子重建状态标记为 incomplete；
+- P4 保持 `Target→…→Sink` 逆合成方向并返回独立反应子图，不修改 P1 schema v1；
+  方向翻转、KEGG witness 拼接和 `CandidateRoute` 构建仍由 P5 负责；
+- 16 项 P4 离线测试通过；联合 P1–P4、expansion 与电子平衡回归共 85 项通过。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -156,7 +182,7 @@ P3 验收记录：
 | P1 预测数据模型 | P0 | 建立非 KEGG 反应/化合物表示 | 定义预测化合物、预测反应、候选路线、运行 provenance、运行结果及 RP2 命名规则 | 新增 src/pathway_analyze/retropath_models.py | 可序列化数据对象 | 17 项离线测试通过；ID 黄金值稳定、可 JSON 往返、相同输入产生相同哈希 | 已授权目录 | 已完成 |
 | P2 结构与输入生成 | P0 | 自动生成 source/sink | KEGG MOL 校验缓存、RDKit 标准化、depth 0/累计 depth sink、映射表和拒绝表 | 新增 retropath_structure.py、retropath_input.py；锁定 RDKit 2026.3.5 | target_source.csv、chassis_sink.csv、compound_mapping.csv、rejected_compounds.csv | 21 项 P2 离线测试通过；真实 KEGG 冒烟通过 | 一次性依赖与 .gitignore 授权已使用 | 已完成 |
 | P3 RetroPath client | P0 | 稳定调用本地服务 | loopback HTTP 提交、轮询、恢复、超时、状态映射、artifact 下载、manifest 校验和健康一致缓存 | 新增 retropath_client.py；锁定 httpx 0.28.1 | raw results/scope、服务日志、client state、P1 run result 和审计 manifest | 14 项离线协议测试通过；区分正常终态、服务错误和客户端错误 | P0 协议已验证；真实服务冒烟沿用 P0 记录 | 已完成 |
-| P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；通过 RP2Paths 适配器或等价枚举器得到路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 只保留真正命中 sink 的路径；环路与重复处理正确 | P3 | 待办 |
+| P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；以内置 AND/OR 等价枚举器生成完整分支路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 16 项 P4 测试通过；完整 InChIKey sink 闭合、环路、重复与上限处理正确 | P3 | 已完成 |
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | Target→X 翻转为 X→Target；恢复 expansion witness；组合多个 witness 与预测路径；限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | depth 0 不生成 prefix；depth N prefix 和方向正确；不伪造 KEGG ID | P2、P4 | 待办 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加程序、规则、步数和超时配置；不自动 expand | 修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式和审计字段 | 不加参数时现有行为及结果不变；depth 校验符合约定 | 两目录需单次授权 | 待办 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据和拒绝原因 | src/info_show | 候选路线摘要 | 清楚区分 KEGG 与预测步骤 | P5 | 待办 |
@@ -282,7 +308,8 @@ ID 哈希统一使用 UTF-8 编码的规范 JSON：`sort_keys=True`、紧凑分�
     │   ├── service_results.json
     │   ├── service_run_manifest.json
     │   ├── results.csv
-    │   ├── scope.csv
+    │   ├── target_scope.csv
+    │   ├── target_scope.json（workflow 提供时）
     │   ├── stdout.log
     │   └── stderr.log
     ├── client_state.json
@@ -460,7 +487,7 @@ P3 已使用新的一次性授权修改相同根文件：固定 `httpx==0.28.1`�
 - [x] P2：完成目标 source、A0/AN sink 和 mapping 生成
 - [x] P2：完成离线单元测试，不依赖实时网络
 - [x] P3：实现 HTTP client、超时、恢复、日志、退出状态和缓存
-- [ ] P4：解析 scope 并枚举命中 sink 的完整路径
+- [x] P4：解析 scope 并枚举命中 sink 的完整路径
 - [ ] P5：翻转 RetroPath 路线并拼接 expansion witness
 - [ ] P5：输出独立候选文件，不进入正式 solution
 - [ ] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
