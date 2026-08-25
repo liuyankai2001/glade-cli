@@ -30,4 +30,6 @@ data/retropath/
 !tests/test_retropath_client.py
 !tests/test_retropath_parser.py
 !tests/test_retropath_routes.py
+!tests/test_retropath_merge.py
+!tests/test_retropath_analyze.py
 !model/.gitkeep

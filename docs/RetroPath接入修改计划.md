@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -17,7 +17,7 @@
 | depth N | sink 使用累计集合 AN = A0 ∪ F1 ∪ … ∪ FN |
 | expand 行为 | 系统不自动执行；depth > 0 时要求用户事先生成相应扩展结果 |
 | 搜索方向 | RetroPath 从目标结构逆向搜索到 sink；拼接前翻转为合成方向 |
-| 完整路线 | A0→边界 X 的 KEGG witness 与 X→目标的 RetroPath 预测段拼接 |
+| 完整路线 | 所有边界 sink 的 A0→X KEGG witness 与 X→目标 RetroPath 预测 DAG 拼接 |
 | 预测反应 ID | 使用 RP2:哈希，禁止伪造 Rxxxxx |
 | 预测中间体 ID | 使用 RP2CPD:InChIKey或结构哈希，禁止伪造 Cxxxxx |
 | 第一阶段结果 | 只输出候选路线，不写入正式 solutions.csv、manifest 或主酶选择 |
@@ -133,8 +133,32 @@ P4 验收记录：
 - 环路、no-op、iteration/depth 错误、重复路径和枚举上限均有确定性处理；质子等
   无重原子片段只作为辅助片段审计，并将辅因子重建状态标记为 incomplete；
 - P4 保持 `Target→…→Sink` 逆合成方向并返回独立反应子图，不修改 P1 schema v1；
-  方向翻转、KEGG witness 拼接和 `CandidateRoute` 构建仍由 P5 负责；
+  方向翻转、KEGG witness 拼接和分支候选构建由 P5 负责；
 - 16 项 P4 离线测试通过；联合 P1–P4、expansion 与电子平衡回归共 85 项通过。
+
+### P5 路线翻转与拼接（2026-08-25 更新）
+
+P5 已在 `src/pathway_analyze/retropath_merge.py` 和
+`src/pathway_analyze/retropath_analyze.py` 实现预测反应方向翻转、多 sink expansion
+witness 恢复、混合反应 DAG 构建、Top-K 和独立候选文件输出。
+
+P5 验收记录：
+
+- 每个 retrosynthetic `PredictedReaction` 交换 Reaction SMILES、底物和产物，生成
+  独立的 biosynthetic RP2 稳定 ID，逆向 ID 不混入合成候选步骤；
+- 同一 transformation 的多条 RR02 规则作为一个化学步骤的多个
+  `reaction_option_ids` 保留，不复制成多条路线，也不重复计算步骤或新增酶；
+- 一条 P4 路径的全部 sink 同时交给 `materialize_frontier_solution()`；depth 0 不生成
+  KEGG prefix，depth N 恢复 A0→sink 反应树，多 sink 共享的 KEGG 步骤自动去重；
+- KEGG 与 RP2 步骤按前体—产物依赖执行稳定拓扑排序，输出显式
+  `depends_on_step_ids`，分支路线不会伪装成线性链；
+- 新增 `HybridCandidateRoute`/`HybridCandidateStep` 保存全部 sink、计量、规则选项和
+  依赖关系；P1 `CandidateRoute` schema v1 与黄金哈希保持不变；
+- 总步骤和新增酶上限同时计入唯一 RP2 transformation；默认 Top-5、每个 witness
+  Top-3、最多 10 步和 10 个新增酶；上游或本阶段截断均显式输出；
+- `candidate_routes.csv`、`candidate_steps.csv`、`rejected_routes.csv` 使用固定表头、
+  UTF-8、LF、稳定排序和逐文件原子替换，不写入正式 solution、manifest 或主酶选择；
+- 13 项 P5 离线测试通过；联合 P1–P5、expansion 与电子平衡回归共 98 项通过。
 
 ## 2. 用户工作流
 
@@ -164,15 +188,15 @@ P4 验收记录：
 | A0 | GEM/FBA 在当前模型、培养基和生长约束下直接证明可生成的 KEGG 化合物集合 |
 | Fn | 第 n 层通过 KEGG 反应新发现的 frontier 化合物集合 |
 | An | 截至第 n 层的累计可达集合，An = A(n-1) ∪ Fn |
-| X | RetroPath 命中的 sink 边界化合物 |
-| KEGG prefix | expansion witness 恢复出的 A0→X 路线 |
-| RetroPath suffix | RetroPath 逆向结果翻转后得到的 X→目标预测路线 |
+| X1…Xm | 一条完整 RetroPath 分支路径命中的全部 sink 边界化合物 |
+| KEGG prefix | expansion witness 恢复出的 A0→X1…Xm 合成反应树 |
+| RetroPath suffix | RetroPath 逆向结果翻转后得到的 X1…Xm→目标预测 DAG |
 
 完整候选路线：
 
-    A0 --KEGG known reactions--> X --RetroPath predicted reactions--> Target
+    A0 --KEGG known reaction DAG--> X1…Xm --RetroPath predicted DAG--> Target
 
-当 depth = 0 时，X 属于 A0，KEGG prefix 为空。
+当所有 sink 的 depth = 0 时，它们均属于 A0，KEGG prefix 为空。
 
 ## 4. 总体修改计划表
 
@@ -183,7 +207,7 @@ P4 验收记录：
 | P2 结构与输入生成 | P0 | 自动生成 source/sink | KEGG MOL 校验缓存、RDKit 标准化、depth 0/累计 depth sink、映射表和拒绝表 | 新增 retropath_structure.py、retropath_input.py；锁定 RDKit 2026.3.5 | target_source.csv、chassis_sink.csv、compound_mapping.csv、rejected_compounds.csv | 21 项 P2 离线测试通过；真实 KEGG 冒烟通过 | 一次性依赖与 .gitignore 授权已使用 | 已完成 |
 | P3 RetroPath client | P0 | 稳定调用本地服务 | loopback HTTP 提交、轮询、恢复、超时、状态映射、artifact 下载、manifest 校验和健康一致缓存 | 新增 retropath_client.py；锁定 httpx 0.28.1 | raw results/scope、服务日志、client state、P1 run result 和审计 manifest | 14 项离线协议测试通过；区分正常终态、服务错误和客户端错误 | P0 协议已验证；真实服务冒烟沿用 P0 记录 | 已完成 |
 | P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；以内置 AND/OR 等价枚举器生成完整分支路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 16 项 P4 测试通过；完整 InChIKey sink 闭合、环路、重复与上限处理正确 | P3 | 已完成 |
-| P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | Target→X 翻转为 X→Target；恢复 expansion witness；组合多个 witness 与预测路径；限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | depth 0 不生成 prefix；depth N prefix 和方向正确；不伪造 KEGG ID | P2、P4 | 待办 |
+| P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | 将 Target→sink 分支图翻转为 sink→Target；恢复全部 expansion witness；合并共享步骤并限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | 13 项 P5 测试通过；depth 0 无 prefix、depth N 多 sink DAG 和方向正确、不伪造 KEGG ID | P2、P4 | 已完成 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加程序、规则、步数和超时配置；不自动 expand | 修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式和审计字段 | 不加参数时现有行为及结果不变；depth 校验符合约定 | 两目录需单次授权 | 待办 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据和拒绝原因 | src/info_show | 候选路线摘要 | 清楚区分 KEGG 与预测步骤 | P5 | 待办 |
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 恢复共底物/辅因子；分子式、电荷和平衡；GEM 从本地预测反应记录读取计量；运行 strict_l1 | 修改 gem_validation.py | 结构、计量和 GEM 验证结果 | 不平衡或辅因子不完整的路线禁止晋升；relaxed 不作为正式通过 | P5 | 待办 |
@@ -264,7 +288,10 @@ P2 已满足以上完成标准。P6 调用前先使用现有 `load_expansion_bun
 | balance_status | 后续计算的元素/电荷平衡状态 |
 | cofactor_reconstruction_status | 共底物和辅因子恢复状态 |
 
-### 6.3 候选路线
+### 6.3 P1 单边界候选路线
+
+以下 `CandidateRoute` 是 P1 schema v1 的兼容契约，只能表达单 sink 线性摘要。P5
+不会把多 sink 分支强制压入该模型。
 
 | 字段 | 说明 |
 |---|---|
@@ -284,7 +311,21 @@ P2 已满足以上完成标准。P6 调用前先使用现有 `load_expansion_bun
 | review_required | 含预测步骤时默认为 True |
 | rejection_reasons | 所有硬门禁失败原因 |
 
-### 6.4 运行 provenance 与结果封装
+### 6.4 P5 混合分支候选
+
+| 字段 | 说明 |
+|---|---|
+| candidate_id | RP2ROUTE:完整 SHA-256，身份包含全部 sink、步骤和依赖 |
+| source_retrosynthetic_path_id | P4 逆合成路径来源 |
+| sink_matches | 全部代表 Cxxxxx、InChIKey、别名和最小 depth |
+| steps | 合成方向拓扑步骤，包含 KEGG expansion 和 RP2 prediction |
+| reaction_option_ids | KEGG 步骤一个 Rxxxxx；RP2 步骤保留同一 transformation 的全部规则变体 |
+| depends_on_step_ids | 分支 DAG 的直接上游步骤 |
+| substrate/product_stoichiometry | 已知计量；RP2 当前保留结构出现次数，P8 再恢复辅因子和平衡 |
+| validation_status | P5 输出固定为 raw |
+| review_required | 含预测步骤时固定为 True |
+
+### 6.5 运行 provenance 与结果封装
 
 `RetroPathRuntimeProvenance` 保存 Wrapper 实际固定版本、Wrapper 自报版本、workflow、
 KNIME、RDKit 插件、RetroRules 版本及规则 SHA-256。`RetroPathRunResult` 使用 schema
@@ -349,6 +390,9 @@ P2 输入 SHA-256、目标与 expansion depth、任务参数、健康检查、�
 本地 artifact 映射、所有本地 artifact SHA-256 以及 P1 `RetroPathRunResult`。
 `client_state.json` 使用 `retropath_client_state.v1`，在提交前、提交后、轮询、终态、
 失败和完成阶段原子更新，用于安全恢复。
+
+P5 返回三个候选文件的 SHA-256、候选/拒绝数量和 `RetroPathMergeResult`；P6 再把
+这些字段汇总到面向用户的完整运行结果，不回写或覆盖 P3 原始运行清单。
 
 ## 8. 假阳性门禁
 
@@ -478,6 +522,9 @@ P2 已使用一次性授权修改 `pyproject.toml`、`uv.lock` 和 `.gitignore`�
 P3 已使用新的一次性授权修改相同根文件：固定 `httpx==0.28.1`，并仅额外放行
 `tests/test_retropath_client.py`。
 
+P4、P5 分别使用一次性 `.gitignore` 授权，仅放行各阶段新增的 parser/routes 和
+merge/analyze 测试文件；未修改依赖或其他根目录配置。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -488,8 +535,8 @@ P3 已使用新的一次性授权修改相同根文件：固定 `httpx==0.28.1`�
 - [x] P2：完成离线单元测试，不依赖实时网络
 - [x] P3：实现 HTTP client、超时、恢复、日志、退出状态和缓存
 - [x] P4：解析 scope 并枚举命中 sink 的完整路径
-- [ ] P5：翻转 RetroPath 路线并拼接 expansion witness
-- [ ] P5：输出独立候选文件，不进入正式 solution
+- [x] P5：翻转 RetroPath 路线并拼接 expansion witness
+- [x] P5：输出独立候选文件，不进入正式 solution
 - [ ] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
 - [ ] P7：增加候选路线信息展示
 - [ ] P8：补全计量并接 strict_l1 GEM
