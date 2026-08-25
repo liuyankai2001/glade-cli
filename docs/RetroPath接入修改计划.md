@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -160,6 +160,31 @@ P5 验收记录：
   UTF-8、LF、稳定排序和逐文件原子替换，不写入正式 solution、manifest 或主酶选择；
 - 13 项 P5 离线测试通过；联合 P1–P5、expansion 与电子平衡回归共 98 项通过。
 
+### P6 CLI 与完整流程（2026-08-25 更新）
+
+P6 已在 `src/pathway_analyze/retropath_pipeline.py` 中实现面向用户的
+P2→P3→P4→P5 编排入口，并通过 `src/cli/commands/gap.py` 的显式
+`--retropath` 开关接入现有 `gap` 命令。
+
+P6 验收记录：
+
+- 不传 `--retropath` 时，dispatcher 直接调用原 `run_gap(config)`；不先运行
+  RetroPath、不自动兜底，也不改变原 KEGG 结果；
+- 传入 `--retropath` 后只运行 RetroPath 候选流程；depth 0 使用 A0，depth N 使用
+  已生成并通过一致性检查的累计 AN，不自动执行 expand；
+- P2 输入写入 `depthN/retropath/input/`，P3 原始结果和 P5 三个候选文件写入
+  `depthN/retropath/`，不会覆盖正式 `solutions.csv`、设计 manifest 或主酶选择输入；
+- `pipeline_result.json` 使用 `retropath_pipeline_result.v1`，记录 sink 来源、任务 ID、
+  服务终态、缓存命中、参数、输入/规则/候选文件路径与 SHA-256、scope 和 sink 命中、
+  完整路径/候选/拒绝数量以及两阶段截断标记；失败时也原子写入稳定状态和阶段；
+- 稳定区分 expansion/规则缺失、输入无效、本地服务不可用、客户端/服务端超时、
+  执行失败、解析失败、拼接失败、无候选、source-in-sink 和候选命中；
+- `RunConfig` 固定 P2 结构策略、P3 服务/任务/HTTP 参数、P4 枚举上限和 P5 Top-K
+  默认值；CLI 只暴露产品级 `--retropath` 开关，专家参数仍集中在运行配置中；
+- 7 项 P6 离线测试通过；当前 P1–P6 RetroPath 测试模块共 88 项通过；全仓库回归
+  435 项通过、2 项需显式本地服务地址的测试跳过。P6 测试未启动 Docker 或访问实时
+  KEGG，真实 KNIME 环境沿用 P0 已完成的服务冒烟记录。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -208,7 +233,7 @@ P5 验收记录：
 | P3 RetroPath client | P0 | 稳定调用本地服务 | loopback HTTP 提交、轮询、恢复、超时、状态映射、artifact 下载、manifest 校验和健康一致缓存 | 新增 retropath_client.py；锁定 httpx 0.28.1 | raw results/scope、服务日志、client state、P1 run result 和审计 manifest | 14 项离线协议测试通过；区分正常终态、服务错误和客户端错误 | P0 协议已验证；真实服务冒烟沿用 P0 记录 | 已完成 |
 | P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；以内置 AND/OR 等价枚举器生成完整分支路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 16 项 P4 测试通过；完整 InChIKey sink 闭合、环路、重复与上限处理正确 | P3 | 已完成 |
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | 将 Target→sink 分支图翻转为 sink→Target；恢复全部 expansion witness；合并共享步骤并限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | 13 项 P5 测试通过；depth 0 无 prefix、depth N 多 sink DAG 和方向正确、不伪造 KEGG ID | P2、P4 | 已完成 |
-| P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加程序、规则、步数和超时配置；不自动 expand | 修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式和审计字段 | 不加参数时现有行为及结果不变；depth 校验符合约定 | 两目录需单次授权 | 待办 |
+| P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加本地服务、规则、步数和超时配置；不自动 expand | 新增 retropath_pipeline.py；修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式、pipeline_result.json 和审计字段 | 7 项 P6 测试通过；不加参数时直接调用原 KEGG 入口；depth 0/N 符合约定 | 单次授权已使用 | 已完成 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据和拒绝原因 | src/info_show | 候选路线摘要 | 清楚区分 KEGG 与预测步骤 | P5 | 待办 |
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 恢复共底物/辅因子；分子式、电荷和平衡；GEM 从本地预测反应记录读取计量；运行 strict_l1 | 修改 gem_validation.py | 结构、计量和 GEM 验证结果 | 不平衡或辅因子不完整的路线禁止晋升；relaxed 不作为正式通过 | P5 | 待办 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为 RP2 步骤生成候选酶 | 支持 namespaced ID；优先正式反应映射，其次规则来源 EC/UniProt，最后用 Reaction SMILES/SMARTS 查询 SelenzymeRF | src/main_protein_selection、src/protein_selection | 候选酶及相似反应证据 | 保存 reaction similarity、sim_RF、匹配反应、方向和风险；无结构/无命中时阻断 | P8 | 待办 |
@@ -490,12 +515,16 @@ RetroPath depth N：
 
     retropath_candidates_found
     retropath_no_scope
+    retropath_source_in_sink
     retropath_input_invalid
     retropath_expansion_missing
-    retropath_executable_missing
     retropath_rules_missing
+    retropath_service_unavailable
     retropath_timeout
     retropath_execution_failed
+    retropath_parse_failed
+    retropath_merge_failed
+    retropath_configuration_invalid
 
 ## 12. 权限与依赖
 
@@ -525,6 +554,10 @@ P3 已使用新的一次性授权修改相同根文件：固定 `httpx==0.28.1`�
 P4、P5 分别使用一次性 `.gitignore` 授权，仅放行各阶段新增的 parser/routes 和
 merge/analyze 测试文件；未修改依赖或其他根目录配置。
 
+P6 已使用本阶段单次授权修改 `src/cli/commands/gap.py`、
+`src/config/run_config.py` 和 `.gitignore`；根目录文件仅额外放行
+`tests/test_retropath_pipeline.py`，未修改项目依赖。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -537,7 +570,7 @@ merge/analyze 测试文件；未修改依赖或其他根目录配置。
 - [x] P4：解析 scope 并枚举命中 sink 的完整路径
 - [x] P5：翻转 RetroPath 路线并拼接 expansion witness
 - [x] P5：输出独立候选文件，不进入正式 solution
-- [ ] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
+- [x] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
 - [ ] P7：增加候选路线信息展示
 - [ ] P8：补全计量并接 strict_l1 GEM
 - [ ] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
