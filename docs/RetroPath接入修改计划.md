@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：待实施  
+> 文档状态：P0 本地服务已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -22,6 +22,26 @@
 | 预测中间体 ID | 使用 RP2CPD:InChIKey或结构哈希，禁止伪造 Cxxxxx |
 | 第一阶段结果 | 只输出候选路线，不写入正式 solutions.csv、manifest 或主酶选择 |
 | 正式晋升 | 必须通过结构、计量、GEM、酶证据和人工复核门禁 |
+
+### P0 本地服务架构（2026-08-24 更新）
+
+RetroPath2.0 不再作为 GLADE 进程内依赖或直接外部命令接入。P0 先提供只监听
+`127.0.0.1:8765` 的本地 Docker HTTP 服务，容器内固定
+`retropath2_wrapper 3.9.1`、KNIME `4.7.0` 和 workflow `r20260212`。
+GLADE 仍由 uv 管理；后续 P3 将从“本地程序 runner”调整为“HTTP client”。
+
+P0 使用现有 `rr02-rp2-hs` 逆向规则文件，只读挂载，不写入镜像或 Git。
+服务首先返回 KNIME 原始结果和运行清单，候选路线解析仍由后续 P4 完成。
+
+P0 验收记录：
+
+- 镜像：`glade-retropath:3.9.1-r20260212`，本地 image ID
+  `sha256:e9cdfcefd2f39e9eacb8dfab9d4cc61e3eaf29d32b04164369d2f43702741b82`；
+- 容器内单元测试：17 项通过；
+- localhost 接口与真实 KNIME/RR02 冒烟：2 项通过；
+- 真实任务 `rp2-53cec4814e19468d87a8dd4194ecbe69` 完成 KNIME 执行并返回
+  `no_solution`（Wrapper 退出码 11），证明运行环境可用且无环境依赖错误；
+- `/health` 已核对 Wrapper、workflow、KNIME、RDKit 和 RR02 SHA-256。
 
 ## 2. 用户工作流
 
@@ -65,10 +85,10 @@
 
 | 阶段 | 优先级 | 目标 | 主要修改 | 文件落点 | 主要输出 | 测试与验收 | 前置条件/权限 | 状态 |
 |---|---:|---|---|---|---|---|---|---|
-| P0 资源与版本约定 | P0 | 固定可复现的外部执行环境 | 确定 RetroPath 可执行文件、RetroRules RR02、版本、SHA-256、超时和缓存策略 | docs；运行时配置 | 资源清单、版本与哈希 | 程序和规则缺失时给出可操作错误 | 外部资源目录需确定 | 待办 |
+| P0 资源与版本约定 | P0 | 固定可复现的本地服务环境 | 构建本地 Docker HTTP 服务，固定 Wrapper 3.9.1、KNIME 4.7.0、workflow r20260212、RR02 哈希、单 Worker 和超时策略 | services/retropath；compose.retropath.yml；docs | 健康检查、异步任务、原始结果、日志与 run manifest | 镜像和规则缺失时给出可操作错误；真实 KNIME 冒烟通过 | 已授权服务目录；RR02 已安装 | 已完成 |
 | P1 预测数据模型 | P0 | 建立非 KEGG 反应/化合物表示 | 定义预测化合物、预测反应、候选路线、运行结果及 RP2 命名规则 | 新增 src/pathway_analyze/retropath_models.py | 可序列化数据对象 | ID 稳定、结构字段完整、相同输入产生相同哈希 | 已授权目录 | 待办 |
 | P2 结构与输入生成 | P0 | 自动生成 source/sink | KEGG MOL 获取、MOL→InChI/InChIKey/SMILES、depth 0/累计 depth sink、映射表和拒绝表 | 新增 retropath_structure.py、retropath_input.py | target_source.csv、chassis_sink.csv、compound_mapping.csv、rejected_compounds.csv | depth 0 等于 A0；depth N 包含 A0 和全部 frontier；立体化学与去重正确 | RDKit 需修改 pyproject.toml，需单次授权 | 待办 |
-| P3 RetroPath runner | P0 | 稳定调用外部程序 | 参数列表调用、超时、退出码、日志、隔离目录、输入哈希缓存 | 新增 retropath_runner.py | raw results/scope、日志、run manifest | 区分成功、有结果、无 scope、超时、程序缺失和异常退出 | RetroPath 与规则可用 | 待办 |
+| P3 RetroPath client | P0 | 稳定调用本地服务 | HTTP 提交、轮询、超时、状态映射、日志、输入哈希缓存 | 新增 retropath_client.py | raw results/scope、日志、run manifest | 区分成功、有结果、无 scope、服务不可用、超时和执行失败 | P0 服务与规则可用 | 待办 |
 | P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；通过 RP2Paths 适配器或等价枚举器得到路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 只保留真正命中 sink 的路径；环路与重复处理正确 | P3 | 待办 |
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | Target→X 翻转为 X→Target；恢复 expansion witness；组合多个 witness 与预测路径；限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | depth 0 不生成 prefix；depth N prefix 和方向正确；不伪造 KEGG ID | P2、P4 | 待办 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加程序、规则、步数和超时配置；不自动 expand | 修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式和审计字段 | 不加参数时现有行为及结果不变；depth 校验符合约定 | 两目录需单次授权 | 待办 |
@@ -326,7 +346,7 @@ RetroPath depth N：
 
 ## 13. 推荐实施顺序
 
-- [ ] P0：确定 RetroPath、RetroRules 和 RDKit 版本及存放策略
+- [x] P0：确定 RetroPath、RetroRules 和 RDKit 版本及存放策略
 - [ ] P1：定义 RP2 数据模型和稳定哈希 ID
 - [ ] P2：完成目标 source、A0/AN sink 和 mapping 生成
 - [ ] P2：完成离线单元测试，不依赖实时网络
@@ -355,4 +375,3 @@ RetroPath depth N：
 8. 所有预测反应和中间体使用 RP2 命名；
 9. 输出可审计候选路线、步骤、日志和 run manifest；
 10. 候选路线不会未经验证进入正式 solution、manifest 或主酶选择。
-

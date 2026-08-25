@@ -1,0 +1,38 @@
+name: glade-retropath
+
+services:
+  retropath:
+    build:
+      context: ./services/retropath
+      dockerfile: Dockerfile
+    image: glade-retropath:3.9.1-r20260212
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8000"
+    environment:
+      RETROPATH_RULES_PATH: /opt/retropath/rules/rr02.csv
+      RETROPATH_RULES_VERSION: rr02-rp2-hs
+      RETROPATH_RULES_SHA256: e24eb97d3172195D03ABED6E7DA07A4CFD53965553853D126AAA8A93B4BC552F
+      RETROPATH_KNIME_DIR: /opt/knime
+      RETROPATH_KNIME_VERSION: 4.7.0
+      RETROPATH_RDKIT_PLUGIN_VERSION: 4.9.1
+      RETROPATH_OPENSSL10_DIR: /home/mambauser/.openssl10/lib
+      RETROPATH_WORKFLOW_VERSION: r20260212
+      RETROPATH_JOBS_DIR: /var/lib/retropath/jobs
+      RETROPATH_MAX_QUEUE: 8
+      RETROPATH_JOB_TIMEOUT_SECONDS: 3600
+    volumes:
+      - ./data/retropath/rules/rr02/retrorules_rr02_rp2_flat_retro.csv:/opt/retropath/rules/rr02.csv:ro
+      - retropath-jobs:/var/lib/retropath/jobs
+    mem_limit: 7g
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/opt/conda/bin/python", "-m", "app.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  retropath-jobs:

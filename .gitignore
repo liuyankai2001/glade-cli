@@ -17,6 +17,7 @@ cache/*
 other/*
 tests/*
 model/*
+data/retropath/
 
 !inputs/.gitkeep
 !outputs/.gitkeep
