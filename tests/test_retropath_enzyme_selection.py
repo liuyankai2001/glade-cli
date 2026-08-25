@@ -16,20 +16,27 @@ from src.main_protein_selection.retropath_enzyme_selection import (
     STEP_ENZYME_CANDIDATES_FILE_NAME,
     RetropathEnzymeRequirement,
     _build_requirements,
+    _candidate_record,
     _load_p9_inputs,
     _search_requirement,
     _SearchOutcome,
     _ValidatedP9Inputs,
+    retrieve_manifest_retropath_candidates,
     select_retropath_enzymes,
+)
+from src.main_protein_selection.build_main_enzyme_sets import (
+    build_main_enzyme_sets_from_rows,
 )
 from src.main_protein_selection.select_main_enzymes import (
     run_main_protein_selection,
+    select_main_enzymes,
 )
 from src.main_protein_selection.selenzyme_retrieval import (
     SelenzymeClient,
     SelenzymeSourceUnavailable,
 )
 from src.main_protein_selection.uniprot_protein_candidates import ProteinCandidate
+from src.main_protein_selection.models import MainEnzymeSetsResult
 from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_ROUTE_COLUMNS,
     CANDIDATE_ROUTES_FILE_NAME,
@@ -57,6 +64,7 @@ from src.pathway_analyze.retropath_pipeline import (
     PIPELINE_RESULT_FILE_NAME,
     RETROPATH_PIPELINE_SCHEMA,
 )
+from src.write_manifest.main_enzyme import _manifest_payload
 
 
 def _sha256(path: Path) -> str:
@@ -99,6 +107,7 @@ class _Response:
 class _Session:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.headers: dict[str, str] = {}
 
     def request(self, method: str, url: str, **kwargs):
         self.calls.append({"method": method, "url": url, **kwargs})
@@ -170,7 +179,7 @@ def _protein(similarity: float = 1.0) -> ProteinCandidate:
         score=88.0,
         reasons=["fixture"],
         sequence="M" * 300,
-        sequence_sha256="a" * 64,
+        sequence_sha256=hashlib.sha256(("M" * 300).encode("ascii")).hexdigest(),
     )
     candidate.retrieval_strategy = "selenzyme_full_reaction_smiles_exact"
     candidate.retrieval_query_id = "selenzyme_fixture"
@@ -217,6 +226,123 @@ class RetroPathEnzymeSelectionTests(unittest.TestCase):
         self.assertEqual("selenzyme_client.v4", first["cache_schema"])
         self.assertTrue(second["cache_hit"])
         self.assertEqual(0.9, first["rows"][0]["reaction_similarity"])
+
+    def test_manifest_requirement_projects_standard_manual_review_candidate(self) -> None:
+        rules = self.root / "rules.csv"
+        rules.write_text(
+            '"Rule ID","Rule","EC number"\n'
+            '"RR-TEST","[C:1]>>[C:1]","1.1.1.1"\n',
+            encoding="utf-8",
+        )
+        requirement = {
+            "solution_id": 2,
+            "step_index": 1,
+            "step_source": "retropath",
+            "reaction_id": "RP2STOICH:test",
+            "reaction_name": "prediction",
+            "produced_compound_id": "C12345",
+            "produced_compound_name": "target",
+            "retropath_step_id": "RP2STEP:test",
+            "retropath_hypothesis_id": "RP2STOICH:test",
+            "retropath_rule_id": "RR-TEST",
+            "source_mnxr_id": "MNXR1",
+            "source_reaction_ids": ["MNXR1"],
+            "source_ec_numbers": ["1.1.1.1"],
+            "source_uniprot_ids": [],
+            "source_rhea_ids": ["10000"],
+            "exact_kegg_reaction_ids": [],
+            "exact_rhea_ids": [],
+            "formal_mapping_exact": False,
+            "reaction_signature_sha256": "b" * 64,
+            "full_reaction_smiles": "C>>O",
+            "core_reaction_smiles": "C>>O",
+            "prediction_provenance": {
+                "candidate_rank": 1,
+                "candidate_id": "RP2ROUTE:test",
+                "combination_id": "RP2GEM:test",
+                "step_id": "RP2STEP:test",
+                "hypothesis_id": "RP2STOICH:test",
+                "rule_id": "RR-TEST",
+            },
+        }
+        candidate_record = _candidate_record(
+            _protein(0.9),
+            evidence_tier="full_reaction_similarity",
+            fit_status="manual_review",
+        )
+        candidate_record.update({
+            "protein_candidate_rank": 1,
+            "selection_status": "selected",
+        })
+        outcome = _SearchOutcome(
+            candidates=[candidate_record],
+            audit=[],
+            evidence=[{"status": "ok"}],
+        )
+        config = SimpleNamespace(
+            retropath_rules_path=rules,
+            cache_dir=self.root / "cache",
+            chassis_key="ecoli_mg1655",
+        )
+        with patch(
+            "src.main_protein_selection.retropath_enzyme_selection._search_requirement",
+            return_value=outcome,
+        ):
+            result = retrieve_manifest_retropath_candidates(
+                [requirement],
+                config=config,
+                top_n=5,
+                max_results=100,
+                allow_transmembrane=False,
+                session=_Session(),
+            )
+        row = result["selected_rows"][0]
+        self.assertEqual("RP2STOICH:test", row["reaction_id"])
+        self.assertEqual("manual_review", row["reaction_fit_status"])
+        self.assertEqual("M" * 300, row["sequence"])
+        self.assertEqual("selected", row["selection_status"])
+        sets = build_main_enzyme_sets_from_rows(
+            solution_id=2,
+            expansion_depth=0,
+            solution_fingerprint_value="c" * 64,
+            chassis_key="ecoli_mg1655",
+            required_steps=[{
+                "step_index": 1,
+                "status": "heterologous",
+                "reaction_id": "RP2STOICH:test",
+                "reaction_name": "prediction",
+                "produced_compound_id": "C12345",
+                "produced_compound_name": "target",
+                "precursor_compound_ids": ["C00010"],
+            }],
+            candidate_rows=[row],
+            electron_inference={},
+        )
+        self.assertEqual("review_required", sets["status"])
+        self.assertEqual("review_required", sets["sets"][0]["status"])
+        self.assertEqual(
+            "manual_review",
+            sets["sets"][0]["step_assignments"][0]["reaction_fit_status"],
+        )
+        validated_sets = MainEnzymeSetsResult.model_validate(sets)
+        payload = _manifest_payload(
+            validated_sets,
+            validated_sets.sets[0],
+            solution_prediction={
+                "source": "retropath",
+                "candidate_id": "RP2ROUTE:test",
+                "combination_id": "RP2GEM:test",
+                "promotion_id": "RP2PROMOTE:test",
+            },
+        )
+        self.assertEqual(
+            "user_selected_pending_review",
+            payload["selection_status"],
+        )
+        self.assertIn(
+            "predicted_route",
+            {item["review_type"] for item in payload["unresolved_reviews"]},
+        )
 
     def test_selenzyme_null_data_is_not_misreported_as_no_hit(self) -> None:
         class NullResponse(_Response):
@@ -705,47 +831,152 @@ class RetroPathEnzymeSelectionTests(unittest.TestCase):
             selection["artifacts"][STEP_ENZYME_CANDIDATES_FILE_NAME]["sha256"],
         )
 
-    def test_cli_keeps_default_and_adds_retropath_candidate_mode(self) -> None:
+    def test_cli_main_enzyme_is_manifest_driven(self) -> None:
         parser = build_parser()
         regular = parser.parse_args(["main-enzyme", "-i", "demo.json"])
-        self.assertIsNone(regular.retropath_candidate)
-        self.assertEqual(0, regular.depth)
-        retropath = parser.parse_args([
-            "main-enzyme",
-            "-i",
-            "demo.json",
-            "--retropath-candidate",
-            "2",
-            "--depth",
-            "3",
-        ])
-        self.assertEqual(2, retropath.retropath_candidate)
-        self.assertEqual(3, retropath.depth)
+        self.assertFalse(hasattr(regular, "retropath_candidate"))
+        self.assertFalse(hasattr(regular, "depth"))
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "main-enzyme",
+                "-i",
+                "demo.json",
+                "--retropath-candidate",
+                "2",
+            ])
 
-    def test_main_enzyme_dispatches_only_explicit_retropath_mode(self) -> None:
-        retropath_config = SimpleNamespace(retropath_candidate=1)
-        with patch(
-            "src.main_protein_selection.retropath_enzyme_selection."
-            "run_retropath_enzyme_selection",
-            return_value={"status": "ready_for_review"},
-        ) as retropath_run:
-            result = run_main_protein_selection(retropath_config)
-        self.assertEqual("ready_for_review", result["status"])
-        retropath_run.assert_called_once_with(retropath_config)
-
-        regular_config = SimpleNamespace(
-            retropath_candidate=None,
+    def test_main_enzyme_always_dispatches_from_manifest(self) -> None:
+        config = SimpleNamespace(
             manifest_output_path=self.root / "manifest.json",
             project_output_path=self.root,
             cache_dir=self.root / "cache",
+            retropath_rules_path=self.root / "rules.csv",
         )
         with patch(
             "src.main_protein_selection.select_main_enzymes.select_main_enzymes",
             return_value={"status": "complete"},
         ) as regular_run:
-            result = run_main_protein_selection(regular_config)
+            result = run_main_protein_selection(config)
         self.assertEqual("complete", result["status"])
         regular_run.assert_called_once()
+        self.assertEqual(
+            self.root / "rules.csv",
+            regular_run.call_args.kwargs["retropath_rules_path"],
+        )
+
+    def test_main_enzyme_reads_predicted_step_from_manifest(self) -> None:
+        rules = self.root / "rules.csv"
+        rules.write_text(
+            '"Rule ID","Rule","EC number"\n'
+            '"RR-TEST","[C:1]>>[C:1]","1.1.1.1"\n',
+            encoding="utf-8",
+        )
+        manifest_path = self.root / "manifest.json"
+        manifest_path.write_text(json.dumps({
+            "schema_version": "design_manifest.v1",
+            "solution": {
+                "solution_id": 2,
+                "expansion_depth": 0,
+                "prediction": {
+                    "source": "retropath",
+                    "rr02_sha256": _sha256(rules),
+                },
+                "steps": [{
+                    "step_index": 1,
+                    "status": "heterologous",
+                    "step_source": "retropath",
+                    "reaction_id": "RP2STOICH:test",
+                    "reaction_name": "prediction",
+                    "equation": "C00010 => C12345",
+                    "direction": "left_to_right",
+                    "produced_compound_id": "C12345",
+                    "produced_compound_name": "target",
+                    "precursor_compound_ids": "C00010",
+                    "enzyme_ecs": "",
+                    "locked_enzyme_ecs": "",
+                    "retropath_step_id": "RP2STEP:test",
+                    "retropath_hypothesis_id": "RP2STOICH:test",
+                    "retropath_rule_id": "RR-TEST",
+                    "source_mnxr_id": "MNXR1",
+                    "source_ec_numbers": "1.1.1.1",
+                    "reaction_signature_sha256": "b" * 64,
+                    "full_reaction_smiles": "C>>O",
+                    "core_reaction_smiles": "C>>O",
+                    "prediction_review_required": True,
+                    "prediction_provenance": {
+                        "candidate_rank": 1,
+                        "candidate_id": "RP2ROUTE:test",
+                        "combination_id": "RP2GEM:test",
+                        "step_id": "RP2STEP:test",
+                        "hypothesis_id": "RP2STOICH:test",
+                        "rule_id": "RR-TEST",
+                    },
+                }],
+            },
+        }), encoding="utf-8")
+        sequence = "M" * 30
+        candidate_row = {
+            "solution_id": 2,
+            "step_index": 1,
+            "reaction_id": "RP2STOICH:test",
+            "reaction_name": "prediction",
+            "produced_compound_id": "C12345",
+            "produced_compound_name": "target",
+            "role": "main",
+            "candidate_role": "catalytic_main",
+            "ec_number": "1.1.1.1",
+            "accession": "P12345",
+            "protein_name": "fixture enzyme",
+            "organism_name": "Escherichia coli",
+            "reviewed": "true",
+            "length": 30,
+            "score": 80.0,
+            "score_breakdown": json.dumps({"host": 10.0, "total": 80.0}),
+            "evaluation_rank": 1,
+            "candidate_rank": 1,
+            "selection_status": "selected",
+            "retrieval_strategy": "selenzyme_full_reaction_smiles",
+            "retrieval_query_id": "query",
+            "direction_verdict": "unknown",
+            "direction_confidence": "low",
+            "reaction_confidence": "full_reaction_similarity",
+            "reaction_fit_status": "manual_review",
+            "reaction_fit_score": 0.9,
+            "specificity_status": "unknown",
+            "sequence_sha256": hashlib.sha256(sequence.encode("ascii")).hexdigest(),
+            "sequence": sequence,
+            "auxiliary_requirement_status": "not_required",
+            "auxiliary_requirements_json": "[]",
+            "warnings": "manual review required",
+        }
+        predicted = {
+            "selected_rows": [candidate_row],
+            "audit_rows": [candidate_row],
+            "requirements": [{"step_index": 1}],
+            "evidence": [{"status": "ok"}],
+            "source_unavailable": False,
+        }
+        with patch(
+            "src.main_protein_selection.select_main_enzymes."
+            "retrieve_manifest_retropath_candidates",
+            return_value=predicted,
+        ):
+            result = select_main_enzymes(
+                manifest_path=manifest_path,
+                output_dir=self.root / "selection",
+                cache_dir=self.root / "cache" / "main_protein_selection",
+                retropath_rules_path=rules,
+                top_n=5,
+            )
+        self.assertEqual("complete", result["status"])
+        selection = json.loads(
+            (self.root / "selection" / "main_enzyme_selection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        candidate = selection["candidates_by_step"]["1"][0]
+        self.assertEqual("manual_review", candidate["reaction_fit_status"])
+        self.assertEqual("RP2STOICH:test", candidate["reaction_id"])
 
 
 if __name__ == "__main__":

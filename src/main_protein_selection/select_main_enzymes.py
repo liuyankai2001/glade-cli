@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import requests
@@ -55,7 +56,12 @@ from src.main_protein_selection.models import (
     MainEnzymeSelectionParameters,
     MainEnzymeSelectionResult,
 )
-from src.main_protein_selection.provenance import solution_fingerprint
+from src.main_protein_selection.retropath_enzyme_selection import (
+    RETROPATH_ENZYME_REQUIREMENTS_SCHEMA,
+    RETROPATH_SELENZYME_EVIDENCE_SCHEMA,
+    retrieve_manifest_retropath_candidates,
+)
+from src.main_protein_selection.provenance import file_sha256, solution_fingerprint
 from src.main_protein_selection.selenzyme_retrieval import (
     COMPLETE_EC_PATTERN,
     SelenzymeClient,
@@ -231,6 +237,7 @@ def select_main_enzymes(
     allow_transmembrane: bool = False,
     fetch_proteins: bool = True,
     literature_search: bool = False,
+    retropath_rules_path: str | Path | None = None,
 ) -> dict:
     """
     为已选 solution 的异源步骤选择主反应酶候选。
@@ -246,8 +253,39 @@ def select_main_enzymes(
         paths = evidence_paths(output_path)
         manifest = read_manifest(manifest_path)
         solution_id, steps = get_solution_steps(manifest)
-        requirements = heterologous_requirements(steps)
-        all_ecs = unique_main_ecs(requirements)
+        all_requirements = heterologous_requirements(steps)
+        retropath_requirements = [
+            requirement
+            for requirement in all_requirements
+            if str(requirement.get("step_source") or "").strip() == "retropath"
+        ]
+        requirements = [
+            requirement
+            for requirement in all_requirements
+            if str(requirement.get("step_source") or "").strip() != "retropath"
+        ]
+        if retropath_requirements:
+            rules_path = Path(retropath_rules_path or "").expanduser().resolve()
+            prediction = (
+                manifest.get("solution", {}).get("prediction")
+                if isinstance(manifest.get("solution"), dict)
+                else None
+            )
+            expected_rules_sha = (
+                str(prediction.get("rr02_sha256") or "")
+                if isinstance(prediction, dict)
+                else ""
+            )
+            if (
+                not rules_path.is_file()
+                or not expected_rules_sha
+                or file_sha256(rules_path) != expected_rules_sha
+            ):
+                raise ValueError(
+                    "RetroPath manifest RR02 binding is stale; rerun validation "
+                    "and write --solution N"
+                )
+        all_ecs = unique_main_ecs(all_requirements)
         ecs = list(dict.fromkeys(
             ec_number
             for requirement in requirements
@@ -727,27 +765,104 @@ def select_main_enzymes(
                 "rows": [],
             } for requirement in requirements]
 
-        step_rows = candidate_rows_for_requirements(
+        kegg_step_rows = candidate_rows_for_requirements(
             requirements,
             candidates_by_ec,
             candidates_by_step,
             top_n=top_n,
         )
+        if fetch_proteins and retropath_requirements:
+            retropath_result = retrieve_manifest_retropath_candidates(
+                retropath_requirements,
+                config=SimpleNamespace(
+                    retropath_rules_path=retropath_rules_path,
+                    cache_dir=cache_path.parent,
+                    chassis_key=chassis_key,
+                ),
+                top_n=top_n,
+                max_results=max_results,
+                allow_transmembrane=allow_transmembrane,
+                session=session,
+            )
+        else:
+            retropath_result = {
+                "selected_rows": [],
+                "audit_rows": [],
+                "requirements": [],
+                "evidence": [
+                    {
+                        "step_index": int(requirement.get("step_index") or 0),
+                        "status": "fetch_disabled",
+                    }
+                    for requirement in retropath_requirements
+                ],
+                "source_unavailable": False,
+            }
+        step_rows = sorted(
+            [*kegg_step_rows, *retropath_result["audit_rows"]],
+            key=lambda row: (
+                int(row.get("step_index") or 0),
+                int(row.get("evaluation_rank") or row.get("candidate_rank") or 0),
+                str(row.get("accession") or ""),
+            ),
+        )
         verified_step_rows = [
             row for row in step_rows if candidate_is_reaction_verified(row)
         ]
-        selected_step_rows = [
+        selected_step_rows = sorted([
             row
-            for row in step_rows
+            for row in kegg_step_rows
             if str(row.get("selection_status") or "") == "selected"
-        ]
+        ] + list(retropath_result["selected_rows"]), key=lambda row: (
+            int(row.get("step_index") or 0),
+            int(row.get("candidate_rank") or 0),
+            str(row.get("accession") or ""),
+        ))
         merged_rows = merge_step_candidates(selected_step_rows)
         route_repair_requests = _route_repair_requests_v2(
             requirements,
-            step_rows,
+            kegg_step_rows,
             solution_id,
             source_unavailable=selenzyme_source_unavailable,
         )
+        selected_retropath_steps = {
+            int(row.get("step_index") or 0)
+            for row in retropath_result["selected_rows"]
+        }
+        for requirement in retropath_requirements:
+            step_index = int(requirement.get("step_index") or 0)
+            if step_index not in selected_retropath_steps:
+                route_repair_requests.append({
+                    "solution_id": solution_id,
+                    "step_index": step_index,
+                    "reaction_id": str(requirement.get("reaction_id") or ""),
+                    "reason_code": "retropath_no_candidate",
+                    "reason_detail": (
+                        "No auditable source-template or structural enzyme candidate "
+                        "was selected for this predicted reaction"
+                    ),
+                })
+        retropath_requirements_path = output_path / "retropath_enzyme_requirements.json"
+        retropath_evidence_path = output_path / "retropath_selenzyme_evidence.json"
+        if retropath_requirements:
+            write_json_atomic(retropath_requirements_path, {
+                "schema_version": RETROPATH_ENZYME_REQUIREMENTS_SCHEMA,
+                "selected_solution_id": solution_id,
+                "requirements": retropath_result["requirements"],
+            })
+            write_json_atomic(retropath_evidence_path, {
+                "schema_version": RETROPATH_SELENZYME_EVIDENCE_SCHEMA,
+                "selected_solution_id": solution_id,
+                "policy": {
+                    "structural_matches_require_manual_review": True,
+                    "query_precedence": [
+                        "full_reaction_smiles",
+                        "core_reaction_smiles",
+                        "rule_smarts",
+                    ],
+                },
+                "queries": retropath_result["evidence"],
+            })
         write_csv(
             paths["step_main_enzyme_candidates_csv"],
             selected_step_rows,
@@ -809,6 +924,11 @@ def select_main_enzymes(
                 "no_msa": True,
             },
             "evidence": selenzyme_evidence,
+            **(
+                {"retropath_evidence_artifact": rel_or_abs(retropath_evidence_path)}
+                if retropath_requirements
+                else {}
+            ),
             "query_ids": list(dict.fromkeys(
                 value for value in selenzyme_query_ids if value
             )),
@@ -820,27 +940,37 @@ def select_main_enzymes(
         })
 
         covered_steps = {
-            int(row.get("step_index") or 0) for row in verified_step_rows
+            int(row.get("step_index") or 0) for row in selected_step_rows
         }
         expected_steps = {
-            int(requirement.get("step_index") or 0) for requirement in requirements
+            int(requirement.get("step_index") or 0)
+            for requirement in all_requirements
         }
         rank_one_rows = [
             row for row in selected_step_rows
             if int(row.get("candidate_rank") or 0) == 1
         ]
+        retropath_unavailable = bool(
+            retropath_result["source_unavailable"]
+            and expected_steps.difference(covered_steps)
+            & {
+                int(item.get("step_index") or 0)
+                for item in retropath_requirements
+            }
+        )
+        any_source_unavailable = selenzyme_source_unavailable or retropath_unavailable
         result = {
-            "ok": not selenzyme_source_unavailable,
+            "ok": not any_source_unavailable,
             "status": (
                 "source_unavailable"
-                if selenzyme_source_unavailable
+                if any_source_unavailable
                 else "complete"
             ),
             "selected_solution_id": solution_id,
             "chassis_key": chassis_key,
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
-            "heterologous_step_count": len(requirements),
+            "heterologous_step_count": len(all_requirements),
             "step_candidate_count": len(selected_step_rows),
             "evaluated_step_candidate_count": len(step_rows),
             "verified_step_candidate_count": len(verified_step_rows),
@@ -859,6 +989,7 @@ def select_main_enzymes(
             "literature_candidate_count": literature_candidate_count,
             "literature_query_errors": literature_query_errors,
             "selenzyme_evidence_count": len(selenzyme_evidence),
+            "retropath_evidence_count": len(retropath_result["evidence"]),
             "selenzyme_exact_candidate_count": sum(
                 1
                 for row in step_rows
@@ -911,6 +1042,18 @@ def select_main_enzymes(
             ),
             "selenzyme_evidence_json": rel_or_abs(paths["selenzyme_evidence_json"]),
             "route_repair_requests_json": rel_or_abs(paths["route_repair_requests_json"]),
+            **(
+                {
+                    "retropath_enzyme_requirements_json": rel_or_abs(
+                        retropath_requirements_path
+                    ),
+                    "retropath_selenzyme_evidence_json": rel_or_abs(
+                        retropath_evidence_path
+                    ),
+                }
+                if retropath_requirements
+                else {}
+            ),
         }
         candidates_by_step: dict[int, list[MainEnzymeCandidate]] = {}
         for row in selected_step_rows:
@@ -949,9 +1092,23 @@ def select_main_enzymes(
             ],
             direction_risk_step_indexes=result["direction_risk_step_indexes"],
             evidence_files={
-                key: rel_or_abs(path)
-                for key, path in paths.items()
-                if key != "main_enzyme_selection_json"
+                **{
+                    key: rel_or_abs(path)
+                    for key, path in paths.items()
+                    if key != "main_enzyme_selection_json"
+                },
+                **(
+                    {
+                        "retropath_enzyme_requirements_json": rel_or_abs(
+                            retropath_requirements_path
+                        ),
+                        "retropath_selenzyme_evidence_json": rel_or_abs(
+                            retropath_evidence_path
+                        ),
+                    }
+                    if retropath_requirements
+                    else {}
+                ),
             },
         )
         write_json_atomic(
@@ -970,18 +1127,16 @@ def select_main_enzymes(
 def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     """Run main-enzyme selection using this project's ``RunConfig`` paths."""
 
-    if getattr(config, "retropath_candidate", None) is not None:
-        from src.main_protein_selection.retropath_enzyme_selection import (
-            run_retropath_enzyme_selection,
-        )
-
-        return run_retropath_enzyme_selection(config)
-
     if hasattr(config, "top_n"):
         selection_options.setdefault("top_n", config.top_n)
     selection_options.setdefault(
         "literature_search", bool(getattr(config, "literature_search", False))
     )
+    if getattr(config, "retropath_rules_path", None) is not None:
+        selection_options.setdefault(
+            "retropath_rules_path",
+            config.retropath_rules_path,
+        )
 
     result = select_main_enzymes(
         manifest_path=Path(config.manifest_output_path),

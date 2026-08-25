@@ -21,6 +21,7 @@ from src.main_protein_selection.provenance import solution_fingerprint
 FIT_STATUS_NAMES = {
     "verified": "已验证",
     "verified_with_risk": "已验证，但需要复核",
+    "manual_review": "预测匹配，必须人工复核",
 }
 
 DIRECTION_NAMES = {

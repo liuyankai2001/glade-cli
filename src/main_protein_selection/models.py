@@ -16,7 +16,11 @@ MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v2"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
     "evidence_constrained_assignment.v2"
 )
-AcceptedReactionFitStatus = Literal["verified", "verified_with_risk"]
+AcceptedReactionFitStatus = Literal[
+    "verified",
+    "verified_with_risk",
+    "manual_review",
+]
 SelectionStatus = Literal["complete", "source_unavailable"]
 MainEnzymeSetStatus = Literal["complete", "review_required"]
 MainEnzymeSetsStatus = Literal[
@@ -679,7 +683,7 @@ class MainEnzymeSet(BaseModel):
         fit_risk_steps = {
             assignment.step_index
             for assignment in self.step_assignments
-            if assignment.reaction_fit_status == "verified_with_risk"
+            if assignment.reaction_fit_status != "verified"
         }
         low_direction_confidence_steps = {
             assignment.step_index
@@ -740,7 +744,7 @@ class MainEnzymeSet(BaseModel):
             or self.metrics.electron_reassessment_status
             == "review_required"
             or any(
-                assignment.reaction_fit_status == "verified_with_risk"
+                assignment.reaction_fit_status != "verified"
                 for assignment in self.step_assignments
             )
         )

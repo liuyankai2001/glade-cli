@@ -619,8 +619,23 @@ def _manifest_payload(
     result: MainEnzymeSetsResult,
     selected: MainEnzymeSet,
     literature_provenance: dict[str, Any] | None = None,
+    solution_prediction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     unresolved_reviews = _review_items(result, selected)
+    if solution_prediction and solution_prediction.get("source") == "retropath":
+        unresolved_reviews.append({
+            "review_type": "predicted_route",
+            "status": "pending",
+            "step_indexes": sorted(
+                assignment.step_index
+                for assignment in selected.step_assignments
+                if assignment.reaction_id.startswith("RP2STOICH:")
+            ),
+            "reason": "RetroPath预测路线仍需实验验证",
+            "candidate_id": solution_prediction.get("candidate_id"),
+            "combination_id": solution_prediction.get("combination_id"),
+            "promotion_id": solution_prediction.get("promotion_id"),
+        })
     literature_references = (
         list(literature_provenance.get("evidence") or [])
         if literature_provenance
@@ -851,6 +866,12 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         result,
         selected,
         literature_provenance,
+        (
+            manifest.get("solution", {}).get("prediction")
+            if isinstance(manifest.get("solution"), Mapping)
+            and isinstance(manifest.get("solution", {}).get("prediction"), Mapping)
+            else None
+        ),
     )
 
     current_selection = manifest.get("main_enzyme_selection")

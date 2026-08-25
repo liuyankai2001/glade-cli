@@ -32,6 +32,18 @@ SOLUTION_SUMMARY_FIELDS = (
     "reachable_anchor_labels",
 )
 
+RETROPATH_SOLUTION_SUMMARY_FIELDS = (
+    "solution_source",
+    "retropath_candidate_rank",
+    "retropath_candidate_id",
+    "retropath_combination_id",
+    "prediction_review_required",
+    "promotion_id",
+    "combination_truncated",
+    "upstream_enumeration_truncated",
+    "candidate_top_k_truncated",
+)
+
 SOLUTION_STEP_FIELDS = (
     "step_index",
     "gap_step_index",
@@ -58,6 +70,30 @@ SOLUTION_STEP_FIELDS = (
     "auxiliary_requirements",
 )
 
+RETROPATH_SOLUTION_STEP_FIELDS = (
+    "step_source",
+    "locked_enzyme_ecs",
+    "ec_status",
+    "enzyme_search_eligible",
+    "retropath_step_id",
+    "retropath_hypothesis_id",
+    "retropath_rule_id",
+    "source_mnxr_id",
+    "source_ec_numbers",
+    "source_uniprot_ids",
+    "source_rhea_ids",
+    "exact_kegg_reaction_ids",
+    "exact_rhea_ids",
+    "formal_mapping_exact",
+    "reaction_signature_sha256",
+    "full_reaction_smiles",
+    "core_reaction_smiles",
+    "stoichiometry_terms",
+    "prediction_provenance",
+    "prediction_review_required",
+    "depends_on_step_ids",
+)
+
 VALIDATION_FIELDS = (
     "validation_status",
     "fba_status",
@@ -80,6 +116,14 @@ VALIDATION_FIELDS = (
     "cofactor_relaxed",
     "opened_generic_compound_ids",
     "issues",
+)
+
+RETROPATH_VALIDATION_FIELDS = (
+    "retropath_candidate_rank",
+    "retropath_candidate_id",
+    "retropath_combination_id",
+    "stoichiometry_hypothesis_ids",
+    "combination_truncated",
 )
 
 ELECTRON_SUMMARY_FIELDS = (
@@ -220,6 +264,24 @@ def _parse_auxiliary_requirements(value: Any) -> list[dict[str, Any]]:
     return payload
 
 
+def _parse_json_value(
+    value: Any,
+    *,
+    field_name: str,
+    expected_type: type,
+) -> Any:
+    text = str(value or "").strip()
+    if not text:
+        return expected_type()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"路线 {field_name} 字段不是有效 JSON") from exc
+    if not isinstance(payload, expected_type):
+        raise ValueError(f"路线 {field_name} 字段类型无效")
+    return payload
+
+
 def _integer_step_index(value: Any) -> int:
     try:
         return int(float(str(value).strip()))
@@ -295,6 +357,28 @@ def _renumber_steps_forward(
                 forward_row.get("auxiliary_requirements_json")
             )
         )
+        if str(forward_row.get("step_source") or "").strip() == "retropath":
+            forward_row["stoichiometry_terms"] = _parse_json_value(
+                forward_row.get("stoichiometry_terms_json"),
+                field_name="stoichiometry_terms",
+                expected_type=list,
+            )
+            forward_row["prediction_provenance"] = _parse_json_value(
+                forward_row.get("prediction_provenance_json"),
+                field_name="prediction_provenance",
+                expected_type=dict,
+            )
+            hypothesis_id = str(
+                forward_row.get("retropath_hypothesis_id") or ""
+            ).strip()
+            if (
+                not hypothesis_id
+                or str(forward_row.get("reaction_id") or "").strip()
+                != hypothesis_id
+                or forward_row["prediction_provenance"].get("hypothesis_id")
+                != hypothesis_id
+            ):
+                raise ValueError("RetroPath 路线步骤的计量假设身份不一致")
         forward_rows.append(forward_row)
     return forward_rows, gap_to_forward
 
@@ -385,6 +469,82 @@ def _select_passed_validation(
     return validation
 
 
+def _select_retropath_validation(
+    promotion: dict[str, Any],
+    solution_id: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    mappings = [
+        item
+        for item in promotion.get("solution_mappings", [])
+        if isinstance(item, dict)
+        and int(item.get("solution_id") or 0) == solution_id
+    ]
+    if len(mappings) != 1:
+        raise ValueError(f"RetroPath solution {solution_id} 的晋升身份不唯一")
+    mapping = mappings[0]
+    p8_manifest_path = Path(
+        str(
+            promotion.get("inputs", {}).get("p8_validation_manifest")
+            or ""
+        )
+    ).expanduser().resolve()
+    p8_manifest = json.loads(p8_manifest_path.read_text(encoding="utf-8-sig"))
+    summary_record = p8_manifest.get("artifacts", {}).get(
+        "gem_validation_summary.csv"
+    )
+    if not isinstance(summary_record, dict):
+        raise ValueError("P8 validation summary 记录缺失")
+    summary_path = Path(str(summary_record.get("path") or "")).expanduser().resolve()
+    matches = [
+        _normalize_row(row)
+        for row in _read_csv_rows(summary_path)
+        if str(row.get("candidate_id") or "").strip()
+        == str(mapping.get("candidate_id") or "").strip()
+        and str(row.get("combination_id") or "").strip()
+        == str(mapping.get("combination_id") or "").strip()
+        and str(row.get("validation_status") or "").strip()
+        == "PASS_STRICT_ROUTE_FLUX"
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"RetroPath solution {solution_id} 没有唯一的 P8 严格通过记录"
+        )
+    row = matches[0]
+    normalized = {
+        "validation_status": row.get("validation_status"),
+        "fba_status": row.get("fba_status"),
+        "fba_product_flux": row.get("target_flux"),
+        "fba_growth_flux": row.get("growth_flux"),
+        "pfba_status": row.get("pfba_status"),
+        "pfba_product_flux": row.get("pfba_target_flux"),
+        "pfba_growth_flux": row.get("growth_flux"),
+        "fva_status": row.get("fva_status"),
+        "target_fva_minimum": None,
+        "target_fva_maximum": None,
+        "route_reaction_count": row.get("route_step_count"),
+        "active_route_reaction_count": row.get("active_route_step_count"),
+        "required_route_reaction_count": row.get("route_step_count"),
+        "blocked_route_reaction_count": len(
+            _split_values(row.get("blocked_route_step_ids"))
+        ),
+        "active_route_reaction_ids": None,
+        "required_route_reaction_ids": None,
+        "blocked_route_reaction_ids": row.get("blocked_route_step_ids"),
+        "cofactor_mode": "strict",
+        "cofactor_relaxed": False,
+        "opened_generic_compound_ids": None,
+        "issues": row.get("issues"),
+        "retropath_candidate_rank": mapping.get("candidate_rank"),
+        "retropath_candidate_id": mapping.get("candidate_id"),
+        "retropath_combination_id": mapping.get("combination_id"),
+        "stoichiometry_hypothesis_ids": mapping.get(
+            "stoichiometry_hypothesis_ids", []
+        ),
+        "combination_truncated": row.get("combination_truncated"),
+    }
+    return normalized, mapping
+
+
 def write_solution(config: Any) -> dict[str, Any]:
     """将一条已通过独立 GEM 验证的路线写入 design manifest。"""
 
@@ -405,22 +565,55 @@ def write_solution(config: Any) -> dict[str, Any]:
     gap_dir = gap_depth_output_dir(gap_root_dir, expansion_depth)
     validation_dir = validation_depth_output_dir(gap_root_dir, expansion_depth)
     manifest_path = Path(config.manifest_output_path).expanduser()
-    run_config_path = gap_dir / "run_config.json"
-    try:
-        run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
-        raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
-    if (
-        not isinstance(run_config, dict)
-        or run_config.get("electron_inference_version")
-        != ELECTRON_INFERENCE_VERSION
-    ):
-        raise ValueError(
-            "gap 结果使用旧版电子推断，请重新运行："
-            f"gap -i <输入文件> -d {expansion_depth}"
+    solutions_path = gap_dir / "solutions.csv"
+    if not solutions_path.is_file() and (gap_dir / "run_config.json").is_file():
+        try:
+            early_run_config = json.loads(
+                (gap_dir / "run_config.json").read_text(encoding="utf-8-sig")
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"无法读取 gap 运行配置：{gap_dir / 'run_config.json'}"
+            ) from exc
+        if (
+            not isinstance(early_run_config, dict)
+            or early_run_config.get("electron_inference_version")
+            != ELECTRON_INFERENCE_VERSION
+        ):
+            raise ValueError(
+                "gap 结果使用旧版电子推断，请重新运行："
+                f"gap -i <输入文件> -d {expansion_depth}"
+            )
+    summary = _select_solution_summary(solutions_path, solution_id)
+    solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
+    promotion: dict[str, Any] | None = None
+    promotion_mapping: dict[str, Any] | None = None
+    if solution_source == "retropath":
+        from src.pathway_analyze.retropath_promotion import (
+            verify_retropath_solution_promotion,
         )
 
-    summary = _select_solution_summary(gap_dir / "solutions.csv", solution_id)
+        promotion = verify_retropath_solution_promotion(
+            gap_dir=gap_dir,
+            target_compound=target_compound,
+            expansion_depth=expansion_depth,
+            solution_id=solution_id,
+        )
+    else:
+        run_config_path = gap_dir / "run_config.json"
+        try:
+            run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
+        if (
+            not isinstance(run_config, dict)
+            or run_config.get("electron_inference_version")
+            != ELECTRON_INFERENCE_VERSION
+        ):
+            raise ValueError(
+                "gap 结果使用旧版电子推断，请重新运行："
+                f"gap -i <输入文件> -d {expansion_depth}"
+            )
     if summary.get("target_compound_id") != target_compound:
         raise ValueError(
             f"solution {solution_id} 的目标化合物是 {summary.get('target_compound_id')}，"
@@ -439,11 +632,17 @@ def write_solution(config: Any) -> dict[str, Any]:
         solution_id,
     )
     steps, gap_to_forward = _renumber_steps_forward(gap_steps, target_compound)
-    validation = _select_passed_validation(
-        validation_dir / "gem_validation_summary.csv",
-        solution_id,
-        expansion_depth,
-    )
+    if promotion is not None:
+        validation, promotion_mapping = _select_retropath_validation(
+            promotion,
+            solution_id,
+        )
+    else:
+        validation = _select_passed_validation(
+            validation_dir / "gem_validation_summary.csv",
+            solution_id,
+            expansion_depth,
+        )
     electron_summary = _select_optional_solution_row(
         gap_dir / "solution_electron_summary.csv",
         solution_id,
@@ -470,14 +669,58 @@ def write_solution(config: Any) -> dict[str, Any]:
         gap_to_forward,
     )
 
+    summary_payload = _keep_fields(summary, SOLUTION_SUMMARY_FIELDS)
+    validation_payload = _keep_fields(validation, VALIDATION_FIELDS)
+    step_payloads = [
+        _keep_fields(step, SOLUTION_STEP_FIELDS) for step in steps
+    ]
+    if promotion is not None:
+        summary_payload.update(
+            _keep_fields(summary, RETROPATH_SOLUTION_SUMMARY_FIELDS)
+        )
+        validation_payload.update(
+            _keep_fields(validation, RETROPATH_VALIDATION_FIELDS)
+        )
+        step_payloads = [
+            {
+                **_keep_fields(step, SOLUTION_STEP_FIELDS),
+                **_keep_fields(step, RETROPATH_SOLUTION_STEP_FIELDS),
+            }
+            for step in steps
+        ]
     solution_payload = {
         "gap_dir": str(gap_dir.resolve()),
         "expansion_depth": expansion_depth,
         "solution_id": solution_id,
-        "summary": _keep_fields(summary, SOLUTION_SUMMARY_FIELDS),
-        "steps": [_keep_fields(step, SOLUTION_STEP_FIELDS) for step in steps],
-        "validation": _keep_fields(validation, VALIDATION_FIELDS),
+        "summary": summary_payload,
+        "steps": step_payloads,
+        "validation": validation_payload,
     }
+    if promotion is not None and promotion_mapping is not None:
+        solution_payload["prediction"] = {
+            "source": "retropath",
+            "review_status": "pending",
+            "review_required": True,
+            "promotion_id": promotion.get("promotion_id"),
+            "promotion_schema_version": promotion.get("schema_version"),
+            "candidate_rank": promotion_mapping.get("candidate_rank"),
+            "candidate_id": promotion_mapping.get("candidate_id"),
+            "combination_id": promotion_mapping.get("combination_id"),
+            "stoichiometry_hypothesis_ids": promotion_mapping.get(
+                "stoichiometry_hypothesis_ids", []
+            ),
+            "promotion_manifest": str(
+                (
+                    gap_dir
+                    / "retropath"
+                    / "formal_solution_promotion.json"
+                ).resolve()
+            ),
+            "p8_validation_sha256": promotion.get("inputs", {}).get(
+                "p8_validation_sha256"
+            ),
+            "rr02_sha256": promotion.get("inputs", {}).get("rr02_sha256"),
+        }
     electron_payload = {
         "summary": (
             _keep_fields(electron_summary, ELECTRON_SUMMARY_FIELDS)

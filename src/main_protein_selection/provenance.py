@@ -28,8 +28,16 @@ def file_sha256(path: str | Path) -> str:
 
 
 def solution_fingerprint(solution_id: int | str, steps: list[dict[str, Any]]) -> str:
-    projected = [
-        {
+    projected = []
+    contains_prediction = any(
+        str(step.get("step_source") or "").strip() == "retropath"
+        for step in steps
+        if isinstance(step, dict)
+    )
+    for step in sorted(steps, key=lambda item: int(item.get("step_index") or 0)):
+        if not isinstance(step, dict):
+            continue
+        row = {
             "step_index": int(step.get("step_index") or 0),
             "status": str(step.get("status") or ""),
             "reaction_id": str(step.get("reaction_id") or ""),
@@ -48,9 +56,36 @@ def solution_fingerprint(solution_id: int | str, steps: list[dict[str, Any]]) ->
             "resolution_action": str(step.get("resolution_action") or ""),
             "resolution_evidence": step.get("resolution_evidence"),
         }
-        for step in sorted(steps, key=lambda item: int(item.get("step_index") or 0))
-        if isinstance(step, dict)
-    ]
+        if contains_prediction:
+            row.update({
+                "step_source": str(step.get("step_source") or ""),
+                "retropath_step_id": str(step.get("retropath_step_id") or ""),
+                "retropath_hypothesis_id": str(
+                    step.get("retropath_hypothesis_id") or ""
+                ),
+                "retropath_rule_id": str(step.get("retropath_rule_id") or ""),
+                "source_mnxr_id": str(step.get("source_mnxr_id") or ""),
+                "source_ec_numbers": step.get("source_ec_numbers"),
+                "source_uniprot_ids": step.get("source_uniprot_ids"),
+                "source_rhea_ids": step.get("source_rhea_ids"),
+                "exact_kegg_reaction_ids": step.get(
+                    "exact_kegg_reaction_ids"
+                ),
+                "exact_rhea_ids": step.get("exact_rhea_ids"),
+                "formal_mapping_exact": step.get("formal_mapping_exact"),
+                "reaction_signature_sha256": str(
+                    step.get("reaction_signature_sha256") or ""
+                ),
+                "full_reaction_smiles": str(
+                    step.get("full_reaction_smiles") or ""
+                ),
+                "core_reaction_smiles": str(
+                    step.get("core_reaction_smiles") or ""
+                ),
+                "stoichiometry_terms": step.get("stoichiometry_terms"),
+                "prediction_provenance": step.get("prediction_provenance"),
+            })
+        projected.append(row)
     return stable_json_hash({"solution_id": int(solution_id), "steps": projected})
 
 

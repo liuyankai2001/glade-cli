@@ -48,7 +48,7 @@ MAIN_ENZYME_SET_MEMBERS_FILENAME = "main_enzyme_set_members.csv"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _FORMING_RE = re.compile(r"\(([^()]*(?:forming|producing)[^()]*)\)", re.I)
-_ACCEPTED_FIT = {"verified", "verified_with_risk"}
+_ACCEPTED_FIT = {"verified", "verified_with_risk", "manual_review"}
 _DIRECTION_CONTRADICTED = {"contradicted", "unsupported", "rejected"}
 _DIRECTION_SUPPORTED = {
     "supported",
@@ -363,7 +363,11 @@ class _Edge:
     warnings: tuple[str, ...]
 
     def assignment_order(self) -> tuple[Any, ...]:
-        fit_level = 0 if self.reaction_fit_status == "verified" else 1
+        fit_level = {
+            "verified": 0,
+            "verified_with_risk": 1,
+            "manual_review": 2,
+        }.get(self.reaction_fit_status, 3)
         direction_level = (
             0 if self.direction_verdict.lower() in _DIRECTION_SUPPORTED else 1
         )
@@ -376,6 +380,7 @@ class _Edge:
             specificity_level,
             fit_level,
             direction_level,
+            self.candidate_rank if self.reaction_fit_status == "manual_review" else 0,
             -self.reaction_fit_score,
             -self.host_fit_score,
             -self.protein_score,

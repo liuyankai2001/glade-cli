@@ -38,4 +38,5 @@ data/retropath/
 !tests/test_retropath_stoichiometry.py
 !tests/test_retropath_gem_validation.py
 !tests/test_retropath_enzyme_selection.py
+!tests/test_retropath_promotion.py
 !model/.gitkeep

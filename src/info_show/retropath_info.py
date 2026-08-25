@@ -976,6 +976,31 @@ def _p9_candidate_display(row: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
+def _formal_solution_mappings(
+    context: _RetroPathViewContext,
+    rank: int,
+) -> list[dict[str, Any]]:
+    try:
+        from src.pathway_analyze.retropath_promotion import (
+            verify_retropath_solution_promotion,
+        )
+
+        promotion = verify_retropath_solution_promotion(
+            gap_dir=context.output_dir.parent,
+            target_compound=context.target_compound,
+            expansion_depth=context.depth,
+        )
+    except (OSError, ValueError):
+        return []
+    return [
+        dict(item)
+        for item in promotion.get("solution_mappings", [])
+        if isinstance(item, Mapping)
+        and _as_int(item.get("candidate_rank"), "candidate_rank", minimum=1)
+        == rank
+    ]
+
+
 def get_retropath_info(config: Any) -> dict[str, Any]:
     """Return a compact Chinese summary of one P6 RetroPath run."""
 
@@ -1111,6 +1136,12 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
     common["P8可行计量假设"] = list(
         overlay.passing_combinations.get(rank, tuple())
     )
+    formal_mappings = _formal_solution_mappings(context, rank)
+    common["正式Solution编号"] = [
+        _as_int(item.get("solution_id"), "solution_id", minimum=1)
+        for item in formal_mappings
+    ]
+    common["正式Solution映射"] = formal_mappings
     p9 = _p9_overlay(context, rank, candidate_id)
     common["P9结果状态"] = p9.state
     common["P9主酶候选状态"] = p9.status
@@ -1154,7 +1185,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
         )
     elif p9.state != "current":
         validation_warning = (
-            "该候选已有 P8 结果，但尚未完成有效的 P9 主酶候选检索"
+            "该候选已有 P8 结果；请先 write --solution N，再运行统一的 main-enzyme"
         )
     else:
         validation_warning = (
@@ -1189,7 +1220,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
                 ],
                 overlay.warning,
                 p9.warning,
-                "RP2 主酶候选即使结构相似度为 1 也仍需人工复核，P9 不允许正式晋升",
+                "RP2 主酶候选即使结构相似度为 1 也仍需人工复核",
             ]
         ),
     }

@@ -112,6 +112,18 @@ ENZYME_CANDIDATE_COLUMNS = (
     "protein_score",
     "taxonomic_distance",
     "sequence_sha256",
+    "sequence",
+    "sequence_version",
+    "score_breakdown",
+    "candidate_role",
+    "publication_ids",
+    "catalytic_activities",
+    "catalytic_activity_records_json",
+    "cofactors",
+    "function_comments",
+    "enzyme_system_type",
+    "auxiliary_requirement_status",
+    "auxiliary_requirements_json",
     "warnings",
     "reasons",
     "rejection_reasons",
@@ -790,6 +802,28 @@ def _candidate_record(
             else candidate.selenzyme_taxonomic_distance
         ),
         "sequence_sha256": candidate.sequence_sha256,
+        "sequence": candidate.sequence,
+        "sequence_version": candidate.sequence_version or "",
+        "score_breakdown": json.dumps(
+            candidate.score_breakdown,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "candidate_role": candidate.candidate_role,
+        "publication_ids": ";".join(candidate.publication_ids),
+        "catalytic_activities": " | ".join(candidate.catalytic_activities),
+        "catalytic_activity_records_json": json.dumps(
+            candidate.catalytic_activity_records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "cofactors": " | ".join(candidate.cofactors),
+        "function_comments": " | ".join(candidate.function_comments),
+        "enzyme_system_type": candidate.component_type,
+        "auxiliary_requirement_status": "not_required",
+        "auxiliary_requirements_json": "[]",
         "warnings": " | ".join(candidate.warnings),
         "reasons": " | ".join(candidate.reasons),
         "rejection_reasons": "",
@@ -1265,6 +1299,323 @@ def _bind_candidate(
     }
 
 
+def requirements_from_manifest(
+    requirements: Sequence[Mapping[str, Any]],
+    rules: Mapping[str, Mapping[str, str]],
+) -> list[RetropathEnzymeRequirement]:
+    """Build P9 search identities from already selected manifest steps."""
+
+    result: list[RetropathEnzymeRequirement] = []
+    for requirement in requirements:
+        if str(requirement.get("step_source") or "").strip() != "retropath":
+            continue
+        provenance = requirement.get("prediction_provenance")
+        if not isinstance(provenance, Mapping):
+            raise ValueError("RetroPath manifest step lacks prediction provenance")
+        rule_id = str(
+            requirement.get("retropath_rule_id")
+            or provenance.get("rule_id")
+            or ""
+        ).strip()
+        rule = rules.get(rule_id)
+        if rule is None:
+            raise ValueError(f"RR02 rule is missing for manifest step: {rule_id}")
+        step_id = str(
+            requirement.get("retropath_step_id")
+            or provenance.get("step_id")
+            or ""
+        ).strip()
+        hypothesis_id = str(
+            requirement.get("retropath_hypothesis_id")
+            or provenance.get("hypothesis_id")
+            or ""
+        ).strip()
+        reaction_id = str(requirement.get("reaction_id") or "").strip()
+        if not step_id or not hypothesis_id or reaction_id != hypothesis_id:
+            raise ValueError("RetroPath manifest reaction identity is inconsistent")
+        candidate_rank = _as_int(
+            provenance.get("candidate_rank"),
+            "candidate_rank",
+            minimum=1,
+        )
+        candidate_id = str(provenance.get("candidate_id") or "").strip()
+        combination_id = str(provenance.get("combination_id") or "").strip()
+        if not candidate_id or not combination_id:
+            raise ValueError("RetroPath manifest route binding is incomplete")
+        source_ecs = _complete_ecs(
+            requirement.get("source_ec_numbers")
+            or provenance.get("source_ec_numbers")
+            or []
+        )
+        exact_kegg = tuple(sorted({
+            value.upper()
+            for value in _split(
+                requirement.get("exact_kegg_reaction_ids")
+                or provenance.get("exact_kegg_reaction_ids")
+            )
+            if re.fullmatch(r"R\d{5}", value.upper())
+        }))
+        exact_rhea = tuple(sorted(
+            _split(
+                requirement.get("exact_rhea_ids")
+                or provenance.get("exact_rhea_ids")
+            ),
+            key=lambda value: int(value) if value.isdigit() else 10**12,
+        ))
+        formal_exact = bool(
+            requirement.get("formal_mapping_exact")
+            or provenance.get("formal_mapping_exact")
+        )
+        result.append(RetropathEnzymeRequirement(
+            candidate_rank=candidate_rank,
+            candidate_id=candidate_id,
+            combination_id=combination_id,
+            step_index=_as_int(
+                requirement.get("step_index"),
+                "step_index",
+                minimum=1,
+            ),
+            step_id=step_id,
+            step_source="retropath",
+            step_status="heterologous",
+            hypothesis_id=hypothesis_id,
+            reaction_signature_sha256=str(
+                requirement.get("reaction_signature_sha256")
+                or provenance.get("reaction_signature_sha256")
+                or ""
+            ),
+            full_reaction_smiles=str(
+                requirement.get("full_reaction_smiles")
+                or provenance.get("full_reaction_smiles")
+                or ""
+            ),
+            core_reaction_smiles=str(
+                requirement.get("core_reaction_smiles")
+                or provenance.get("core_reaction_smiles")
+                or ""
+            ),
+            rule_id=rule_id,
+            rule_smarts=str(rule.get("Rule") or "").strip(),
+            source_mnxr_id=str(
+                requirement.get("source_mnxr_id")
+                or provenance.get("source_mnxr_id")
+                or ""
+            ),
+            source_reaction_ids=_split(
+                requirement.get("source_reaction_ids")
+                or provenance.get("source_reaction_ids")
+            ),
+            source_ec_numbers=source_ecs,
+            source_uniprot_ids=_split(
+                requirement.get("source_uniprot_ids")
+                or provenance.get("source_uniprot_ids")
+            ),
+            source_rhea_ids=_split(
+                requirement.get("source_rhea_ids")
+                or provenance.get("source_rhea_ids")
+            ),
+            exact_kegg_reaction_ids=exact_kegg if formal_exact else tuple(),
+            exact_rhea_ids=exact_rhea if formal_exact else tuple(),
+            formal_mapping_exact=formal_exact,
+            enzyme_required=True,
+        ))
+    return result
+
+
+def _standard_candidate_row(
+    requirement: Mapping[str, Any],
+    search_requirement: RetropathEnzymeRequirement,
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    fit_status = str(row.get("fit_status") or "manual_review").strip()
+    similarity = _as_float(row.get("reaction_similarity"))
+    reaction_fit_score = (
+        1.0
+        if fit_status == "verified"
+        else (similarity if similarity is not None and similarity > 0 else 0.0)
+    )
+    evidence_tier = str(row.get("evidence_tier") or "").strip()
+    source_ids = ";".join(dict.fromkeys((
+        *search_requirement.source_reaction_ids,
+        search_requirement.source_mnxr_id,
+    )))
+    return {
+        "solution_id": requirement.get("solution_id"),
+        "step_index": requirement.get("step_index"),
+        "reaction_id": requirement.get("reaction_id"),
+        "reaction_name": requirement.get("reaction_name"),
+        "produced_compound_id": requirement.get("produced_compound_id"),
+        "produced_compound_name": requirement.get("produced_compound_name"),
+        "role": "main",
+        "candidate_role": row.get("candidate_role") or "catalytic_main",
+        "ec_number": next(iter(_split(row.get("ec_numbers"))), ""),
+        "ec_numbers": row.get("ec_numbers", ""),
+        "accession": row.get("accession", ""),
+        "entry_name": row.get("entry_name", ""),
+        "protein_name": row.get("protein_name", ""),
+        "organism_name": row.get("organism_name", ""),
+        "organism_id": row.get("organism_id", ""),
+        "reviewed": row.get("reviewed", "false"),
+        "length": row.get("length", ""),
+        "score": row.get("protein_score", 0.0),
+        "score_breakdown": row.get("score_breakdown", "{}"),
+        "evaluation_rank": row.get("protein_candidate_rank", ""),
+        "candidate_rank": row.get("protein_candidate_rank", ""),
+        "selection_status": row.get("selection_status", ""),
+        "retrieval_strategy": row.get("retrieval_strategies", ""),
+        "retrieval_query_id": row.get("retrieval_query_ids", ""),
+        "matched_rhea_ids": row.get("matched_rhea_ids", ""),
+        "matched_ko_ids": "",
+        "direction_support": row.get("direction_verdict", "unknown"),
+        "direction_verdict": row.get("direction_verdict", "unknown") or "unknown",
+        "direction_confidence": row.get("direction_confidence", "") or "low",
+        "reaction_confidence": evidence_tier,
+        "publication_ids": row.get("publication_ids", ""),
+        "catalytic_activities": row.get("catalytic_activities", ""),
+        "catalytic_activity_records_json": row.get(
+            "catalytic_activity_records_json", "[]"
+        ),
+        "cofactors": row.get("cofactors", ""),
+        "function_comments": row.get("function_comments", ""),
+        "sequence_version": row.get("sequence_version", ""),
+        "sequence_sha256": row.get("sequence_sha256", ""),
+        "sequence": row.get("sequence", ""),
+        "warnings": row.get("warnings", ""),
+        "reasons": " | ".join(filter(None, (
+            str(row.get("reasons") or ""),
+            f"retropath_evidence_tier:{evidence_tier}",
+            f"retropath_source_reactions:{source_ids}" if source_ids else "",
+        ))),
+        "rejection_reasons": row.get("rejection_reasons", ""),
+        "reaction_fit_status": fit_status,
+        "reaction_fit_score": reaction_fit_score,
+        "reaction_fit_rule_ids": search_requirement.rule_id,
+        "reaction_fit_evidence": (
+            f"RetroPath evidence tier {evidence_tier}; "
+            f"template {search_requirement.source_mnxr_id}"
+        ),
+        "specificity_status": (
+            "supported" if search_requirement.formal_mapping_exact else "unknown"
+        ),
+        "enzyme_system_type": row.get("enzyme_system_type", ""),
+        "auxiliary_requirement_status": row.get(
+            "auxiliary_requirement_status", "not_required"
+        ),
+        "auxiliary_requirements_json": row.get(
+            "auxiliary_requirements_json", "[]"
+        ),
+        "selenzyme_reaction_similarity": row.get("reaction_similarity", ""),
+        "selenzyme_sim_rf": row.get("sim_rf", ""),
+        "selenzyme_sim_2018": row.get("sim_2018", ""),
+        "selenzyme_matched_reaction_id": row.get("matched_reaction_id", ""),
+        "source_mnxr_id": search_requirement.source_mnxr_id,
+        "retropath_rule_id": search_requirement.rule_id,
+        "retropath_hypothesis_id": search_requirement.hypothesis_id,
+        "retropath_evidence_tier": evidence_tier,
+        "manual_review_required": row.get("manual_review_required", "true"),
+    }
+
+
+def retrieve_manifest_retropath_candidates(
+    requirements: Sequence[Mapping[str, Any]],
+    *,
+    config: Any,
+    top_n: int,
+    max_results: int,
+    allow_transmembrane: bool,
+    session: requests.Session,
+) -> dict[str, Any]:
+    """Retrieve predicted-step candidates and project standard candidate rows."""
+
+    rules_path = Path(config.retropath_rules_path).expanduser().resolve()
+    rules = _load_rules(rules_path)
+    search_requirements = requirements_from_manifest(requirements, rules)
+    if not search_requirements:
+        return {
+            "selected_rows": [],
+            "audit_rows": [],
+            "requirements": [],
+            "evidence": [],
+            "source_unavailable": False,
+        }
+    by_step = {
+        _as_int(item.get("step_index"), "step_index", minimum=1): item
+        for item in requirements
+        if str(item.get("step_source") or "").strip() == "retropath"
+    }
+    chassis_key = str(getattr(config, "chassis_key", "ecoli_mg1655") or "ecoli_mg1655")
+    cache_root = Path(config.cache_dir).resolve() / "main_protein_selection"
+    client_error = ""
+    try:
+        selenzyme_client: SelenzymeClient | None = SelenzymeClient(
+            session=session,
+            cache_root=cache_root / "selenzyme",
+        )
+    except Exception as exc:
+        client_error = str(exc)
+        selenzyme_client = None
+    rhea_client = RheaClient(session=session, cache_root=cache_root / "rhea")
+    entry_cache: dict[str, dict[str, Any] | None] = {}
+    search_cache: dict[str, _SearchOutcome] = {}
+    selected: list[dict[str, Any]] = []
+    audit: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    source_unavailable = False
+    for search_requirement in search_requirements:
+        key = _search_key(search_requirement)
+        if key not in search_cache:
+            search_cache[key] = _search_requirement(
+                search_requirement,
+                chassis_key=chassis_key,
+                top_n=top_n,
+                max_results=max_results,
+                allow_transmembrane=allow_transmembrane,
+                session=session,
+                rhea_client=rhea_client,
+                selenzyme_client=selenzyme_client,
+                selenzyme_circuit_error=client_error,
+                entry_cache=entry_cache,
+            )
+        outcome = search_cache[key]
+        source_unavailable |= outcome.source_unavailable
+        if outcome.source_unavailable and any(
+            row.get("status") == "source_unavailable"
+            and str(row.get("query_type") or "").startswith("selenzyme")
+            for row in outcome.evidence
+        ):
+            selenzyme_client = None
+        base_requirement = by_step[search_requirement.step_index]
+        selected.extend(
+            _standard_candidate_row(base_requirement, search_requirement, row)
+            for row in outcome.candidates
+        )
+        audit.extend(
+            _standard_candidate_row(base_requirement, search_requirement, row)
+            for row in outcome.audit
+        )
+        evidence.extend(
+            {"search_key": key, "step_index": search_requirement.step_index, **row}
+            for row in outcome.evidence
+        )
+    selected.sort(key=lambda row: (
+        int(row.get("step_index") or 0),
+        int(row.get("candidate_rank") or 0),
+        str(row.get("accession") or ""),
+    ))
+    audit.sort(key=lambda row: (
+        int(row.get("step_index") or 0),
+        int(row.get("evaluation_rank") or 0),
+        str(row.get("accession") or ""),
+    ))
+    return {
+        "selected_rows": selected,
+        "audit_rows": audit,
+        "requirements": [item.to_dict() for item in search_requirements],
+        "evidence": evidence,
+        "source_unavailable": source_unavailable,
+    }
+
+
 def _combination_summaries(
     requirements: Sequence[RetropathEnzymeRequirement],
     selected: Sequence[Mapping[str, Any]],
@@ -1626,5 +1977,7 @@ __all__ = [
     "STEP_ENZYME_AUDIT_FILE_NAME",
     "STEP_ENZYME_CANDIDATES_FILE_NAME",
     "run_retropath_enzyme_selection",
+    "requirements_from_manifest",
+    "retrieve_manifest_retropath_candidates",
     "select_retropath_enzymes",
 ]

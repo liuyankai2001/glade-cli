@@ -38,6 +38,14 @@ STEP_FIELD_NAMES = {
     "step_source": "步骤来源",
     "expansion_depth": "扩展深度",
     "expansion_anchor_compounds": "扩展锚点化合物",
+    "retropath_step_id": "RetroPath步骤ID",
+    "retropath_hypothesis_id": "计量假设ID",
+    "retropath_rule_id": "RetroRules规则ID",
+    "source_mnxr_id": "来源MNXR反应",
+    "source_ec_numbers": "来源模板EC",
+    "formal_mapping_exact": "是否精确映射已知反应",
+    "full_reaction_smiles": "完整Reaction SMILES",
+    "prediction_review_required": "预测风险待复核",
 }
 
 FIELD_VALUE_NAMES = {
@@ -58,6 +66,7 @@ FIELD_VALUE_NAMES = {
         "none": "无",
         "explicit_multistep_component": "多步反应的已解析组分",
         "merged_complete_reaction": "已合并为完整反应",
+        "retropath_prediction": "RetroPath预测反应",
     },
 }
 
@@ -279,22 +288,37 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     missing_electron_columns = required_electron_columns.difference(
         summary_rows[0]
     )
-    run_config_path = gap_dir / "run_config.json"
-    try:
-        run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
-        raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
-    if (
-        not isinstance(run_config, dict)
-        or run_config.get("electron_inference_version")
-        != ELECTRON_INFERENCE_VERSION
-        or missing_electron_columns
-    ):
-        raise ValueError(
-            "gap 结果使用旧版电子推断，请重新运行："
-            f"gap -i <输入文件> -d {expansion_depth}"
-        )
     summary = _select_solution_summary(summary_rows, selected_solution_id)
+    solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
+    if solution_source == "retropath":
+        from src.pathway_analyze.retropath_promotion import (
+            verify_retropath_solution_promotion,
+        )
+
+        verify_retropath_solution_promotion(
+            gap_dir=gap_dir,
+            target_compound=target_compound,
+            expansion_depth=expansion_depth,
+            solution_id=selected_solution_id,
+        )
+        if missing_electron_columns:
+            raise ValueError("RetroPath 正式路线缺少电子系统字段，请重新验证")
+    else:
+        run_config_path = gap_dir / "run_config.json"
+        try:
+            run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
+        if (
+            not isinstance(run_config, dict)
+            or run_config.get("electron_inference_version")
+            != ELECTRON_INFERENCE_VERSION
+            or missing_electron_columns
+        ):
+            raise ValueError(
+                "gap 结果使用旧版电子推断，请重新运行："
+                f"gap -i <输入文件> -d {expansion_depth}"
+            )
 
     all_rows = _read_csv_rows(steps_path)
     if not all_rows:
@@ -323,6 +347,7 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         "目标化合物": target_compound,
         "Gap深度": expansion_depth,
         "路径编号": selected_solution_id,
+        "路线来源": "RetroPath预测" if solution_source == "retropath" else "KEGG",
     }
     if selected_step_index is not None:
         if selected_step_index > len(forward_rows):
@@ -364,6 +389,9 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             summary.get("requires_carrier_compatibility_check")
         ),
         "可以推荐": bool(summary.get("eligible_for_recommendation")),
+        "预测风险待复核": bool(summary.get("prediction_review_required")),
+        "RetroPath候选排名": summary.get("retropath_candidate_rank"),
+        "RetroPath组合ID": summary.get("retropath_combination_id"),
         "反应步骤": [
             _step_overview(row, step_index)
             for step_index, row in enumerate(forward_rows, start=1)

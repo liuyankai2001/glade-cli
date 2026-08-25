@@ -155,6 +155,7 @@ def heterologous_requirements(steps: list[dict[str, Any]]) -> list[dict[str, Any
         result.append({
             "solution_id": int(step.get("solution_id") or 0),
             "step_index": int(step.get("step_index") or 0),
+            "step_source": str(step.get("step_source") or ""),
             "reaction_id": str(step.get("reaction_id") or ""),
             "reaction_name": str(step.get("reaction_name") or ""),
             "reaction_comment": str(step.get("reaction_comment") or ""),
@@ -172,10 +173,48 @@ def heterologous_requirements(steps: list[dict[str, Any]]) -> list[dict[str, Any
             "rhea_ids": _split_list_field(step.get("rhea_ids")),
             "ec_numbers": _split_list_field(step.get("enzyme_ecs")),
             "locked_ec_numbers": _split_list_field(
-                step.get("locked_enzyme_ecs") or step.get("enzyme_ecs")
+                step.get("locked_enzyme_ecs")
+                if str(step.get("step_source") or "").strip() == "retropath"
+                else (step.get("locked_enzyme_ecs") or step.get("enzyme_ecs"))
             ),
             "ec_status": str(step.get("ec_status") or ""),
             "enzyme_search_eligible": str(step.get("enzyme_search_eligible") or ""),
+            "retropath_step_id": str(step.get("retropath_step_id") or ""),
+            "retropath_hypothesis_id": str(
+                step.get("retropath_hypothesis_id") or ""
+            ),
+            "retropath_rule_id": str(step.get("retropath_rule_id") or ""),
+            "source_mnxr_id": str(step.get("source_mnxr_id") or ""),
+            "source_ec_numbers": _split_list_field(
+                step.get("source_ec_numbers")
+            ),
+            "source_uniprot_ids": _split_list_field(
+                step.get("source_uniprot_ids")
+            ),
+            "source_rhea_ids": _split_list_field(step.get("source_rhea_ids")),
+            "exact_kegg_reaction_ids": _split_list_field(
+                step.get("exact_kegg_reaction_ids")
+            ),
+            "exact_rhea_ids": _split_list_field(step.get("exact_rhea_ids")),
+            "formal_mapping_exact": bool(step.get("formal_mapping_exact")),
+            "reaction_signature_sha256": str(
+                step.get("reaction_signature_sha256") or ""
+            ),
+            "full_reaction_smiles": str(step.get("full_reaction_smiles") or ""),
+            "core_reaction_smiles": str(step.get("core_reaction_smiles") or ""),
+            "stoichiometry_terms": (
+                list(step.get("stoichiometry_terms") or [])
+                if isinstance(step.get("stoichiometry_terms"), list)
+                else []
+            ),
+            "prediction_provenance": (
+                dict(step.get("prediction_provenance") or {})
+                if isinstance(step.get("prediction_provenance"), dict)
+                else {}
+            ),
+            "prediction_review_required": bool(
+                step.get("prediction_review_required")
+            ),
             "auxiliary_requirements": (
                 list(step.get("auxiliary_requirements") or [])
                 if isinstance(step.get("auxiliary_requirements"), list)

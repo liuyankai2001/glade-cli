@@ -471,6 +471,17 @@ class RetroPathStrictGemTests(unittest.TestCase):
                 "src.pathway_analyze.retropath_gem_validation.reconstruct_retropath_step",
                 return_value=reconstruction,
             ),
+            patch(
+                "src.pathway_analyze.retropath_promotion.materialize_retropath_solutions",
+                return_value={
+                    "formal_solution_ids": [1],
+                    "solution_mappings": [{"solution_id": 1}],
+                    "promotion_manifest": str(
+                        retropath_dir / "formal_solution_promotion.json"
+                    ),
+                    "promotion_manifest_sha256": "a" * 64,
+                },
+            ),
         ):
             result = validate_retropath_candidates(config)
 
@@ -483,7 +494,8 @@ class RetroPathStrictGemTests(unittest.TestCase):
         manifest = json.loads(
             (validation_dir / "validation_manifest.json").read_text(encoding="utf-8")
         )
-        self.assertFalse(manifest["formal_promotion_allowed"])
+        self.assertTrue(manifest["formal_promotion_allowed"])
+        self.assertEqual([1], result["formal_solution_ids"])
         self.assertEqual(1, result["summary_row_count"])
         with (validation_dir / STOICHIOMETRY_TERMS_FILE_NAME).open(
             "r",

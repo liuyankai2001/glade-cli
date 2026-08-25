@@ -1110,9 +1110,20 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             "mnxref_index_sha256": index_manifest["index_sha256"],
         },
         "artifacts": artifact_records,
-        "formal_promotion_allowed": False,
+        "formal_promotion_allowed": any(
+            row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
+            for row in summary_rows
+        ),
     }
     manifest_sha256 = _atomic_write_json(manifest_path, manifest)
+    from src.pathway_analyze.retropath_promotion import (
+        materialize_retropath_solutions,
+    )
+
+    promotion = materialize_retropath_solutions(
+        config,
+        validation_manifest_path=manifest_path,
+    )
     return {
         "ok": True,
         "search_engine": "retropath",
@@ -1125,7 +1136,11 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "validation_manifest_sha256": manifest_sha256,
         "summary_row_count": len(summary_rows),
         "flux_row_count": len(flux_rows),
-        "formal_promotion_allowed": False,
+        "formal_promotion_allowed": manifest["formal_promotion_allowed"],
+        "formal_solution_ids": promotion["formal_solution_ids"],
+        "solution_mappings": promotion["solution_mappings"],
+        "promotion_manifest": promotion["promotion_manifest"],
+        "promotion_manifest_sha256": promotion["promotion_manifest_sha256"],
     }
 
 

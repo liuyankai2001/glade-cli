@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示、P8 计量与严格 GEM 验证、P9 预测步骤主酶候选检索已完成
+> 文档状态：P0–P10 已完成；P10 已将严格通过的预测路线接入统一 solution、manifest、主酶候选和主酶组合流程
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -20,7 +20,8 @@
 | 完整路线 | 所有边界 sink 的 A0→X KEGG witness 与 X→目标 RetroPath 预测 DAG 拼接 |
 | 预测反应 ID | 使用 RP2:哈希，禁止伪造 Rxxxxx |
 | 预测中间体 ID | 使用 RP2CPD:InChIKey或结构哈希，禁止伪造 Cxxxxx |
-| 第一阶段结果 | 只输出候选路线，不写入正式 solutions.csv、manifest 或主酶选择 |
+| P5–P7 候选阶段 | 只输出隔离候选，不写入正式 solution 或 manifest |
+| P8–P10 正式阶段 | 只有严格 GEM 通过的计量组合才物化为正式 solution；预测风险持续记录但不阻断后续设计 |
 | 正式晋升 | 必须通过结构、计量、GEM、酶证据和人工复核门禁 |
 
 ### P0 本地服务架构（2026-08-24 更新）
@@ -235,11 +236,11 @@ P8 验收记录：
 
 ### P9 预测步骤主酶候选检索（2026-08-25 更新）
 
-P9 已将通过 P8 的混合路线接入现有主酶检索能力，但继续保持预测路线与正式
-manifest 隔离：
+P9 首先在隔离候选上实现了预测步骤酶检索；P10 保留其检索核心并废弃了候选直连
+CLI。以下为 P9 的历史交付边界：
 
-- 用户使用 `main-enzyme --retropath-candidate N --depth D` 选择路线，系统自动处理该
-  路线全部 `PASS_STRICT_ROUTE_FLUX` 计量组合；默认 `main-enzyme` 的 KEGG 行为不变；
+- P9 曾使用 `main-enzyme --retropath-candidate N --depth D` 直接读取隔离候选；P10
+  已改为先 `write --solution N`，再执行无来源参数的 `main-enzyme`；
 - 检索身份固定为 candidate、combination、step、hypothesis 四级绑定，不同 NADH/
   NADPH 等辅因子假设生成不同结构签名和独立候选组；
 - 只有目标完整计量/结构与来源 MNXR 完全一致时，才将 KEGG/Rhea 映射视为正式反应；
@@ -249,12 +250,34 @@ manifest 隔离：
 - SelenzymeRF 结构命中即使 reaction similarity 为 1，也固定为 `manual_review`，不会
   标记成已验证酶；缺失、零或非法相似度以及 EC/方向冲突进入审计表；
 - 所有组合按覆盖完整性、最差步骤证据、最低相似度确定性排序，只作推荐，不自动选择；
-- 输出 requirements、Top-N 候选、完整审计、Selenzyme 查询证据和带输入/输出 SHA-256
-  的 `retropath_enzyme_selection.v1`；`formal_promotion_allowed` 固定为 false；
+- P9 输出 requirements、Top-N 候选、完整审计、Selenzyme 查询证据和带输入/输出
+  SHA-256 的隔离 selection manifest；P10 将相同证据投影到标准主酶 artifacts；
 - `info --retropath-candidate N [--step N]` 只在哈希仍有效时显示 P9 组合和候选酶；
   最终人工确认与正式 manifest 晋升留给 P10；
 - P1–P9 RetroPath 定向测试 116 项通过、2 项本地 Docker 测试按设计跳过；全仓库
   463 项通过、2 项跳过，真实 RR02/MNXref 完整反应身份冒烟通过。
+
+### P10 统一 solution、manifest 与主酶流程（2026-08-25 更新）
+
+P10 已取消主酶阶段的独立 RetroPath 路线入口。P8 严格通过组合先成为正式 solution，
+后续只读取 manifest：
+
+- `validate --retropath-candidates` 将每个 `PASS_STRICT_ROUTE_FLUX` 组合物化成一个
+  solution，保留 KEGG 原编号并从最大 KEGG 编号后追加；本次验证替换旧 RetroPath
+  slice，重复运行幂等；
+- `formal_solution_promotion.json` 最后写入，绑定 P5/P8/RR02/MNXref 与四个正式 CSV
+  的 SHA-256；部分写入、上游变化或手工修改均 fail closed；
+- `info --solution N` 和 `write --solution N` 自动识别 KEGG/RetroPath。预测步骤使用
+  P8 `RP2STOICH` 假设作为正式反应身份，保存完整计量、Reaction SMILES、规则、来源
+  模板、精确映射和 pending review provenance；
+- `main-enzyme` 删除 `--retropath-candidate` 与 `--depth`。KEGG prefix 复用原检索，
+  RP2 suffix 自动使用 P9 来源模板和结构检索，并写入同一标准候选 artifact；
+- 公共组合器接受 `manual_review`，质量顺序固定为 `verified > verified_with_risk >
+  manual_review`；预测候选可形成完整组合，但组合和 manifest 保留待复核状态；
+- 根据产品决定，预测风险只记录、不阻断 `write --solution`、`write --main-enzyme-set`
+  或后续表达设计；
+- P1–P10 定向收集 123 项；全仓库 468 项通过、2 项本地 Docker 测试按设计跳过，
+  另有 93 个子测试通过。
 
 ## 2. 用户工作流
 
@@ -265,6 +288,9 @@ manifest 隔离：
 | 生成深度 3 扩展 | <code>expand --input example.json --depth 3</code> | 生成 A0 到 A3 的累计集合、frontier 和 witness |
 | RetroPath 连接 A3 | <code>gap --input example.json --depth 3 --retropath</code> | 使用累计集合 A3 作为 sink，命中后恢复 KEGG witness |
 | depth 结果缺失 | 指定 depth 3 和 <code>--retropath</code>，但未运行 expand | 明确报错并提示先运行对应 expand |
+| 严格验证并生成正式路线 | <code>validate --input example.json --retropath-candidates --depth 3</code> | 每个 P8 严格通过组合获得正式 solution 编号 |
+| 写入预测路线 | <code>write --input example.json --solution N --depth 3</code> | 与 KEGG 共用 solution/manifest 接口并记录预测 provenance |
+| 预测路线主酶 | <code>main-enzyme --input example.json</code> | 从 manifest 自动分流 KEGG 与 RetroPath Step，不再指定候选或 depth |
 
 原始搜索无解时，建议提示：
 
@@ -308,7 +334,7 @@ manifest 隔离：
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、拒绝原因、严格验证与逐步通量 | P1–P8 定向 107 项、全仓库 454 项通过；真实来源模板冒烟通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为 P8 可行混合路线生成候选酶 | candidate/combination/step/hypothesis 身份绑定；精确反应、来源模板、完整/核心 Reaction SMILES、Rule SMARTS 分级检索；结构命中只供人工复核 | 新增 RetroPath enzyme selection；扩展 Selenzyme client、main-enzyme CLI 和 P7 | requirements、Top-N/审计候选、Selenzyme 证据、带哈希 selection manifest | P1–P9 定向 116 项、全仓库 463 项通过；P8 防篡改、多假设分离、结构请求缓存、相似度 1 不误判、真实 MNXref 身份冒烟通过 | P8；CLI/.gitignore 单次授权已使用 | 已完成 |
-| P10 manifest 晋升 | P2 | 将通过门禁的混合路线纳入正式设计 | 增加预测 provenance、验证状态、人工复核状态；只有 promoted 路线可写正式 manifest | src/write_manifest、src/info_show | 正式混合路线 manifest | 未验证预测路线不能进入表达设计 | P8、P9 | 待办 |
+| P10 统一正式流程 | P1 | 将严格通过的混合路线纳入现有 solution、manifest 和主酶流程 | P8 PASS 组合物化；promotion 哈希提交；manifest 自动分流步骤；公共组合器支持 manual_review | src/pathway_analyze、src/write_manifest、src/main_protein_selection、src/info_show | 正式混合 solution、统一主酶 artifacts 和带 pending review 的 manifest | KEGG 编号/行为不变；篡改 fail closed；统一命令闭环；全仓库 468 项通过 | P8、P9 | 已完成 |
 | P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 待办 |
 
 ## 5. 第一批应实施的文件
@@ -644,6 +670,10 @@ P9 已使用本阶段单次授权修改 `src/cli/commands/main_enzyme.py` 和 `.
 仅放行 `tests/test_retropath_enzyme_selection.py`。复用现有远端 SelenzymeRF 配置，
 未修改 `services/`、`data/`、`.env` 或项目依赖。
 
+P10 已获得一次性授权修改 `src/cli/commands/main_enzyme.py`、`src/cli/commands/write.py`
+和 `.gitignore`；实际按最小修改原则只删除 main-enzyme 的临时候选/depth 参数，并在
+`.gitignore` 放行 `tests/test_retropath_promotion.py`，未修改 write CLI 或项目依赖。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -660,7 +690,7 @@ P9 已使用本阶段单次授权修改 `src/cli/commands/main_enzyme.py` 和 `.
 - [x] P7：增加候选路线信息展示
 - [x] P8：补全计量并接 strict GEM
 - [x] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
-- [ ] P10：加入人工复核和 promoted 晋升门禁
+- [x] P10：严格通过组合物化为统一 solution，并接入 manifest 驱动的主酶完整流程
 - [ ] P11：完成隐藏反应、promiscuity 和青蒿素等回测
 
 ## 14. 第一里程碑完成定义
