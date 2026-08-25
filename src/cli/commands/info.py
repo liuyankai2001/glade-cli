@@ -15,6 +15,17 @@ def register(subparsers):
         type=int,
         help="查看指定路线的完整步骤",
     )
+    view_group.add_argument(
+        "--retropath",
+        action="store_true",
+        help="查看 RetroPath 运行状态和预测候选摘要",
+    )
+    view_group.add_argument(
+        "--retropath-candidate",
+        type=int,
+        metavar="N",
+        help="查看排名第 N 的 RetroPath 预测候选详情",
+    )
 
     view_group.add_argument(
         "--main-enzyme-candidates",
@@ -59,7 +70,10 @@ def register(subparsers):
         type=int,
         metavar="N",
         default=None,
-        help="查看路线中的第 N 步，必须与 --solution 一起使用",
+        help=(
+            "查看路线或候选中的第 N 步，支持 --solution、"
+            "--retropath-candidate 和主酶候选视图"
+        ),
     )
     p.set_defaults(func=run_info)
     return p

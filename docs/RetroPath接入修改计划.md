@@ -1,6 +1,6 @@
 # RetroPath 接入修改计划
 
-> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程已完成
+> 文档状态：P0 本地服务、P1 预测数据模型、P2 结构与输入生成、P3 HTTP client、P4 网络解析与路径枚举、P5 路线拼接与候选输出、P6 CLI 完整流程、P7 候选信息展示已完成
 > 制定日期：2026-08-24  
 > 适用项目：GLADE  
 > 目标：为现有 KEGG 通路搜索增加由用户显式启用的 RetroPath 预测搜索，同时隔离并审计预测反应，避免其未经验证进入正式设计流程。
@@ -185,6 +185,29 @@ P6 验收记录：
   435 项通过、2 项需显式本地服务地址的测试跳过。P6 测试未启动 Docker 或访问实时
   KEGG，真实 KNIME 环境沿用 P0 已完成的服务冒烟记录。
 
+### P7 候选信息展示（2026-08-25 更新）
+
+P7 已在 `src/info_show/retropath_info.py` 实现独立的 RetroPath 运行摘要、候选 DAG
+详情和单步下钻，并通过 `info --retropath` 与 `info --retropath-candidate N` 暴露给
+用户。预测候选仍与正式 KEGG solution 隔离。
+
+P7 验收记录：
+
+- `info --retropath -d N` 展示目标、sink 来源、job/service/cache、scope、输入结构、
+  sink/path/candidate/rejection 数量、候选摘要、拒绝原因统计和截断风险；
+- `info --retropath-candidate N -d N` 按 P5 拓扑顺序展示混合反应 DAG，明确区分
+  KEGG expansion prefix 与 RetroPath/RP2 预测步骤；
+- 候选步骤保留计量、依赖、Reaction SMILES、规则、来源反应、EC、specificity、
+  score 语义、平衡和辅因子恢复状态；追加 `--step M` 可查看单步详情；
+- `source_in_sink`、`no_scope` 和失败运行均可读取；失败摘要只依赖
+  `pipeline_result.json`，不伪造或要求候选 CSV；
+- 成功结果严格校验 `retropath_pipeline_result.v1`、目标、depth、sink 来源、固定
+  本地路径、三个候选文件 SHA-256/表头/数量、candidate ID、连续排名和 DAG 依赖；
+- 所有含 RP2 步骤的视图明确标记尚未完成计量、GEM、酶证据和人工复核，不允许
+  用户把 P7 展示结果误认为正式可实施路线；
+- 7 项 P7 离线测试通过；当前 P1–P7 RetroPath 测试模块共 95 项通过；全仓库回归
+  442 项通过、2 项需显式本地服务地址的测试按设计跳过。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -234,7 +257,7 @@ P6 验收记录：
 | P4 网络解析与路径枚举 | P0 | 从预测网络得到完整路径 | 解析 transformation、结构、sink 命中、rule、EC、specificity、score；以内置 AND/OR 等价枚举器生成完整分支路径 | 新增 retropath_parser.py、retropath_routes.py | 逆向候选路径与拒绝原因 | 16 项 P4 测试通过；完整 InChIKey sink 闭合、环路、重复与上限处理正确 | P3 | 已完成 |
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | 将 Target→sink 分支图翻转为 sink→Target；恢复全部 expansion witness；合并共享步骤并限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | 13 项 P5 测试通过；depth 0 无 prefix、depth N 多 sink DAG 和方向正确、不伪造 KEGG ID | P2、P4 | 已完成 |
 | P6 CLI 与运行配置 | P0 | 暴露显式开关 | gap 增加 <code>--retropath</code>，默认 False；增加本地服务、规则、步数和超时配置；不自动 expand | 新增 retropath_pipeline.py；修改 src/cli/commands/gap.py、src/config/run_config.py | 两种用户搜索方式、pipeline_result.json 和审计字段 | 7 项 P6 测试通过；不加参数时直接调用原 KEGG 入口；depth 0/N 符合约定 | 单次授权已使用 | 已完成 |
-| P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据和拒绝原因 | src/info_show | 候选路线摘要 | 清楚区分 KEGG 与预测步骤 | P5 | 待办 |
+| P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 恢复共底物/辅因子；分子式、电荷和平衡；GEM 从本地预测反应记录读取计量；运行 strict_l1 | 修改 gem_validation.py | 结构、计量和 GEM 验证结果 | 不平衡或辅因子不完整的路线禁止晋升；relaxed 不作为正式通过 | P5 | 待办 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为 RP2 步骤生成候选酶 | 支持 namespaced ID；优先正式反应映射，其次规则来源 EC/UniProt，最后用 Reaction SMILES/SMARTS 查询 SelenzymeRF | src/main_protein_selection、src/protein_selection | 候选酶及相似反应证据 | 保存 reaction similarity、sim_RF、匹配反应、方向和风险；无结构/无命中时阻断 | P8 | 待办 |
 | P10 manifest 晋升 | P2 | 将通过门禁的混合路线纳入正式设计 | 增加预测 provenance、验证状态、人工复核状态；只有 promoted 路线可写正式 manifest | src/write_manifest、src/info_show | 正式混合路线 manifest | 未验证预测路线不能进入表达设计 | P8、P9 | 待办 |
@@ -558,6 +581,9 @@ P6 已使用本阶段单次授权修改 `src/cli/commands/gap.py`、
 `src/config/run_config.py` 和 `.gitignore`；根目录文件仅额外放行
 `tests/test_retropath_pipeline.py`，未修改项目依赖。
 
+P7 已使用本阶段单次授权修改 `src/cli/commands/info.py` 和 `.gitignore`；根目录文件
+仅额外放行 `tests/test_retropath_info.py`，未修改项目依赖。
+
 外部 RetroPath 可执行文件和 RetroRules 规则包的落盘目录也需要在实施前确定。不建议将大型二进制和规则数据直接提交到 Git 仓库。
 
 ## 13. 推荐实施顺序
@@ -571,7 +597,7 @@ P6 已使用本阶段单次授权修改 `src/cli/commands/gap.py`、
 - [x] P5：翻转 RetroPath 路线并拼接 expansion witness
 - [x] P5：输出独立候选文件，不进入正式 solution
 - [x] P6：加入 <code>--retropath</code>，验证默认 KEGG 回归不变
-- [ ] P7：增加候选路线信息展示
+- [x] P7：增加候选路线信息展示
 - [ ] P8：补全计量并接 strict_l1 GEM
 - [ ] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
 - [ ] P10：加入人工复核和 promoted 晋升门禁

@@ -32,6 +32,12 @@ from src.info_show.protein_info import (
     run_protein_info,
     run_proteins_info,
 )
+from src.info_show.retropath_info import (
+    get_retropath_candidate_info,
+    get_retropath_info,
+    run_retropath_candidate_info,
+    run_retropath_info,
+)
 from src.info_show.solution_info import get_solution_info, run_solution_info
 
 
@@ -40,6 +46,7 @@ def run_info(config: Any) -> dict[str, Any]:
 
     main_enzyme_candidate = getattr(config, "main_enzyme_candidate", None)
     main_enzyme_set = getattr(config, "main_enzyme_set", None)
+    retropath_candidate = getattr(config, "retropath_candidate", None)
     if (
         main_enzyme_candidate is not None
         and getattr(config, "step", None) is None
@@ -50,11 +57,12 @@ def run_info(config: Any) -> dict[str, Any]:
             getattr(config, "solution", None) is not None
             or getattr(config, "main_enzyme_candidates", False)
             or main_enzyme_candidate is not None
+            or retropath_candidate is not None
         )
         if not supports_step:
             raise ValueError(
-                "--step 必须与 --solution、--main-enzyme-candidates "
-                "或 --main-enzyme-candidate 一起使用"
+                "--step 必须与 --solution、--main-enzyme-candidates、"
+                "--main-enzyme-candidate 或 --retropath-candidate 一起使用"
             )
     if getattr(config, "chassis", False):
         raw_depth = getattr(config, "depth", None)
@@ -66,6 +74,10 @@ def run_info(config: Any) -> dict[str, Any]:
         return run_chassis_expansion_info(config, depth)
     if getattr(config, "gap", False):
         return run_gap_info(config)
+    if getattr(config, "retropath", False):
+        return run_retropath_info(config)
+    if retropath_candidate is not None:
+        return run_retropath_candidate_info(config)
     if getattr(config, "protein", None) is not None:
         return run_protein_info(config)
     if getattr(config, "proteins", False):
@@ -82,6 +94,7 @@ def run_info(config: Any) -> dict[str, Any]:
         return run_solution_info(config)
     raise ValueError(
         "未指定信息查看类型，请使用 --chassis、--gap、--solution、"
+        "--retropath、--retropath-candidate、"
         "--main-enzyme-candidates、--main-enzyme-candidate、"
         "--main-enzyme-sets、--main-enzyme-set、--proteins 或 --protein"
     )
@@ -98,6 +111,8 @@ __all__ = [
     "get_main_enzyme_sets_info",
     "get_protein_info",
     "get_proteins_info",
+    "get_retropath_candidate_info",
+    "get_retropath_info",
     "get_solution_info",
     "run_chassis_expansion_info",
     "run_chassis_info",
@@ -108,6 +123,8 @@ __all__ = [
     "run_main_enzyme_sets_info",
     "run_protein_info",
     "run_proteins_info",
+    "run_retropath_candidate_info",
+    "run_retropath_info",
     "run_solution_info",
     "run_info",
 ]

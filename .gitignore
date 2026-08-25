@@ -33,4 +33,5 @@ data/retropath/
 !tests/test_retropath_merge.py
 !tests/test_retropath_analyze.py
 !tests/test_retropath_pipeline.py
+!tests/test_retropath_info.py
 !model/.gitkeep

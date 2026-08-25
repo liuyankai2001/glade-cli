@@ -808,6 +808,9 @@ outputs/C00811/final_assembly/
 | 查看路线摘要 | `python main.py info -i demo01.json --gap -d 0` |
 | 查看路线 1 | `python main.py info -i demo01.json --solution 1 -d 0` |
 | 查看路线 1 第 2 步 | `python main.py info -i demo01.json --solution 1 --step 2 -d 0` |
+| 查看 RetroPath 运行和候选摘要 | `python main.py info -i demo01.json --retropath -d 0` |
+| 查看 RetroPath 候选 1 | `python main.py info -i demo01.json --retropath-candidate 1 -d 0` |
+| 查看 RetroPath 候选 1 第 2 步 | `python main.py info -i demo01.json --retropath-candidate 1 --step 2 -d 0` |
 | 查看全部主酶候选 | `python main.py info -i demo01.json --main-enzyme-candidates` |
 | 查看第 1 步主酶候选 | `python main.py info -i demo01.json --main-enzyme-candidates --step 1` |
 | 查看第 1 步候选 2 | `python main.py info -i demo01.json --main-enzyme-candidate 2 --step 1` |
@@ -815,6 +818,14 @@ outputs/C00811/final_assembly/
 | 查看组合 1 | `python main.py info -i demo01.json --main-enzyme-set 1` |
 | 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
+
+RetroPath 信息视图只读取 `depthN/retropath/` 下的隔离候选，不把预测反应当作正式
+KEGG solution。视图会校验 P6 结果版本、目标、depth 和候选文件 SHA-256；出现
+“候选文件校验失败”时应重新运行同一 depth 的 `gap --retropath`，不要手动修改 CSV。
+
+失败的 RetroPath 运行也可以用 `info --retropath` 查看失败阶段和原因；只有成功且
+存在候选时才能使用 `--retropath-candidate N`。候选中的 RP2 步骤尚未经过计量、
+GEM 和酶证据验证，不可直接写入正式设计。
 
 ## 17. 完整命令示例
 
@@ -867,7 +878,8 @@ python main.py assembly --execute -i demo01.json
 ### 18.1 深度必须一致
 
 使用 `gap -d N` 搜索后，`info --gap`、`info --solution`、`validate` 和
-`write --solution` 都应使用相同的 `-d N`。
+`write --solution` 都应使用相同的 `-d N`。使用 `gap --retropath -d N` 后，
+`info --retropath` 和 `info --retropath-candidate` 也必须使用同一个 depth。
 
 ### 18.2 上游变化会使下游结果失效
 
