@@ -371,7 +371,7 @@ def _load_p9_inputs(config: Any) -> _ValidatedP9Inputs:
     manifest_path = p8_dir / VALIDATION_MANIFEST_FILE_NAME
     if not manifest_path.is_file():
         raise FileNotFoundError(
-            "P8 validation is missing; run validate --retropath-candidates first"
+            "P8 validation is missing; run validate -s <solution_id> first"
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))

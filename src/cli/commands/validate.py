@@ -3,21 +3,12 @@ from src.pathway_analyze.gem_validation import run_validation
 def register(subparsers):
     p = subparsers.add_parser('validate', help='通路通量分析')
     p.add_argument('-i', '--input', required=True,type=str, help='输入配置文件')
-    selection_group = p.add_mutually_exclusive_group()
-    selection_group.add_argument(
+    p.add_argument(
         '-s',
         '--solutions',
         type=int,
         nargs='+',
-        help='指定需要验证的 KEGG solution ID',
-    )
-    selection_group.add_argument(
-        '--retropath-candidates',
-        type=int,
-        nargs='*',
-        metavar='N',
-        default=None,
-        help='验证 RetroPath 候选；不提供编号时验证全部候选',
+        help='指定统一 solution ID；系统自动识别 KEGG/RetroPath 来源',
     )
     p.add_argument('-m', '--mode', dest='validation_mode',
                    choices=('per', 'pooled', 'both'), default='per', help='路径验证模式')

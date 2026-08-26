@@ -4,6 +4,7 @@ import json
 import math
 import re
 import time
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -1179,16 +1180,164 @@ def gem_validate(config: Any) -> dict[str, Any]:
     }
 
 
-def run_validation(config: Any) -> dict[str, Any]:
-    """命令行入口；JSON 读取和 ``RunConfig`` 构造由 ``main.py`` 负责。"""
+def _unified_solution_selection(
+    config: Any,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    """Return selected IDs split into KEGG IDs and RetroPath candidate ranks."""
 
-    if getattr(config, "retropath_candidates", None) is not None:
+    target_compound = validate_target_compound_id(config.target_name)
+    expansion_depth = int(getattr(config, "depth", 0))
+    if expansion_depth < 0:
+        raise ValueError("depth must be greater than or equal to 0")
+    gap_dir = gap_depth_output_dir(
+        Path(config.gap_output_path).expanduser().resolve(),
+        expansion_depth,
+    )
+    summaries_path = gap_dir / "solutions.csv"
+    if not summaries_path.is_file():
+        raise FileNotFoundError(
+            f"Gap analysis output not found. Run gap first: {summaries_path}"
+        )
+    try:
+        summaries = pd.read_csv(summaries_path)
+    except pd.errors.EmptyDataError as exc:
+        raise ValueError(f"Gap analysis produced no solutions: {summaries_path}") from exc
+    if summaries.empty or "solution_id" not in summaries.columns:
+        raise ValueError(f"Gap solution summary is invalid: {summaries_path}")
+    solution_ids = [int(value) for value in summaries["solution_id"].tolist()]
+    if len(solution_ids) != len(set(solution_ids)):
+        raise ValueError("Gap solution summary contains duplicate solution IDs")
+    selected = parse_solution_ids(
+        getattr(config, "solutions", None),
+        solution_ids,
+    )
+    by_id = {
+        int(row["solution_id"]): row
+        for _, row in summaries.iterrows()
+    }
+    kegg_ids: list[int] = []
+    retropath_ids: list[int] = []
+    for solution_id in selected:
+        raw_source = by_id[solution_id].get("solution_source", "")
+        source = (
+            ""
+            if raw_source is None or pd.isna(raw_source)
+            else str(raw_source).strip().lower()
+        )
+        if source in {"", "kegg"}:
+            kegg_ids.append(solution_id)
+        elif source == "retropath":
+            retropath_ids.append(solution_id)
+        else:
+            raise ValueError(
+                f"solution {solution_id} has unsupported source: {source}"
+            )
+
+    candidate_ranks: list[int] = []
+    if retropath_ids:
+        from src.pathway_analyze.retropath_gem_validation import (
+            VALIDATION_MANIFEST_FILE_NAME,
+        )
+        from src.pathway_analyze.retropath_materialization import (
+            verify_retropath_solution_materialization,
+        )
+
+        materialization = verify_retropath_solution_materialization(
+            gap_dir=gap_dir,
+            target_compound=target_compound,
+            expansion_depth=expansion_depth,
+            replacement_validation_path=(
+                gap_dir
+                / "retropath"
+                / "gem_validation"
+                / VALIDATION_MANIFEST_FILE_NAME
+            ),
+        )
+        mapping_by_solution = {
+            int(item["solution_id"]): item
+            for item in materialization.get("solution_mappings", [])
+            if isinstance(item, dict)
+        }
+        missing = sorted(set(retropath_ids) - set(mapping_by_solution))
+        if missing:
+            raise ValueError(
+                "RetroPath solution mapping is missing for solution IDs: "
+                f"{missing}; rerun gap --retropath"
+            )
+        candidate_ranks = [
+            int(mapping_by_solution[solution_id]["candidate_rank"])
+            for solution_id in retropath_ids
+        ]
+        if len(candidate_ranks) != len(set(candidate_ranks)):
+            raise ValueError("RetroPath solution mapping contains duplicate candidate ranks")
+    return (
+        tuple(selected),
+        tuple(kegg_ids),
+        tuple(retropath_ids),
+        tuple(candidate_ranks),
+    )
+
+
+def run_validation(config: Any) -> dict[str, Any]:
+    """Validate unified solution IDs and dispatch by recorded route source."""
+
+    selected, kegg_ids, retropath_ids, candidate_ranks = (
+        _unified_solution_selection(config)
+    )
+    requested_mode = str(
+        getattr(config, "validation_mode", "per")
+    ).strip().lower()
+    if retropath_ids and requested_mode not in {"per", "per-solution"}:
+        raise ValueError(
+            "RetroPath solutions support only -m per; pooled/both are available "
+            "only when every selected solution is KEGG"
+        )
+
+    kegg_result: dict[str, Any] | None = None
+    retropath_result: dict[str, Any] | None = None
+    if kegg_ids:
+        kegg_config = copy(config)
+        kegg_config.solutions = list(kegg_ids)
+        kegg_result = gem_validate(kegg_config)
+    if retropath_ids:
         from src.pathway_analyze.retropath_gem_validation import (
             validate_retropath_candidates,
         )
 
-        result = validate_retropath_candidates(config)
+        retropath_config = copy(config)
+        retropath_config.solutions = list(retropath_ids)
+        retropath_config.retropath_candidates = list(candidate_ranks)
+        retropath_result = validate_retropath_candidates(retropath_config)
+
+    if kegg_result is not None and retropath_result is None:
+        result = kegg_result
+    elif retropath_result is not None and kegg_result is None:
+        result = {
+            **retropath_result,
+            "solution_ids": list(retropath_ids),
+            "selected_solution_ids": list(retropath_ids),
+        }
     else:
-        result = gem_validate(config)
+        result = {
+            "ok": bool(
+                kegg_result
+                and retropath_result
+                and kegg_result.get("ok")
+                and retropath_result.get("ok")
+            ),
+            "search_engine": "mixed",
+            "target_compound": validate_target_compound_id(config.target_name),
+            "expansion_depth": int(getattr(config, "depth", 0)),
+            "validation_mode": "per-solution",
+            "cofactor_mode": str(
+                getattr(config, "validation_cofactor_mode", "strict")
+            ),
+            "solution_ids": list(selected),
+            "kegg_solution_ids": list(kegg_ids),
+            "retropath_solution_ids": list(retropath_ids),
+            "retropath_candidate_ranks": list(candidate_ranks),
+            "kegg_validation": kegg_result,
+            "retropath_validation": retropath_result,
+        }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result

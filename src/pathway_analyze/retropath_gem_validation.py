@@ -391,7 +391,7 @@ def _selected_candidate_ranks(
     available: Sequence[int],
 ) -> tuple[int, ...]:
     if raw is None:
-        raise ValueError("--retropath-candidates was not requested")
+        raise ValueError("RetroPath candidate ranks were not resolved from solution IDs")
     if raw == []:
         return tuple(sorted(available))
     selected = tuple(dict.fromkeys(_as_int(value, "candidate rank", minimum=1) for value in raw))

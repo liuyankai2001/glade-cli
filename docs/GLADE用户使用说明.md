@@ -350,25 +350,25 @@ uv run python -m src.pathway_analyze.retropath_mnxref install
 uv run python -m src.pathway_analyze.retropath_mnxref status
 ```
 
-验证当前 depth 的全部 RetroPath 候选：
+验证当前 depth 的全部 solution（自动分流 KEGG/RetroPath）：
 
 ```powershell
-python main.py validate -i demo01.json --retropath-candidates -d 0
+python main.py validate -i demo01.json -m per -d 0
 ```
 
-使用 relaxed 辅因子模式诊断全部候选：
+使用 relaxed 辅因子模式诊断全部 solution：
 
 ```powershell
-python main.py validate -i demo01.json --retropath-candidates -c relaxed -d 0
+python main.py validate -i demo01.json -m per -c relaxed -d 0
 ```
 
-只验证候选 1 和 2：
+只验证统一 solution 4 和 5：
 
 ```powershell
-python main.py validate -i demo01.json --retropath-candidates 1 2 -d 0
+python main.py validate -i demo01.json -s 4 5 -m per -d 0
 ```
 
-RetroPath 验证只支持独立候选，不能使用 `-m pooled` 或 `-m both`；辅因子模式支持
+RetroPath solution 只支持独立验证，不能使用 `-m pooled` 或 `-m both`；辅因子模式支持
 `-c strict`（默认）和 `-c relaxed`。两种模式都只使用 RR02 明确指向的
 MNXR/KEGG/Rhea 来源模板补全计量，不会根据 EC 或元素差额自行猜测辅因子。
 `relaxed` 仅为路线实际涉及的通用载体建立可审计 sink，并在结果和 manifest 中记录
@@ -951,7 +951,7 @@ outputs/C00811/final_assembly/
 RetroPath 候选视图读取 `depthN/retropath/` 下的证据；全部 Top-K 物化后即可成为
 统一 solution，P8 strict/relaxed 验证均为可选覆盖证据。视图会校验 P6/P8 版本、
 目标、depth 和文件 SHA-256；出现“候选文件校验失败”时应重新运行同一 depth 的
-`gap --retropath`，需要验证时再运行 `validate --retropath-candidates`，不要手动修改 CSV。
+`gap --retropath`，需要验证时再运行 `validate -s N`，不要手动修改 CSV。
 
 失败的 RetroPath 运行也可以用 `info --retropath` 查看失败阶段和原因；只有成功且
 存在候选时才能使用 `info --retropath-candidate N`。该参数仅用于查看搜索候选，
@@ -1008,7 +1008,7 @@ KEGG 无解后改用 RetroPath 时，路线与主酶阶段为：
 ```powershell
 python main.py gap -i demo01.json --retropath -d 0
 python main.py info -i demo01.json --retropath -d 0
-python main.py validate -i demo01.json --retropath-candidates -d 0
+python main.py validate -i demo01.json -s 1 -m per -d 0
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
 # 从上一条命令的“正式Solution编号”中选择 N
 python main.py info -i demo01.json --solution N -d 0
@@ -1025,7 +1025,7 @@ python main.py write -i demo01.json --main-enzyme-set 1
 
 使用 `gap -d N` 搜索后，`info --gap`、`info --solution`、`validate` 和
 `write --solution` 都应使用相同的 `-d N`。使用 `gap --retropath -d N` 后，
-`validate --retropath-candidates`、`info --retropath`、`info --retropath-candidate`、
+`validate -s N`、`info --retropath`、`info --retropath-candidate`、
 `info --solution` 和 `write --solution` 也必须使用同一个 depth。路线写入 manifest 后，
 `main-enzyme` 不再需要 depth 参数。
 

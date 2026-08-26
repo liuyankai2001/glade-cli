@@ -233,8 +233,8 @@ P8 验收记录：
 - strict GEM 同时要求至少 10% 基线生长、目标正通量以及候选 DAG 每一步按指定方向
   至少 `1e-4` 通量，不开放 generic cofactor sink；relaxed 保持相同计量、增长、目标
   和逐步通量约束，但为路线实际涉及的通用载体开放可审计 sink；
-- `--retropath-candidates` 不带编号时验证全部候选，带编号时只验证指定候选；原
-  KEGG `validate` 分支不变，RetroPath v1 拒绝 pooled/both 和 relaxed 模式；
+- `validate -s N` 使用统一 solution ID 并按 `solution_source` 自动分流；省略 `-s`
+  时验证当前 depth 的全部 KEGG/RetroPath solution；RetroPath 拒绝 pooled/both；
 - 输出计量假设、逐项参与物、拒绝原因、严格验证摘要、逐步通量和带哈希 manifest；
   P7 只在输入哈希一致时叠加 P8 状态和定向通量；
 - 对选中的候选，P8 将 `passed`/`failed`、计量假设和严格 GEM 证据覆盖到原 solution；
@@ -275,7 +275,7 @@ P10 已取消主酶阶段的独立 RetroPath 路线入口，并将“严格通�
   原编号并从最大 KEGG 编号后按候选排名追加；重复运行替换 RetroPath slice；
 - `solution_materialization.json` 绑定 P5、RR02、候选到 solution 的一一映射以及四个
   正式 CSV 的 SHA-256；部分写入、上游变化或手工修改均 fail closed；
-- `validate --retropath-candidates` 只将 P8 结果覆盖到这些既有 solution；验证通过、
+- `validate -s N` 对 RetroPath solution 只将 P8 结果覆盖到这些既有 solution；验证通过、
   失败或未运行都不会增加、删除、拆分或重新编号路线；一个候选即一个 solution，
   多个可行计量组合按确定性顺序选择首个作为当前验证证据，不再 fan-out；
 - `info --solution N` 和 `write --solution N` 自动识别 KEGG/RetroPath。预测步骤始终以
@@ -289,7 +289,7 @@ P10 已取消主酶阶段的独立 RetroPath 路线入口，并将“严格通�
   设计，但 manifest 固定保留 `review_required`、验证状态和显式风险信息；
 - RP2 主酶检索在未验证状态即可使用来源 UniProt/EC/Rhea、核心 Reaction SMILES 和
   所有 RR02 Rule SMARTS；P8 通过后可额外使用完整计量 Reaction SMILES/精确映射；
-- 2026-08-26 strict/relaxed 调整后的全仓库测试为 498 项通过。
+- 2026-08-26 统一 validate 与 strict/relaxed 调整后的全仓库测试为 499 项通过。
 
 ### P11.1 隐藏 KEGG 反应恢复评测（2026-08-25 更新）
 
@@ -325,7 +325,7 @@ P11.1 的评测工具、数据契约和 12 例试运行集已实现：
 | RetroPath 连接 A3 | <code>gap --input example.json --depth 3 --retropath</code> | 使用累计集合 A3 作为 sink，命中后恢复 KEGG witness |
 | depth 结果缺失 | 指定 depth 3 和 <code>--retropath</code>，但未运行 expand | 明确报错并提示先运行对应 expand |
 | 查看已物化路线 | <code>info --input example.json --solution N --depth 3</code> | `gap --retropath` 后即可查看 Top-K 对应的统一 solution |
-| 可选严格验证 | <code>validate --input example.json --retropath-candidates --depth 3</code> | 更新相同 solution 的计量/GEM 状态，不改变编号 |
+| 可选验证 | <code>validate --input example.json -s N --mode per --depth 3</code> | 按 solution 来源自动分流并更新计量/GEM 状态，不改变编号 |
 | 直接写入预测路线 | <code>write --input example.json --solution N --depth 3</code> | 无论 P8 未运行、通过或失败，均使用同一接口并保留风险 provenance |
 | 预测路线主酶 | <code>main-enzyme --input example.json</code> | 从 manifest 自动分流 KEGG 与 RetroPath Step，不再指定候选或 depth |
 
