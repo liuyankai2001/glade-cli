@@ -38,6 +38,11 @@ RETROPATH_SOLUTION_SUMMARY_FIELDS = (
     "retropath_candidate_id",
     "retropath_combination_id",
     "prediction_review_required",
+    "materialization_id",
+    "validation_status",
+    "stoichiometry_status",
+    "gem_status",
+    "validation_issue",
     "promotion_id",
     "combination_truncated",
     "upstream_enumeration_truncated",
@@ -92,6 +97,9 @@ RETROPATH_SOLUTION_STEP_FIELDS = (
     "prediction_provenance",
     "prediction_review_required",
     "depends_on_step_ids",
+    "validation_status",
+    "stoichiometry_status",
+    "gem_status",
 )
 
 VALIDATION_FIELDS = (
@@ -371,13 +379,24 @@ def _renumber_steps_forward(
             hypothesis_id = str(
                 forward_row.get("retropath_hypothesis_id") or ""
             ).strip()
-            if (
-                not hypothesis_id
-                or str(forward_row.get("reaction_id") or "").strip()
-                != hypothesis_id
-                or forward_row["prediction_provenance"].get("hypothesis_id")
-                != hypothesis_id
-            ):
+            step_id = str(
+                forward_row.get("retropath_step_id")
+                or forward_row["prediction_provenance"].get("step_id")
+                or ""
+            ).strip()
+            reaction_id = str(forward_row.get("reaction_id") or "").strip()
+            provenance_hypothesis = str(
+                forward_row["prediction_provenance"].get("hypothesis_id") or ""
+            ).strip()
+            identity_ok = bool(step_id) and reaction_id in {
+                step_id,
+                hypothesis_id,
+            }
+            if hypothesis_id:
+                identity_ok = identity_ok and provenance_hypothesis == hypothesis_id
+            else:
+                identity_ok = identity_ok and reaction_id == step_id
+            if not identity_ok:
                 raise ValueError("RetroPath 路线步骤的计量假设身份不一致")
         forward_rows.append(forward_row)
     return forward_rows, gap_to_forward
@@ -545,8 +564,103 @@ def _select_retropath_validation(
     return normalized, mapping
 
 
+def _select_retropath_materialization_validation(
+    materialization: dict[str, Any],
+    solution_id: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    mappings = [
+        item
+        for item in materialization.get("solution_mappings", [])
+        if isinstance(item, dict)
+        and int(item.get("solution_id") or 0) == solution_id
+    ]
+    if len(mappings) != 1:
+        raise ValueError(f"RetroPath solution {solution_id} 的物化身份不唯一")
+    mapping = mappings[0]
+    state = mapping.get("validation")
+    if not isinstance(state, dict):
+        state = {
+            "status": "not_run",
+            "stoichiometry_status": "core_only",
+            "gem_status": "not_run",
+            "combination_id": "",
+            "stoichiometry_hypothesis_ids": [],
+            "issues": [],
+        }
+    normalized: dict[str, Any] = {
+        "validation_status": state.get("status", "not_run"),
+        "fba_status": state.get("gem_status", "not_run"),
+        "cofactor_mode": (
+            "strict" if state.get("stoichiometry_status") == "completed" else "not_run"
+        ),
+        "cofactor_relaxed": False,
+        "issues": "; ".join(str(item) for item in state.get("issues", [])),
+        "retropath_candidate_rank": mapping.get("candidate_rank"),
+        "retropath_candidate_id": mapping.get("candidate_id"),
+        "retropath_combination_id": state.get("combination_id", ""),
+        "stoichiometry_hypothesis_ids": state.get(
+            "stoichiometry_hypothesis_ids", []
+        ),
+        "combination_truncated": False,
+    }
+    if state.get("status") != "passed":
+        return normalized, mapping
+
+    overlay = materialization.get("validation_overlay")
+    p8_manifest_value = state.get("manifest_path")
+    if not p8_manifest_value and isinstance(overlay, dict):
+        p8_manifest_value = overlay.get("path")
+    if not p8_manifest_value:
+        raise ValueError("RetroPath solution 声明验证通过但缺少 P8 overlay")
+    p8_manifest_path = Path(str(p8_manifest_value)).expanduser().resolve()
+    p8_manifest = json.loads(p8_manifest_path.read_text(encoding="utf-8-sig"))
+    summary_record = p8_manifest.get("artifacts", {}).get(
+        "gem_validation_summary.csv"
+    )
+    if not isinstance(summary_record, dict):
+        raise ValueError("P8 validation summary 记录缺失")
+    summary_path = Path(str(summary_record.get("path") or "")).expanduser().resolve()
+    matches = [
+        _normalize_row(row)
+        for row in _read_csv_rows(summary_path)
+        if str(row.get("candidate_id") or "").strip()
+        == str(mapping.get("candidate_id") or "").strip()
+        and str(row.get("combination_id") or "").strip()
+        == str(state.get("combination_id") or "").strip()
+        and str(row.get("validation_status") or "").strip()
+        == "PASS_STRICT_ROUTE_FLUX"
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"RetroPath solution {solution_id} 没有唯一的 P8 严格通过记录"
+        )
+    row = matches[0]
+    normalized.update(
+        {
+            "validation_status": row.get("validation_status"),
+            "fba_status": row.get("fba_status"),
+            "fba_product_flux": row.get("target_flux"),
+            "fba_growth_flux": row.get("growth_flux"),
+            "pfba_status": row.get("pfba_status"),
+            "pfba_product_flux": row.get("pfba_target_flux"),
+            "pfba_growth_flux": row.get("growth_flux"),
+            "fva_status": row.get("fva_status"),
+            "route_reaction_count": row.get("route_step_count"),
+            "active_route_reaction_count": row.get("active_route_step_count"),
+            "required_route_reaction_count": row.get("route_step_count"),
+            "blocked_route_reaction_count": len(
+                _split_values(row.get("blocked_route_step_ids"))
+            ),
+            "blocked_route_reaction_ids": row.get("blocked_route_step_ids"),
+            "issues": row.get("issues"),
+            "combination_truncated": row.get("combination_truncated"),
+        }
+    )
+    return normalized, mapping
+
+
 def write_solution(config: Any) -> dict[str, Any]:
-    """将一条已通过独立 GEM 验证的路线写入 design manifest。"""
+    """将一条 KEGG 或可选验证的 RetroPath 路线写入 design manifest。"""
 
     target_compound = validate_target_compound_id(config.target_name)
     expansion_depth = int(getattr(config, "depth", 0))
@@ -587,18 +701,32 @@ def write_solution(config: Any) -> dict[str, Any]:
     summary = _select_solution_summary(solutions_path, solution_id)
     solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
     promotion: dict[str, Any] | None = None
+    materialization: dict[str, Any] | None = None
     promotion_mapping: dict[str, Any] | None = None
     if solution_source == "retropath":
-        from src.pathway_analyze.retropath_promotion import (
-            verify_retropath_solution_promotion,
+        from src.pathway_analyze.retropath_materialization import (
+            MATERIALIZATION_MANIFEST_FILE_NAME,
+            verify_retropath_solution_materialization,
         )
 
-        promotion = verify_retropath_solution_promotion(
-            gap_dir=gap_dir,
-            target_compound=target_compound,
-            expansion_depth=expansion_depth,
-            solution_id=solution_id,
-        )
+        if (gap_dir / "retropath" / MATERIALIZATION_MANIFEST_FILE_NAME).is_file():
+            materialization = verify_retropath_solution_materialization(
+                gap_dir=gap_dir,
+                target_compound=target_compound,
+                expansion_depth=expansion_depth,
+                solution_id=solution_id,
+            )
+        else:
+            from src.pathway_analyze.retropath_promotion import (
+                verify_retropath_solution_promotion,
+            )
+
+            promotion = verify_retropath_solution_promotion(
+                gap_dir=gap_dir,
+                target_compound=target_compound,
+                expansion_depth=expansion_depth,
+                solution_id=solution_id,
+            )
     else:
         run_config_path = gap_dir / "run_config.json"
         try:
@@ -632,7 +760,12 @@ def write_solution(config: Any) -> dict[str, Any]:
         solution_id,
     )
     steps, gap_to_forward = _renumber_steps_forward(gap_steps, target_compound)
-    if promotion is not None:
+    if materialization is not None:
+        validation, promotion_mapping = _select_retropath_materialization_validation(
+            materialization,
+            solution_id,
+        )
+    elif promotion is not None:
         validation, promotion_mapping = _select_retropath_validation(
             promotion,
             solution_id,
@@ -674,7 +807,7 @@ def write_solution(config: Any) -> dict[str, Any]:
     step_payloads = [
         _keep_fields(step, SOLUTION_STEP_FIELDS) for step in steps
     ]
-    if promotion is not None:
+    if materialization is not None or promotion is not None:
         summary_payload.update(
             _keep_fields(summary, RETROPATH_SOLUTION_SUMMARY_FIELDS)
         )
@@ -696,30 +829,72 @@ def write_solution(config: Any) -> dict[str, Any]:
         "steps": step_payloads,
         "validation": validation_payload,
     }
-    if promotion is not None and promotion_mapping is not None:
+    if (materialization is not None or promotion is not None) and promotion_mapping is not None:
+        commit = materialization if materialization is not None else promotion
+        assert commit is not None
+        state = promotion_mapping.get("validation", {})
         solution_payload["prediction"] = {
             "source": "retropath",
             "review_status": "pending",
             "review_required": True,
-            "promotion_id": promotion.get("promotion_id"),
-            "promotion_schema_version": promotion.get("schema_version"),
+            "materialization_id": commit.get(
+                "materialization_id", commit.get("promotion_id")
+            ),
+            "materialization_schema_version": commit.get("schema_version"),
+            # Compatibility aliases retained for existing main-enzyme/write
+            # consumers.  New code should prefer the materialization names.
+            "promotion_id": commit.get(
+                "materialization_id", commit.get("promotion_id")
+            ),
+            "promotion_schema_version": commit.get("schema_version"),
             "candidate_rank": promotion_mapping.get("candidate_rank"),
             "candidate_id": promotion_mapping.get("candidate_id"),
-            "combination_id": promotion_mapping.get("combination_id"),
-            "stoichiometry_hypothesis_ids": promotion_mapping.get(
-                "stoichiometry_hypothesis_ids", []
+            "combination_id": state.get(
+                "combination_id", promotion_mapping.get("combination_id")
+            ),
+            "stoichiometry_hypothesis_ids": state.get(
+                "stoichiometry_hypothesis_ids",
+                promotion_mapping.get("stoichiometry_hypothesis_ids", []),
+            ),
+            "validation_status": state.get(
+                "status", validation.get("validation_status", "not_run")
+            ),
+            "stoichiometry_status": state.get("stoichiometry_status", "completed"),
+            "gem_status": state.get("gem_status", "passed"),
+            "validation_issues": state.get("issues", []),
+            "materialization_manifest": str(
+                (
+                    gap_dir
+                    / "retropath"
+                    / (
+                        "solution_materialization.json"
+                        if materialization is not None
+                        else "formal_solution_promotion.json"
+                    )
+                ).resolve()
             ),
             "promotion_manifest": str(
                 (
                     gap_dir
                     / "retropath"
-                    / "formal_solution_promotion.json"
+                    / (
+                        "solution_materialization.json"
+                        if materialization is not None
+                        else "formal_solution_promotion.json"
+                    )
                 ).resolve()
             ),
-            "p8_validation_sha256": promotion.get("inputs", {}).get(
-                "p8_validation_sha256"
+            "p8_validation_sha256": (
+                state.get("manifest_sha256")
+                or (commit.get("validation_overlay") or {}).get("sha256")
+                if materialization is not None
+                else commit.get("inputs", {}).get("p8_validation_sha256")
             ),
-            "rr02_sha256": promotion.get("inputs", {}).get("rr02_sha256"),
+            "rr02_sha256": (
+                commit.get("rr02_sha256")
+                or commit.get("inputs", {}).get("rr02_sha256")
+                or (commit.get("inputs", {}).get("rr02") or {}).get("sha256")
+            ),
         }
     electron_payload = {
         "summary": (

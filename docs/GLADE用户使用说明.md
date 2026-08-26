@@ -284,7 +284,7 @@ python main.py info -i demo01.json --solution 1 --step 2 -d 0
 
 ## 7. GEM 通量验证
 
-路线写入 manifest 前必须进行独立的 per-solution 验证。
+对于纯 KEGG 路线，写入 manifest 前必须进行独立的 per-solution 验证。
 
 验证路线 1：
 
@@ -321,9 +321,22 @@ outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
 └── gem_validation_route_fluxes.csv
 ```
 
-只有状态以 `PASS_` 开头的独立验证结果才能写入 manifest。
+只有状态以 `PASS_` 开头的纯 KEGG 独立验证结果才能写入 manifest。RetroPath
+预测路线采用下面 7.1 节的可选验证与强制风险标记策略。
 
 ### 7.1 RetroPath 候选计量补全与严格验证
+
+执行 `gap --retropath` 后，P5 的全部 Top-K 已经直接追加为当前 depth 的 RetroPath
+solution；无需先运行 validate。原有 KEGG solution 编号保持不变，RetroPath solution
+从最大 KEGG 编号之后按候选排名连续编号。此时即可查看或直接写入：
+
+```powershell
+python main.py info -i demo01.json --solution N -d 0
+python main.py write -i demo01.json --solution N -d 0
+```
+
+未运行 P8 时，路线状态为 `not_run/core_only/not_run`，manifest 会保留
+`review_required=true` 和“严格 GEM 尚未运行”的警告。
 
 首次使用 P8 前安装与 RR02 同版本的 MNXref v3.0 子集：
 
@@ -366,26 +379,27 @@ outputs/C00811/kegg_gap_C00811/depth0/retropath/gem_validation/
 ```
 
 `PASS_STRICT_HYPOTHESIS_EXISTS` 表示至少一个来源支持的完整计量假设同时满足底盘生长、
-目标产出和候选全部步骤通量。P10 会把每个 `PASS_STRICT_ROUTE_FLUX` 的“候选路线＋
-计量组合”转换成一个正式 solution，并直接合并到当前 depth 的 `solutions.csv`、
-`all_solution_steps.csv` 和电子系统结果中。原有 KEGG solution 编号保持不变，
-RetroPath solution 从最大 KEGG 编号之后开始。
+目标产出和候选全部步骤通量。P8 会把 `passed`/`failed` 状态、选中的计量假设、完整
+Reaction SMILES、精确映射和 GEM 证据覆盖到原有 solution；不会新增、删除、拆分或
+重新编号 solution。严格失败的路线仍可写入，但会附加显式失败警告并要求人工复核。
 
-验证命令会输出 `formal_solution_ids` 和候选/组合映射；也可以运行：
+验证命令中的兼容字段 `formal_solution_ids` 表示本次严格通过的既有 solution ID；
+候选/solution 映射可通过以下命令查看：
 
 ```powershell
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
 python main.py info -i demo01.json --solution N -d 0
 ```
 
-正式合并由 `depthN/retropath/formal_solution_promotion.json` 绑定 P5、P8、RR02、
-MNXref 和四个正式 CSV 的 SHA-256。文件被部分覆盖或手动修改时，RetroPath solution
-会拒绝读取。一次只验证部分候选时，本次验证选择将替换旧的 RetroPath solution
-部分；KEGG 行始终保留。
+统一物化由 `depthN/retropath/solution_materialization.json` 绑定 P5、RR02、
+候选到 solution 的映射和四个正式 CSV 的 SHA-256；P8 验证 manifest 作为可选覆盖
+证据继续绑定。文件被部分覆盖、上游变化或手动修改时，RetroPath solution 会拒绝
+读取。一次只验证部分候选时，只有被选择的 solution 更新为本次 P8 结果，其余
+RetroPath solution 保持或恢复为 `not_run`；其编号、路线和全部 KEGG 行均不变。
 
-### 7.2 为正式 RetroPath 路线生成主酶候选
+### 7.2 为 RetroPath 路线生成主酶候选
 
-从上一步输出中选择正式 solution，写入 manifest：
+从 `gap --retropath` 输出中选择 solution，写入 manifest；P8 可先运行，也可跳过：
 
 ```powershell
 python main.py write -i demo01.json --solution N -d 0
@@ -405,6 +419,10 @@ EC/Rhea/KO/文献/Selenzyme 检索；RP2 suffix 使用来源 UniProt、EC/Rhea�
 Reaction SMILES、核心 Reaction SMILES 和 Rule SMARTS。命令不再接受
 `--retropath-candidate` 或 `--depth`；路线排名、组合和 depth 已由
 `write --solution N` 固定。
+
+未运行 P8 时，同一 RP2 step 的全部 RR02 规则作为替代检索证据进入 Selenzyme，
+不会被当成多个必需步骤；P8 通过后会优先增加完整计量 Reaction SMILES 和精确
+KEGG/Rhea 映射证据。结构相似命中始终保持 `manual_review`。
 
 主要输出：
 

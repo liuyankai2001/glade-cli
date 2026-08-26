@@ -37,7 +37,7 @@ from src.pathway_analyze.retropath_structure import KeggMolStructureProvider
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v2"
+RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v3"
 PIPELINE_RESULT_FILE_NAME = "pipeline_result.json"
 
 
@@ -429,6 +429,11 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             max_total_steps=getattr(config, "max_total_steps", 20),
             max_new_enzymes=getattr(config, "max_new_enzymes", 20),
         )
+        from src.pathway_analyze.retropath_materialization import (
+            materialize_retropath_candidate_solutions,
+        )
+
+        materialization = materialize_retropath_candidate_solutions(config)
     except (OSError, ValueError) as exc:
         raise _write_failure(
             output_dir=output_dir,
@@ -486,6 +491,8 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "sink_match_count": len(enumeration_result.network.sink_matches),
         "scope_present": bool(scope_artifacts),
         "candidate_count": candidate_artifacts.candidate_count,
+        "materialized_solution_count": materialization["solution_count"],
+        "materialized_solution_ids": materialization["solution_ids"],
         "rejection_count": candidate_artifacts.rejection_count,
         "upstream_enumeration_truncated": enumeration_result.truncated,
         "candidate_top_k_truncated": candidate_artifacts.merge_result.truncated,
@@ -548,6 +555,12 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             "rejected_routes": {
                 "path": str(candidate_artifacts.rejected_routes_path.resolve()),
                 "sha256": candidate_artifacts.rejected_routes_sha256,
+            },
+            "solution_materialization": {
+                "path": materialization["materialization_manifest"],
+                "sha256": materialization[
+                    "materialization_manifest_sha256"
+                ],
             },
         },
     }

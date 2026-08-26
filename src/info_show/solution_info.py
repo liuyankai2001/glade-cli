@@ -46,6 +46,9 @@ STEP_FIELD_NAMES = {
     "formal_mapping_exact": "是否精确映射已知反应",
     "full_reaction_smiles": "完整Reaction SMILES",
     "prediction_review_required": "预测风险待复核",
+    "validation_status": "RetroPath验证状态",
+    "stoichiometry_status": "计量补全状态",
+    "gem_status": "严格GEM状态",
 }
 
 FIELD_VALUE_NAMES = {
@@ -169,11 +172,18 @@ def _step_overview(
     display_step_index: int,
 ) -> dict[str, Any]:
     status = row.get("status")
-    return {
+    result = {
         "步骤编号": display_step_index,
         "反应ID": row.get("reaction_id"),
         "反应类型": FIELD_VALUE_NAMES["status"].get(status, status),
     }
+    if str(row.get("step_source") or "").strip() == "retropath":
+        result.update({
+            "RetroPath验证状态": row.get("validation_status"),
+            "计量补全状态": row.get("stoichiometry_status"),
+            "严格GEM状态": row.get("gem_status"),
+        })
+    return result
 
 
 def _order_steps_forward(
@@ -291,18 +301,32 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     summary = _select_solution_summary(summary_rows, selected_solution_id)
     solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
     if solution_source == "retropath":
-        from src.pathway_analyze.retropath_promotion import (
-            verify_retropath_solution_promotion,
+        from src.pathway_analyze.retropath_materialization import (
+            MATERIALIZATION_MANIFEST_FILE_NAME,
+            verify_retropath_solution_materialization,
         )
+        if (gap_dir / "retropath" / MATERIALIZATION_MANIFEST_FILE_NAME).is_file():
+            verify_retropath_solution_materialization(
+                gap_dir=gap_dir,
+                target_compound=target_compound,
+                expansion_depth=expansion_depth,
+                solution_id=selected_solution_id,
+            )
+        else:
+            from src.pathway_analyze.retropath_promotion import (
+                verify_retropath_solution_promotion,
+            )
 
-        verify_retropath_solution_promotion(
-            gap_dir=gap_dir,
-            target_compound=target_compound,
-            expansion_depth=expansion_depth,
-            solution_id=selected_solution_id,
-        )
+            verify_retropath_solution_promotion(
+                gap_dir=gap_dir,
+                target_compound=target_compound,
+                expansion_depth=expansion_depth,
+                solution_id=selected_solution_id,
+            )
         if missing_electron_columns:
-            raise ValueError("RetroPath 正式路线缺少电子系统字段，请重新验证")
+            raise ValueError(
+                "RetroPath 路线缺少电子系统字段，请重新运行 gap --retropath"
+            )
     else:
         run_config_path = gap_dir / "run_config.json"
         try:
@@ -349,6 +373,13 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         "路径编号": selected_solution_id,
         "路线来源": "RetroPath预测" if solution_source == "retropath" else "KEGG",
     }
+    if solution_source == "retropath":
+        common.update({
+            "RetroPath验证状态": summary.get("validation_status"),
+            "计量补全状态": summary.get("stoichiometry_status"),
+            "严格GEM状态": summary.get("gem_status"),
+            "验证风险": _split_values(summary.get("validation_issue")),
+        })
     if selected_step_index is not None:
         if selected_step_index > len(forward_rows):
             raise ValueError(

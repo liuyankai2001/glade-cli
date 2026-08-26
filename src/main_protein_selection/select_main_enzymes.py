@@ -282,8 +282,8 @@ def select_main_enzymes(
                 or file_sha256(rules_path) != expected_rules_sha
             ):
                 raise ValueError(
-                    "RetroPath manifest RR02 binding is stale; rerun validation "
-                    "and write --solution N"
+                    "RetroPath manifest RR02 binding is stale; rerun gap "
+                    "--retropath and write --solution N"
                 )
         all_ecs = unique_main_ecs(all_requirements)
         ecs = list(dict.fromkeys(

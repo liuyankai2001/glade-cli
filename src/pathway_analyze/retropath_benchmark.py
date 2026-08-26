@@ -661,10 +661,10 @@ def _run_task(
                     path = validation_dir / name
                     if path.is_file():
                         result["artifacts"][name] = _artifact_record(path, root=run_dir)
-                promotion = retropath_dir / "formal_solution_promotion.json"
-                if promotion.is_file():
-                    result["artifacts"][promotion.name] = _artifact_record(
-                        promotion, root=run_dir
+                materialization = retropath_dir / "solution_materialization.json"
+                if materialization.is_file():
+                    result["artifacts"][materialization.name] = _artifact_record(
+                        materialization, root=run_dir
                     )
                 for name in (
                     "solutions.csv",

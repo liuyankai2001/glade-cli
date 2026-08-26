@@ -1312,14 +1312,19 @@ def requirements_from_manifest(
         provenance = requirement.get("prediction_provenance")
         if not isinstance(provenance, Mapping):
             raise ValueError("RetroPath manifest step lacks prediction provenance")
-        rule_id = str(
+        rule_ids = _split(
             requirement.get("retropath_rule_id")
             or provenance.get("rule_id")
-            or ""
-        ).strip()
-        rule = rules.get(rule_id)
-        if rule is None:
-            raise ValueError(f"RR02 rule is missing for manifest step: {rule_id}")
+            or provenance.get("rule_ids")
+        )
+        if not rule_ids:
+            raise ValueError("RetroPath manifest step has no RR02 rule evidence")
+        missing_rules = [rule_id for rule_id in rule_ids if rule_id not in rules]
+        if missing_rules:
+            raise ValueError(
+                "RR02 rule is missing for manifest step: "
+                + ", ".join(missing_rules)
+            )
         step_id = str(
             requirement.get("retropath_step_id")
             or provenance.get("step_id")
@@ -1328,10 +1333,14 @@ def requirements_from_manifest(
         hypothesis_id = str(
             requirement.get("retropath_hypothesis_id")
             or provenance.get("hypothesis_id")
+            or step_id
             or ""
         ).strip()
         reaction_id = str(requirement.get("reaction_id") or "").strip()
-        if not step_id or not hypothesis_id or reaction_id != hypothesis_id:
+        if not step_id or not hypothesis_id or reaction_id not in {
+            hypothesis_id,
+            step_id,
+        }:
             raise ValueError("RetroPath manifest reaction identity is inconsistent")
         candidate_rank = _as_int(
             provenance.get("candidate_rank"),
@@ -1339,8 +1348,10 @@ def requirements_from_manifest(
             minimum=1,
         )
         candidate_id = str(provenance.get("candidate_id") or "").strip()
-        combination_id = str(provenance.get("combination_id") or "").strip()
-        if not candidate_id or not combination_id:
+        combination_id = str(
+            provenance.get("combination_id") or f"raw:{candidate_id}"
+        ).strip()
+        if not candidate_id:
             raise ValueError("RetroPath manifest route binding is incomplete")
         source_ecs = _complete_ecs(
             requirement.get("source_ec_numbers")
@@ -1366,59 +1377,61 @@ def requirements_from_manifest(
             requirement.get("formal_mapping_exact")
             or provenance.get("formal_mapping_exact")
         )
-        result.append(RetropathEnzymeRequirement(
-            candidate_rank=candidate_rank,
-            candidate_id=candidate_id,
-            combination_id=combination_id,
-            step_index=_as_int(
-                requirement.get("step_index"),
-                "step_index",
-                minimum=1,
-            ),
-            step_id=step_id,
-            step_source="retropath",
-            step_status="heterologous",
-            hypothesis_id=hypothesis_id,
-            reaction_signature_sha256=str(
-                requirement.get("reaction_signature_sha256")
-                or provenance.get("reaction_signature_sha256")
-                or ""
-            ),
-            full_reaction_smiles=str(
-                requirement.get("full_reaction_smiles")
-                or provenance.get("full_reaction_smiles")
-                or ""
-            ),
-            core_reaction_smiles=str(
-                requirement.get("core_reaction_smiles")
-                or provenance.get("core_reaction_smiles")
-                or ""
-            ),
-            rule_id=rule_id,
-            rule_smarts=str(rule.get("Rule") or "").strip(),
-            source_mnxr_id=str(
-                requirement.get("source_mnxr_id")
-                or provenance.get("source_mnxr_id")
-                or ""
-            ),
-            source_reaction_ids=_split(
-                requirement.get("source_reaction_ids")
-                or provenance.get("source_reaction_ids")
-            ),
-            source_ec_numbers=source_ecs,
-            source_uniprot_ids=_split(
-                requirement.get("source_uniprot_ids")
-                or provenance.get("source_uniprot_ids")
-            ),
-            source_rhea_ids=_split(
-                requirement.get("source_rhea_ids")
-                or provenance.get("source_rhea_ids")
-            ),
-            exact_kegg_reaction_ids=exact_kegg if formal_exact else tuple(),
-            exact_rhea_ids=exact_rhea if formal_exact else tuple(),
-            formal_mapping_exact=formal_exact,
-            enzyme_required=True,
-        ))
+        for rule_id in rule_ids:
+            rule = rules[rule_id]
+            result.append(RetropathEnzymeRequirement(
+                candidate_rank=candidate_rank,
+                candidate_id=candidate_id,
+                combination_id=combination_id,
+                step_index=_as_int(
+                    requirement.get("step_index"),
+                    "step_index",
+                    minimum=1,
+                ),
+                step_id=step_id,
+                step_source="retropath",
+                step_status="heterologous",
+                hypothesis_id=hypothesis_id,
+                reaction_signature_sha256=str(
+                    requirement.get("reaction_signature_sha256")
+                    or provenance.get("reaction_signature_sha256")
+                    or ""
+                ),
+                full_reaction_smiles=str(
+                    requirement.get("full_reaction_smiles")
+                    or provenance.get("full_reaction_smiles")
+                    or ""
+                ),
+                core_reaction_smiles=str(
+                    requirement.get("core_reaction_smiles")
+                    or provenance.get("core_reaction_smiles")
+                    or ""
+                ),
+                rule_id=rule_id,
+                rule_smarts=str(rule.get("Rule") or "").strip(),
+                source_mnxr_id=str(
+                    requirement.get("source_mnxr_id")
+                    or provenance.get("source_mnxr_id")
+                    or ""
+                ),
+                source_reaction_ids=_split(
+                    requirement.get("source_reaction_ids")
+                    or provenance.get("source_reaction_ids")
+                ),
+                source_ec_numbers=source_ecs,
+                source_uniprot_ids=_split(
+                    requirement.get("source_uniprot_ids")
+                    or provenance.get("source_uniprot_ids")
+                ),
+                source_rhea_ids=_split(
+                    requirement.get("source_rhea_ids")
+                    or provenance.get("source_rhea_ids")
+                ),
+                exact_kegg_reaction_ids=exact_kegg if formal_exact else tuple(),
+                exact_rhea_ids=exact_rhea if formal_exact else tuple(),
+                formal_mapping_exact=formal_exact,
+                enzyme_required=True,
+            ))
     return result
 
 
@@ -1633,7 +1646,14 @@ def _combination_summaries(
 
     summaries: list[dict[str, Any]] = []
     for combination_id, combination_requirements in requirements_by_combination.items():
-        required = [item for item in combination_requirements if item.enzyme_required]
+        # One raw RetroPath step can carry several RR02 rules.  They are
+        # alternative search evidence for the same enzyme requirement, not
+        # several independently required enzymes.
+        required_by_step: dict[str, RetropathEnzymeRequirement] = {}
+        for item in combination_requirements:
+            if item.enzyme_required:
+                required_by_step.setdefault(item.step_id, item)
+        required = list(required_by_step.values())
         missing = [
             item.step_id
             for item in required

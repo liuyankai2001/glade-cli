@@ -981,15 +981,27 @@ def _formal_solution_mappings(
     rank: int,
 ) -> list[dict[str, Any]]:
     try:
-        from src.pathway_analyze.retropath_promotion import (
-            verify_retropath_solution_promotion,
-        )
+        materialization_path = context.output_dir / "solution_materialization.json"
+        if materialization_path.is_file():
+            from src.pathway_analyze.retropath_materialization import (
+                verify_retropath_solution_materialization,
+            )
 
-        promotion = verify_retropath_solution_promotion(
-            gap_dir=context.output_dir.parent,
-            target_compound=context.target_compound,
-            expansion_depth=context.depth,
-        )
+            promotion = verify_retropath_solution_materialization(
+                gap_dir=context.output_dir.parent,
+                target_compound=context.target_compound,
+                expansion_depth=context.depth,
+            )
+        else:
+            from src.pathway_analyze.retropath_promotion import (
+                verify_retropath_solution_promotion,
+            )
+
+            promotion = verify_retropath_solution_promotion(
+                gap_dir=context.output_dir.parent,
+                target_compound=context.target_compound,
+                expansion_depth=context.depth,
+            )
     except (OSError, ValueError):
         return []
     return [

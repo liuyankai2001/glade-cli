@@ -1152,11 +1152,11 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         ),
     }
     manifest_sha256 = _atomic_write_json(manifest_path, manifest)
-    from src.pathway_analyze.retropath_promotion import (
-        materialize_retropath_solutions,
+    from src.pathway_analyze.retropath_materialization import (
+        apply_retropath_validation_overlay,
     )
 
-    promotion = materialize_retropath_solutions(
+    promotion = apply_retropath_validation_overlay(
         config,
         validation_manifest_path=manifest_path,
     )
@@ -1175,8 +1175,16 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "formal_promotion_allowed": manifest["formal_promotion_allowed"],
         "formal_solution_ids": promotion["formal_solution_ids"],
         "solution_mappings": promotion["solution_mappings"],
-        "promotion_manifest": promotion["promotion_manifest"],
-        "promotion_manifest_sha256": promotion["promotion_manifest_sha256"],
+        "materialization_manifest": promotion["materialization_manifest"],
+        "materialization_manifest_sha256": promotion[
+            "materialization_manifest_sha256"
+        ],
+        # Compatibility aliases for callers written before validation became
+        # an overlay on already materialized solutions.
+        "promotion_manifest": promotion["materialization_manifest"],
+        "promotion_manifest_sha256": promotion[
+            "materialization_manifest_sha256"
+        ],
     }
 
 
