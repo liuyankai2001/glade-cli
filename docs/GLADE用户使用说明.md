@@ -296,6 +296,61 @@ python main.py info -i demo01.json --solution 1 --step 2 -d 0
 选择路线时应重点关注：异源步骤数、是否可以推荐、电子载体平衡、是否需要额外电子
 再生系统、是否需要确认载体兼容性，以及具体反应方向。
 
+### 6.4 显式启用 RetroPath 预测搜索
+
+默认 `gap` 只运行原始 KEGG 搜索。只有用户显式传入 `--retropath` 时才运行
+RetroPath：
+
+```powershell
+python main.py gap -i demo01.json --retropath -d 0
+```
+
+深度 0 使用底盘直接可生成集合 A0 作为 RetroPath sink。使用深度 N 时，必须先完成
+对应的 `expand -d N`；RetroPath sink 为截至该深度的累计集合
+`AN = A0 ∪ F1 ∪ ... ∪ FN`：
+
+```powershell
+python main.py expand -i demo01.json -d 5
+python main.py gap -i demo01.json --retropath -d 5
+```
+
+`--retropath` 不会自动先运行纯 KEGG 搜索，也不会在纯 KEGG 无解时自动触发。
+RetroPath 从目标结构逆向扩展；解析器只接受能够从目标闭合到可信 sink 的完整预测
+路径。对于包含多个必要前体的分支反应，每个末端分支都必须命中 sink，不能只连接
+其中一个分支。
+
+主要输出位于：
+
+```text
+outputs/C00811/kegg_gap_C00811/depthN/retropath/
+├── input/
+├── raw/
+├── pipeline_result.json
+├── candidate_routes.csv
+├── candidate_steps.csv
+├── rejected_routes.csv
+└── solution_materialization.json
+```
+
+- `input/`：提交给 RetroPath 的目标结构、累计 sink 和 KEGG—结构映射；
+- `raw/`：本地 RetroPath Docker 服务返回的原始 scope/results；
+- `pipeline_result.json`：服务状态、scope、sink 命中、候选数量和文件哈希；
+- `candidate_routes.csv`：完整命中 sink 的 Top-K 混合路线；
+- `candidate_steps.csv`：KEGG expansion prefix 与 RetroPath 预测步骤；
+- `rejected_routes.csv`：未闭合、结构冲突或证据不足等拒绝原因；
+- `solution_materialization.json`：RetroPath 候选到统一 solution 编号的绑定。
+
+RetroPath 生成了 scope 不等于已经生成完整路线。如果预测网络没有连接到本次提交的
+sink，`candidate_count` 仍为 0，也不会向 `solutions.csv` 追加不完整路线。可以使用：
+
+```powershell
+python main.py info -i demo01.json --retropath -d 5
+```
+
+查看服务是否成功、scope 是否存在、命中的 sink 数量、完整路径数量、候选数量和拒绝
+原因。当前版本不会把 scope 中尚未命中 sink 的 KEGG 中间化合物自动作为新连接点；
+这类运行应按“存在预测网络，但尚无完整可交付路线”解释。
+
 ## 7. GEM 通量验证
 
 GEM 验证对纯 KEGG 和 RetroPath 路线都是可选的。它用于提供底盘中的通量可行性
@@ -342,7 +397,7 @@ outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
 辅因子模式和问题说明。未通过只增加人工复核提示，不再阻断写入。RetroPath 预测路线
 采用下面 7.1 节相同的可选验证原则，并额外保留预测风险标记。
 
-### 7.1 RetroPath 候选计量补全与严格验证
+### 7.1 RetroPath 候选计量补全与可选 GEM 验证
 
 执行 `gap --retropath` 后，P5 的全部 Top-K 已经直接追加为当前 depth 的 RetroPath
 solution；无需先运行 validate。原有 KEGG solution 编号保持不变，RetroPath solution
@@ -1099,9 +1154,11 @@ python main.py chassis -i demo01.json
 
 - 路线在 `solutions.csv` 中标记为可以推荐；
 - 路线没有 blocking reaction；
-- 已运行 `validate -m per`；
-- 独立验证状态以 `PASS_` 开头；
 - `write --solution` 使用了相同深度。
+
+GEM 验证不是写入前置条件。未验证路线会以 `validation_status=not_run` 写入；验证失败
+也只会保留失败状态和人工复核警告，不会仅因没有 `PASS_` 状态而阻断写入。如果已经
+运行验证，还应确认验证产物与当前 solution、depth 和上游文件哈希一致。
 
 ### 19.5 主酶候选为空或网络检索失败
 
