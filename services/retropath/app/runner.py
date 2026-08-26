@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ class RunResult:
     status: str
     return_code: int | None
     error: str | None
+    failure_code: str | None = None
 
 
 def status_for_return_code(return_code: int) -> str:
@@ -101,7 +103,15 @@ class RetroPathRunner:
         return_code: int | None = None
         status = "failed"
         error: str | None = None
+        failure_code: str | None = None
         timed_out = False
+        resource_exhausted = False
+        peak_memory_bytes: int | None = None
+        peak_working_set_bytes: int | None = None
+        memory_samples = 0
+        consecutive_high_memory_samples = 0
+        maximum_consecutive_high_memory_samples = 0
+        started_monotonic = time.monotonic()
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = subprocess.Popen(
                 command,
@@ -111,23 +121,73 @@ class RetroPathRunner:
                 stderr=stderr,
                 start_new_session=True,
             )
-            try:
-                return_code = process.wait(timeout=self.settings.job_timeout_seconds)
+            while process.poll() is None:
+                elapsed = time.monotonic() - started_monotonic
+                if elapsed >= self.settings.job_timeout_seconds:
+                    timed_out = True
+                    status = "timed_out"
+                    failure_code = "wall_timeout"
+                    error = (
+                        "RetroPath execution exceeded "
+                        f"{self.settings.job_timeout_seconds} seconds"
+                    )
+                    self._terminate_process_group(process)
+                    break
+
+                memory_bytes, working_set_bytes = self._read_memory_sample(
+                    self.settings.cgroup_memory_current_path,
+                    self.settings.cgroup_memory_stat_path,
+                )
+                if memory_bytes is not None:
+                    memory_samples += 1
+                    peak_memory_bytes = max(peak_memory_bytes or 0, memory_bytes)
+                    monitored_bytes = (
+                        working_set_bytes
+                        if working_set_bytes is not None
+                        else memory_bytes
+                    )
+                    peak_working_set_bytes = max(
+                        peak_working_set_bytes or 0,
+                        monitored_bytes,
+                    )
+                    if monitored_bytes > self.settings.memory_limit_bytes:
+                        consecutive_high_memory_samples += 1
+                        maximum_consecutive_high_memory_samples = max(
+                            maximum_consecutive_high_memory_samples,
+                            consecutive_high_memory_samples,
+                        )
+                    else:
+                        consecutive_high_memory_samples = 0
+                    if (
+                        consecutive_high_memory_samples
+                        >= self.settings.memory_limit_consecutive_samples
+                    ):
+                        resource_exhausted = True
+                        status = "failed"
+                        failure_code = "resource_exhausted"
+                        error = (
+                            "RetroPath cgroup working set exceeded "
+                            f"{self.settings.memory_limit_bytes} bytes for "
+                            f"{consecutive_high_memory_samples} consecutive samples"
+                        )
+                        self._terminate_process_group(process)
+                        break
+                time.sleep(self.settings.resource_poll_seconds)
+
+            return_code = process.returncode
+            if not timed_out and not resource_exhausted:
+                if return_code is None:
+                    return_code = process.wait(timeout=10)
                 status = status_for_return_code(return_code)
                 if status == "failed":
+                    failure_code = "knime_execution_failed"
                     error = f"retropath2_wrapper exited with code {return_code}"
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                status = "timed_out"
-                error = (
-                    f"RetroPath execution exceeded {self.settings.job_timeout_seconds} seconds"
-                )
-                self._terminate_process_group(process)
-                return_code = process.returncode
+
+        wall_seconds = round(time.monotonic() - started_monotonic, 6)
 
         artifacts = self._discover_artifacts(job_dir)
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "job_id": job["job_id"],
             "status": status,
             "created_at": job["created_at"],
@@ -135,6 +195,7 @@ class RetroPathRunner:
             "finished_at": utcnow(),
             "return_code": return_code,
             "timed_out": timed_out,
+            "failure_code": failure_code,
             "error": error,
             "parameters": parameters,
             "versions": {
@@ -151,13 +212,67 @@ class RetroPathRunner:
                 "sink.csv": hash_bytes(sink_path.read_bytes()),
             },
             "command": command,
+            "resource_telemetry": {
+                "wall_seconds": wall_seconds,
+                "memory_current_path": str(
+                    self.settings.cgroup_memory_current_path
+                ),
+                "memory_stat_path": str(self.settings.cgroup_memory_stat_path),
+                "memory_samples": memory_samples,
+                "peak_memory_bytes": peak_memory_bytes,
+                "peak_working_set_bytes": peak_working_set_bytes,
+                "memory_limit_bytes": self.settings.memory_limit_bytes,
+                "memory_limit_consecutive_samples": (
+                    self.settings.memory_limit_consecutive_samples
+                ),
+                "maximum_consecutive_high_memory_samples": (
+                    maximum_consecutive_high_memory_samples
+                ),
+                "resource_poll_seconds": self.settings.resource_poll_seconds,
+                "resource_exhausted": resource_exhausted,
+            },
             "artifacts": artifacts,
         }
         (job_dir / "run_manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        return RunResult(status=status, return_code=return_code, error=error)
+        return RunResult(
+            status=status,
+            return_code=return_code,
+            error=error,
+            failure_code=failure_code,
+        )
+
+    @staticmethod
+    def _read_memory_bytes(path: Path) -> int | None:
+        try:
+            value = int(path.read_text(encoding="ascii").strip())
+        except (OSError, UnicodeError, ValueError):
+            return None
+        return value if value >= 0 else None
+
+    @classmethod
+    def _read_memory_sample(
+        cls,
+        current_path: Path,
+        stat_path: Path,
+    ) -> tuple[int | None, int | None]:
+        current = cls._read_memory_bytes(current_path)
+        if current is None:
+            return None, None
+        inactive_file: int | None = None
+        try:
+            for line in stat_path.read_text(encoding="ascii").splitlines():
+                key, value = line.split(maxsplit=1)
+                if key == "inactive_file":
+                    inactive_file = int(value)
+                    break
+        except (OSError, UnicodeError, ValueError):
+            inactive_file = None
+        if inactive_file is None or inactive_file < 0:
+            return current, None
+        return current, max(0, current - inactive_file)
 
     @staticmethod
     def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:

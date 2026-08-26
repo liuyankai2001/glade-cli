@@ -21,6 +21,11 @@ class Settings:
     jobs_dir: Path
     max_queue: int
     job_timeout_seconds: int
+    memory_limit_bytes: int
+    memory_limit_consecutive_samples: int
+    resource_poll_seconds: float
+    cgroup_memory_current_path: Path
+    cgroup_memory_stat_path: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,7 +61,28 @@ class Settings:
             ),
             max_queue=int(os.environ.get("RETROPATH_MAX_QUEUE", "8")),
             job_timeout_seconds=int(
-                os.environ.get("RETROPATH_JOB_TIMEOUT_SECONDS", "3600")
+                os.environ.get("RETROPATH_JOB_TIMEOUT_SECONDS", "1800")
+            ),
+            memory_limit_bytes=int(
+                os.environ.get("RETROPATH_MEMORY_LIMIT_BYTES", str(6 * 1024**3))
+            ),
+            memory_limit_consecutive_samples=int(
+                os.environ.get("RETROPATH_MEMORY_LIMIT_CONSECUTIVE_SAMPLES", "3")
+            ),
+            resource_poll_seconds=float(
+                os.environ.get("RETROPATH_RESOURCE_POLL_SECONDS", "2")
+            ),
+            cgroup_memory_current_path=Path(
+                os.environ.get(
+                    "RETROPATH_CGROUP_MEMORY_CURRENT_PATH",
+                    "/sys/fs/cgroup/memory.current",
+                )
+            ),
+            cgroup_memory_stat_path=Path(
+                os.environ.get(
+                    "RETROPATH_CGROUP_MEMORY_STAT_PATH",
+                    "/sys/fs/cgroup/memory.stat",
+                )
             ),
         )
 
@@ -110,6 +136,7 @@ class RuntimeInfo:
     knime_executable: Path | None
     rules_sha256: str | None
     errors: tuple[str, ...]
+    knime_heap_max_mb: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -126,8 +153,41 @@ class RuntimeInfo:
             "rules_version": settings.rules_version,
             "rules_sha256": self.rules_sha256,
             "worker_concurrency": 1,
+            "job_timeout_seconds": settings.job_timeout_seconds,
+            "memory_limit_bytes": settings.memory_limit_bytes,
+            "memory_limit_consecutive_samples": (
+                settings.memory_limit_consecutive_samples
+            ),
+            "resource_poll_seconds": settings.resource_poll_seconds,
+            "knime_heap_max_mb": self.knime_heap_max_mb,
             "errors": list(self.errors),
         }
+
+
+def _knime_heap_max_mb(knime_executable: Path | None) -> int | None:
+    if knime_executable is None:
+        return None
+    ini_path = knime_executable.with_name("knime.ini")
+    if not ini_path.is_file():
+        return None
+    try:
+        lines = ini_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        value = line.strip().lower()
+        if not value.startswith("-xmx"):
+            continue
+        raw = value[4:]
+        try:
+            if raw.endswith("g"):
+                return int(float(raw[:-1]) * 1024)
+            if raw.endswith("m"):
+                return int(float(raw[:-1]))
+            return int(raw) // (1024**2)
+        except ValueError:
+            return None
+    return None
 
 
 def inspect_runtime(settings: Settings) -> RuntimeInfo:
@@ -150,6 +210,7 @@ def inspect_runtime(settings: Settings) -> RuntimeInfo:
         errors.append(f"workflow is missing: {workflow}")
 
     knime_executable = find_knime_executable(settings.knime_dir)
+    knime_heap_max_mb = _knime_heap_max_mb(knime_executable)
     if knime_executable is None:
         errors.append(f"KNIME executable is missing under {settings.knime_dir}")
     else:
@@ -164,6 +225,11 @@ def inspect_runtime(settings: Settings) -> RuntimeInfo:
             )
         ):
             errors.append("KNIME chemistry feature is missing")
+        if knime_heap_max_mb is not None and knime_heap_max_mb > 2048:
+            errors.append(
+                "KNIME heap exceeds the supported 2048 MiB service limit: "
+                f"{knime_heap_max_mb} MiB"
+            )
 
     for library in ("libssl.so.10", "libcrypto.so.10"):
         if not (settings.openssl10_dir / library).is_file():
@@ -187,4 +253,5 @@ def inspect_runtime(settings: Settings) -> RuntimeInfo:
         knime_executable=knime_executable,
         rules_sha256=rules_sha256,
         errors=tuple(errors),
+        knime_heap_max_mb=knime_heap_max_mb,
     )

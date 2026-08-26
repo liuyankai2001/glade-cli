@@ -48,6 +48,8 @@ CANDIDATE_ROUTE_COLUMNS = (
     "worst_rule_score",
     "score_semantics",
     "contains_auxiliary_fragments",
+    "structure_match_quality",
+    "stereo_review_required",
     "route_source",
     "contains_predicted_steps",
     "validation_status",
@@ -204,6 +206,10 @@ def _candidate_route_row(
         "score_semantics": candidate.score_semantics,
         "contains_auxiliary_fragments": str(
             candidate.contains_auxiliary_fragments
+        ).lower(),
+        "structure_match_quality": candidate.structure_match_quality,
+        "stereo_review_required": str(
+            candidate.stereo_review_required
         ).lower(),
         "route_source": candidate.route_source,
         "contains_predicted_steps": "true",

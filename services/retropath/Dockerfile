@@ -36,7 +36,9 @@ COPY --chown=${MAMBA_USER}:${MAMBA_USER} install_knime.py /tmp/install_knime.py
 RUN --mount=type=cache,target=/var/cache/knime,uid=57439,gid=57439 \
     python /tmp/install_knime.py \
       --cache-dir /var/cache/knime \
-      --install-dir /opt/knime
+      --install-dir /opt/knime \
+    && sed -i -E 's/^-Xmx.*/-Xmx2048m/' /opt/knime/knime_4.7.0/knime.ini \
+    && grep -qx -- '-Xmx2048m' /opt/knime/knime_4.7.0/knime.ini
 
 # KNIME 4.7 bundles a legacy Chromium binary whose Linux build uses the
 # CentOS OpenSSL 1.0 SONAMEs. Keep those ABI-compatible libraries in a
@@ -68,7 +70,11 @@ ENV RETROPATH_RULES_PATH=/opt/retropath/rules/rr02.csv \
     RETROPATH_OPENSSL10_DIR=/home/mambauser/.openssl10/lib \
     RETROPATH_JOBS_DIR=/var/lib/retropath/jobs \
     RETROPATH_MAX_QUEUE=8 \
-    RETROPATH_JOB_TIMEOUT_SECONDS=3600 \
+    RETROPATH_JOB_TIMEOUT_SECONDS=1800 \
+    RETROPATH_MEMORY_LIMIT_BYTES=6442450944 \
+    RETROPATH_MEMORY_LIMIT_CONSECUTIVE_SAMPLES=3 \
+    RETROPATH_RESOURCE_POLL_SECONDS=2 \
+    RETROPATH_CGROUP_MEMORY_STAT_PATH=/sys/fs/cgroup/memory.stat \
     PYTHONPATH=/opt/service \
     PYTHONUNBUFFERED=1 \
     LD_LIBRARY_PATH=/home/mambauser/.openssl10/lib:/opt/conda/lib

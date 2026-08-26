@@ -24,6 +24,11 @@ from rdkit.Chem import rdChemReactions, rdMolDescriptors
 
 from src.pathway_analyze.retropath_client import RetroPathClientRun
 from src.pathway_analyze.retropath_input import RetroPathInputBundle
+from src.pathway_analyze.retropath_identity import (
+    StructureIdentity,
+    compare_structure_identities,
+    structure_identity,
+)
 from src.pathway_analyze.retropath_models import (
     PredictedCompound,
     PredictedReaction,
@@ -107,7 +112,7 @@ class RuleEvidence:
 
 @dataclass(frozen=True)
 class SinkMatch:
-    """An exact full-InChIKey match to one P2 cumulative sink structure."""
+    """A graded structural match to one or more P2 cumulative sink entries."""
 
     compound_id: str
     inchikey: str
@@ -116,6 +121,9 @@ class SinkMatch:
     minimum_depth: int
     wrapper_in_sink: bool
     wrapper_sink_names: Tuple[str, ...]
+    match_type: str = "exact"
+    stereo_review_required: bool = False
+    stereo_stripped_inchikey: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +134,9 @@ class SinkMatch:
             "minimum_depth": self.minimum_depth,
             "wrapper_in_sink": self.wrapper_in_sink,
             "wrapper_sink_names": list(self.wrapper_sink_names),
+            "match_type": self.match_type,
+            "stereo_review_required": self.stereo_review_required,
+            "stereo_stripped_inchikey": self.stereo_stripped_inchikey,
         }
 
 
@@ -153,6 +164,9 @@ class ParsedCompoundNode:
     is_target: bool
     wrapper_in_sink: bool
     wrapper_sink_names: Tuple[str, ...]
+    target_match_type: Optional[str] = None
+    sink_match_type: Optional[str] = None
+    stereo_review_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +174,9 @@ class ParsedCompoundNode:
             "is_target": self.is_target,
             "wrapper_in_sink": self.wrapper_in_sink,
             "wrapper_sink_names": list(self.wrapper_sink_names),
+            "target_match_type": self.target_match_type,
+            "sink_match_type": self.sink_match_type,
+            "stereo_review_required": self.stereo_review_required,
         }
 
 
@@ -279,12 +296,15 @@ class _NodeAccumulator:
     is_target: bool = False
     wrapper_flags: set[bool] | None = None
     sink_names: set[str] | None = None
+    target_match_types: set[str] | None = None
 
     def __post_init__(self) -> None:
         if self.wrapper_flags is None:
             self.wrapper_flags = set()
         if self.sink_names is None:
             self.sink_names = set()
+        if self.target_match_types is None:
+            self.target_match_types = set()
 
 
 @dataclass(frozen=True)
@@ -307,6 +327,16 @@ class _RawTransformation:
     ec_numbers: Tuple[str, ...]
     score_raw: float
     iteration: int
+
+
+@dataclass(frozen=True)
+class _ArtifactCompoundResolution:
+    compound: Optional[PredictedCompound]
+    auxiliary: Optional[AuxiliaryFragment]
+    target_match_type: Optional[str] = None
+    sink_candidates: Tuple[PredictedCompound, ...] = tuple()
+    sink_match_type: Optional[str] = None
+    observed_identity: Optional[StructureIdentity] = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -709,13 +739,15 @@ def _compound_from_artifact(
     smiles: str,
     *,
     target: PredictedCompound,
-    target_inchikey: str,
+    target_identity: StructureIdentity,
     sink_by_inchikey: Mapping[str, PredictedCompound],
+    sink_by_stereo_stripped_inchikey: Mapping[str, Tuple[PredictedCompound, ...]],
+    sink_identities: Mapping[str, StructureIdentity],
     provenance: str,
-) -> tuple[Optional[PredictedCompound], Optional[AuxiliaryFragment]]:
+) -> _ArtifactCompoundResolution:
     pseudo = _pseudo_fragment(inchi, smiles)
     if pseudo is not None:
-        return None, pseudo
+        return _ArtifactCompoundResolution(None, pseudo)
     normalized_inchi = str(inchi).strip()
     if not normalized_inchi.startswith("InChI=1S/"):
         raise ValueError("compound does not contain a standard InChI v1 structure")
@@ -726,10 +758,13 @@ def _compound_from_artifact(
     if molecule is None:
         raise ValueError("RDKit could not parse compound InChI")
     if not any(atom.GetAtomicNum() > 1 for atom in molecule.GetAtoms()):
-        return None, AuxiliaryFragment(
-            normalized_inchi,
-            str(smiles).strip(),
-            "no_heavy_atom_auxiliary_fragment",
+        return _ArtifactCompoundResolution(
+            None,
+            AuxiliaryFragment(
+                normalized_inchi,
+                str(smiles).strip(),
+                "no_heavy_atom_auxiliary_fragment",
+            ),
         )
     try:
         standard_inchi = rd_inchi.MolToInchi(molecule).strip()
@@ -746,11 +781,64 @@ def _compound_from_artifact(
     if not standard_inchi.startswith("InChI=1S/") or not inchikey:
         raise ValueError("RDKit did not produce a complete standard structure")
 
-    if inchikey == target_inchikey:
-        return target, None
-    if inchikey in sink_by_inchikey:
-        return sink_by_inchikey[inchikey], None
-    return (
+    observed_identity = structure_identity(standard_inchi)
+    target_match = compare_structure_identities(target_identity, observed_identity)
+
+    exact_sink = sink_by_inchikey.get(inchikey)
+    sink_candidates: Tuple[PredictedCompound, ...] = tuple()
+    sink_match_type: Optional[str] = None
+    if exact_sink is not None:
+        sink_candidates = (exact_sink,)
+        sink_match_type = "exact"
+    else:
+        compatible = []
+        for candidate in sink_by_stereo_stripped_inchikey.get(
+            observed_identity.stereo_stripped_inchikey,
+            tuple(),
+        ):
+            candidate_identity = sink_identities[candidate.compound_id]
+            match = compare_structure_identities(candidate_identity, observed_identity)
+            if match.match_type == "stereo_missing":
+                compatible.append(candidate)
+        if compatible:
+            sink_candidates = tuple(
+                sorted(
+                    compatible,
+                    key=lambda item: (
+                        item.minimum_depth if item.minimum_depth is not None else 10**9,
+                        item.compound_id,
+                    ),
+                )
+            )
+            sink_match_type = "stereo_missing"
+
+    if target_match.match_type == "exact":
+        return _ArtifactCompoundResolution(
+            target,
+            None,
+            target_match_type="exact",
+            sink_candidates=sink_candidates,
+            sink_match_type=sink_match_type,
+            observed_identity=observed_identity,
+        )
+    if target_match.match_type == "stereo_missing":
+        return _ArtifactCompoundResolution(
+            target,
+            None,
+            target_match_type="stereo_missing",
+            sink_candidates=sink_candidates,
+            sink_match_type=sink_match_type,
+            observed_identity=observed_identity,
+        )
+    if exact_sink is not None:
+        return _ArtifactCompoundResolution(
+            exact_sink,
+            None,
+            sink_candidates=sink_candidates,
+            sink_match_type="exact",
+            observed_identity=observed_identity,
+        )
+    return _ArtifactCompoundResolution(
         PredictedCompound.create(
             inchi=standard_inchi,
             inchikey=inchikey,
@@ -764,7 +852,42 @@ def _compound_from_artifact(
             ),
         ),
         None,
+        sink_candidates=sink_candidates,
+        sink_match_type=sink_match_type,
+        observed_identity=observed_identity,
     )
+
+
+def _reaction_product_multiplicities(reaction_smiles: str) -> dict[str, int]:
+    """Count structural right-hand components by stereo-stripped InChIKey.
+
+    RetroPath's results table may contain one row per unique product structure,
+    even when Reaction SMILES contains the same product more than once.  This
+    helper restores only multiplicities for parseable heavy-atom components;
+    components not represented by result rows remain P8 auxiliary evidence.
+    """
+
+    _, right = reaction_smiles.split(">>", 1)
+    counts: dict[str, int] = {}
+    for component in (item.strip() for item in right.split(".")):
+        if not component or component in {"[H+]", "[H-]", "[H]", "[e-]"}:
+            continue
+        try:
+            molecule = Chem.MolFromSmiles(component, sanitize=True)
+        except (RuntimeError, ValueError):
+            molecule = None
+        if molecule is None or not any(
+            atom.GetAtomicNum() > 1 for atom in molecule.GetAtoms()
+        ):
+            continue
+        try:
+            component_inchi = rd_inchi.MolToInchi(molecule).strip()
+            key = structure_identity(component_inchi).stereo_stripped_inchikey
+        except (RuntimeError, ValueError):
+            continue
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _json_topology(path: Path) -> dict[str, tuple[str, Tuple[str, ...]]]:
@@ -887,17 +1010,40 @@ def _sink_match(
     *,
     wrapper_in_sink: bool,
     sink_names: Iterable[str],
+    candidates: Optional[Sequence[PredictedCompound]] = None,
+    match_type: str = "exact",
 ) -> SinkMatch:
-    if compound.inchikey is None or compound.minimum_depth is None:
-        raise ValueError("sink compound lacks InChIKey or minimum depth")
+    matched = tuple(candidates or (compound,))
+    if compound.inchikey is None or not matched:
+        raise ValueError("sink match lacks an observed InChIKey or candidate")
+    if match_type not in {"exact", "stereo_missing"}:
+        raise ValueError(f"unsupported accepted sink match type: {match_type}")
+    if any(item.minimum_depth is None for item in matched):
+        raise ValueError("sink candidate lacks minimum depth")
+    representative = min(
+        matched,
+        key=lambda item: (
+            item.minimum_depth if item.minimum_depth is not None else 10**9,
+            item.compound_id,
+        ),
+    )
+    candidate_kegg_ids = _stable_unique(
+        kegg_id for item in matched for kegg_id in item.kegg_ids
+    )
+    observed_identity = structure_identity(compound.inchi or "")
     return SinkMatch(
         compound_id=compound.compound_id,
         inchikey=compound.inchikey,
-        representative_kegg_id=compound.compound_id,
-        kegg_ids=compound.kegg_ids,
-        minimum_depth=compound.minimum_depth,
+        representative_kegg_id=representative.compound_id,
+        kegg_ids=candidate_kegg_ids,
+        minimum_depth=min(
+            item.minimum_depth for item in matched if item.minimum_depth is not None
+        ),
         wrapper_in_sink=wrapper_in_sink,
         wrapper_sink_names=_stable_unique(sink_names),
+        match_type=match_type,
+        stereo_review_required=match_type == "stereo_missing",
+        stereo_stripped_inchikey=observed_identity.stereo_stripped_inchikey,
     )
 
 
@@ -964,10 +1110,28 @@ def parse_retropath_network(
             "artifact_inconsistent",
             "P2 target has no full InChIKey",
         )
+    target_identity = structure_identity(target.inchi or "")
     sink_by_inchikey = {
         compound.inchikey: compound
         for compound in input_bundle.sink_compounds
         if compound.inchikey is not None
+    }
+    sink_identities = {
+        compound.compound_id: structure_identity(compound.inchi or "")
+        for compound in input_bundle.sink_compounds
+    }
+    sink_by_stereo_stripped_inchikey_lists: dict[
+        str, list[PredictedCompound]
+    ] = {}
+    for compound in input_bundle.sink_compounds:
+        identity = sink_identities[compound.compound_id]
+        sink_by_stereo_stripped_inchikey_lists.setdefault(
+            identity.stereo_stripped_inchikey,
+            [],
+        ).append(compound)
+    sink_by_stereo_stripped_inchikey = {
+        key: tuple(sorted(values, key=lambda item: item.compound_id))
+        for key, values in sink_by_stereo_stripped_inchikey_lists.items()
     }
     if status == "source_in_sink":
         sink = sink_by_inchikey.get(target.inchikey)
@@ -1034,6 +1198,7 @@ def parse_retropath_network(
         compound: PredictedCompound,
         *,
         is_target: bool,
+        target_match_type: Optional[str],
         wrapper_in_sink: Optional[bool],
         sink_names: Iterable[str],
     ) -> None:
@@ -1049,9 +1214,12 @@ def parse_retropath_network(
         existing.is_target = existing.is_target or is_target
         assert existing.wrapper_flags is not None
         assert existing.sink_names is not None
+        assert existing.target_match_types is not None
         if wrapper_in_sink is not None:
             existing.wrapper_flags.add(wrapper_in_sink)
         existing.sink_names.update(sink_names)
+        if target_match_type is not None:
+            existing.target_match_types.add(target_match_type)
 
     for raw in raw_transformations:
         try:
@@ -1062,32 +1230,54 @@ def parse_retropath_network(
                 evidence_by_id[item].diameter != raw.diameter for item in raw.rule_ids
             ):
                 raise ValueError("reported Diameter disagrees with RR02 evidence")
-            substrate, substrate_auxiliary = _compound_from_artifact(
+            substrate_resolution = _compound_from_artifact(
                 raw.substrate_inchi,
                 raw.substrate_smiles,
                 target=target,
-                target_inchikey=target.inchikey,
+                target_identity=target_identity,
                 sink_by_inchikey=sink_by_inchikey,
+                sink_by_stereo_stripped_inchikey=(
+                    sink_by_stereo_stripped_inchikey
+                ),
+                sink_identities=sink_identities,
                 provenance=table_path.name,
             )
-            if substrate is None or substrate_auxiliary is not None:
+            substrate = substrate_resolution.compound
+            if substrate is None or substrate_resolution.auxiliary is not None:
                 raise ValueError(
                     "transformation substrate is not a structural compound"
                 )
 
-            product_ids: list[str] = []
             auxiliary_fragments: list[AuxiliaryFragment] = []
             product_keys: list[str] = []
-            product_nodes: list[tuple[PredictedCompound, _RawProduct]] = []
+            product_nodes: list[
+                tuple[PredictedCompound, _RawProduct, _ArtifactCompoundResolution]
+            ] = []
+            product_groups: dict[
+                str,
+                list[
+                    tuple[
+                        PredictedCompound,
+                        _RawProduct,
+                        _ArtifactCompoundResolution,
+                    ]
+                ],
+            ] = {}
             for raw_product in raw.products:
-                product, auxiliary = _compound_from_artifact(
+                product_resolution = _compound_from_artifact(
                     raw_product.inchi,
                     raw_product.smiles,
                     target=target,
-                    target_inchikey=target.inchikey,
+                    target_identity=target_identity,
                     sink_by_inchikey=sink_by_inchikey,
+                    sink_by_stereo_stripped_inchikey=(
+                        sink_by_stereo_stripped_inchikey
+                    ),
+                    sink_identities=sink_identities,
                     provenance=table_path.name,
                 )
+                product = product_resolution.compound
+                auxiliary = product_resolution.auxiliary
                 if auxiliary is not None:
                     if raw_product.in_sink:
                         raise ValueError(
@@ -1097,13 +1287,43 @@ def parse_retropath_network(
                     continue
                 if product is None or product.inchikey is None:
                     raise ValueError("product structure is incomplete")
-                if raw_product.in_sink and product.inchikey not in sink_by_inchikey:
+                if raw_product.in_sink and not product_resolution.sink_candidates:
                     raise ValueError(
-                        "wrapper sink flag has no exact full-InChIKey P2 match"
+                        "wrapper sink flag has no accepted P2 structure match"
                     )
-                product_ids.append(product.compound_id)
-                product_keys.append(product.inchikey)
-                product_nodes.append((product, raw_product))
+                observed_identity = product_resolution.observed_identity
+                if observed_identity is None:
+                    raise ValueError("product structure identity is incomplete")
+                product_keys.append(observed_identity.full_inchikey)
+                entry = (product, raw_product, product_resolution)
+                product_nodes.append(entry)
+                product_groups.setdefault(
+                    observed_identity.stereo_stripped_inchikey,
+                    [],
+                ).append(entry)
+
+            reaction_multiplicities = _reaction_product_multiplicities(
+                raw.reaction_smiles
+            )
+            product_ids: list[str] = []
+            for stereo_stripped_key, entries in sorted(product_groups.items()):
+                reaction_count = reaction_multiplicities.get(stereo_stripped_key, 0)
+                if reaction_count < 1:
+                    raise ValueError(
+                        "result product structure is absent from Reaction SMILES"
+                    )
+                unique_compound_ids = sorted(
+                    {entry[0].compound_id for entry in entries}
+                )
+                if len(unique_compound_ids) == 1:
+                    coefficient = max(len(entries), reaction_count)
+                    product_ids.extend([unique_compound_ids[0]] * coefficient)
+                else:
+                    warnings.add(
+                        "reaction_stereo_multiplicity_ambiguous:"
+                        f"{raw.transformation_id}:{stereo_stripped_key}"
+                    )
+                    product_ids.extend(entry[0].compound_id for entry in entries)
             if not product_ids:
                 raise ValueError("transformation has no structural product")
             if sorted(product_ids) == [substrate.compound_id]:
@@ -1120,8 +1340,13 @@ def parse_retropath_network(
                 expected_substrate_key, expected_product_keys = json_topology[
                     raw.transformation_id
                 ]
+                observed_substrate_key = (
+                    substrate_resolution.observed_identity.full_inchikey
+                    if substrate_resolution.observed_identity is not None
+                    else substrate.inchikey
+                )
                 if (
-                    substrate.inchikey != expected_substrate_key
+                    observed_substrate_key != expected_substrate_key
                     or tuple(sorted(set(product_keys))) != expected_product_keys
                 ):
                     raise ValueError(
@@ -1167,14 +1392,18 @@ def parse_retropath_network(
             )
             add_node(
                 substrate,
-                is_target=substrate.inchikey == target.inchikey,
+                is_target=substrate_resolution.target_match_type
+                in {"exact", "stereo_missing"},
+                target_match_type=substrate_resolution.target_match_type,
                 wrapper_in_sink=None,
                 sink_names=tuple(),
             )
-            for product, raw_product in product_nodes:
+            for product, raw_product, product_resolution in product_nodes:
                 add_node(
                     product,
-                    is_target=product.inchikey == target.inchikey,
+                    is_target=product_resolution.target_match_type
+                    in {"exact", "stereo_missing"},
+                    target_match_type=product_resolution.target_match_type,
                     wrapper_in_sink=raw_product.in_sink,
                     sink_names=raw_product.sink_names,
                 )
@@ -1214,29 +1443,71 @@ def parse_retropath_network(
         accumulator = node_accumulators[compound_id]
         assert accumulator.wrapper_flags is not None
         assert accumulator.sink_names is not None
+        assert accumulator.target_match_types is not None
         wrapper_in_sink = True in accumulator.wrapper_flags
         if len(accumulator.wrapper_flags) > 1:
             warnings.add(f"sink_flag_disagreement:{compound_id}")
         compound = accumulator.compound
-        exact_sink = (
-            compound.inchikey is not None and compound.inchikey in sink_by_inchikey
-        )
-        if exact_sink and not wrapper_in_sink:
+        compound_identity = structure_identity(compound.inchi or "")
+        exact_sink = sink_by_inchikey.get(compound_identity.full_inchikey)
+        accepted_sink_candidates: Tuple[PredictedCompound, ...] = tuple()
+        sink_match_type: Optional[str] = None
+        if exact_sink is not None:
+            accepted_sink_candidates = (exact_sink,)
+            sink_match_type = "exact"
+        else:
+            accepted_sink_candidates = tuple(
+                item
+                for item in sink_by_stereo_stripped_inchikey.get(
+                    compound_identity.stereo_stripped_inchikey,
+                    tuple(),
+                )
+                if compare_structure_identities(
+                    sink_identities[item.compound_id],
+                    compound_identity,
+                ).match_type
+                == "stereo_missing"
+            )
+            if accepted_sink_candidates:
+                sink_match_type = "stereo_missing"
+        accepted_sink = bool(accepted_sink_candidates)
+        if accepted_sink and not wrapper_in_sink:
             warnings.add(f"sink_flag_disagreement:{compound_id}")
+        if sink_match_type == "stereo_missing":
+            warnings.add(f"stereo_missing:sink:{compound_id}")
+        target_match_type = (
+            "exact"
+            if "exact" in accumulator.target_match_types
+            else (
+                "stereo_missing"
+                if "stereo_missing" in accumulator.target_match_types
+                else None
+            )
+        )
+        if target_match_type == "stereo_missing":
+            warnings.add(f"stereo_missing:target:{compound_id}")
         nodes.append(
             ParsedCompoundNode(
                 compound=compound,
                 is_target=accumulator.is_target,
                 wrapper_in_sink=wrapper_in_sink,
                 wrapper_sink_names=_stable_unique(accumulator.sink_names),
+                target_match_type=target_match_type,
+                sink_match_type=sink_match_type,
+                stereo_review_required=(
+                    target_match_type == "stereo_missing"
+                    or sink_match_type == "stereo_missing"
+                ),
             )
         )
-        if exact_sink:
+        if accepted_sink:
             sink_matches.append(
                 _sink_match(
-                    sink_by_inchikey[compound.inchikey],
+                    compound,
                     wrapper_in_sink=wrapper_in_sink,
                     sink_names=accumulator.sink_names,
+                    candidates=accepted_sink_candidates,
+                    match_type=sink_match_type or "exact",
                 )
             )
 

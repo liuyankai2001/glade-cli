@@ -16,5 +16,5 @@ def test_storage_persists_and_recovers_running_jobs(tmp_path: Path):
     job = restarted.get_job("rp2-test")
     assert job is not None
     assert job["status"] == "failed"
+    assert job["failure_code"] == "service_restarted"
     assert "restarted" in str(job["error"])
-

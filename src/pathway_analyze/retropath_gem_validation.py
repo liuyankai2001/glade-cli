@@ -62,7 +62,7 @@ from src.pathway_analyze.retropath_stoichiometry import (
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v1"
+RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v2"
 VALIDATION_MANIFEST_FILE_NAME = "validation_manifest.json"
 STOICHIOMETRY_HYPOTHESES_FILE_NAME = "stoichiometry_hypotheses.csv"
 STOICHIOMETRY_TERMS_FILE_NAME = "stoichiometry_terms.csv"
@@ -114,6 +114,10 @@ SUMMARY_COLUMNS = (
     "combination_id",
     "candidate_status",
     "validation_status",
+    "structure_match_quality",
+    "stereo_review_required",
+    "stereo_resolution_status",
+    "stereo_resolution_source",
     "stoichiometry_hypothesis_ids",
     "baseline_growth",
     "required_growth",
@@ -919,6 +923,18 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
                 == rank
             )
             candidate_id = str(route.get("candidate_id") or "").strip()
+            structure_match_quality = str(
+                route.get("structure_match_quality") or "exact"
+            ).strip()
+            stereo_review_required = (
+                str(route.get("stereo_review_required") or "false")
+                .strip()
+                .lower()
+                == "true"
+            )
+            stereo_resolution_status = (
+                "unresolved" if stereo_review_required else "not_required"
+            )
             steps = tuple(
                 sorted(
                     (
@@ -994,6 +1010,12 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
                         "combination_id": "",
                         "candidate_status": candidate_statuses[rank],
                         "validation_status": "FAIL_STOICHIOMETRY",
+                        "structure_match_quality": structure_match_quality,
+                        "stereo_review_required": str(
+                            stereo_review_required
+                        ).lower(),
+                        "stereo_resolution_status": stereo_resolution_status,
+                        "stereo_resolution_source": "",
                         "stoichiometry_hypothesis_ids": "",
                         "baseline_growth": baseline_growth,
                         "required_growth": required_growth,
@@ -1045,6 +1067,12 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             for validation in validations:
                 row = dict(validation.row)
                 row["candidate_status"] = candidate_statuses[rank]
+                row["structure_match_quality"] = structure_match_quality
+                row["stereo_review_required"] = str(
+                    stereo_review_required
+                ).lower()
+                row["stereo_resolution_status"] = stereo_resolution_status
+                row["stereo_resolution_source"] = ""
                 summary_rows.append(row)
                 flux_rows.extend(validation.flux_rows)
 
@@ -1113,6 +1141,14 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "formal_promotion_allowed": any(
             row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
             for row in summary_rows
+        ),
+        "stereo_review_required": any(
+            str(row.get("stereo_review_required") or "").lower() == "true"
+            for row in summary_rows
+        ),
+        "stereo_policy": (
+            "strict GEM feasibility does not resolve missing stereochemistry; "
+            "affected routes remain eligible only with manual-review metadata"
         ),
     }
     manifest_sha256 = _atomic_write_json(manifest_path, manifest)

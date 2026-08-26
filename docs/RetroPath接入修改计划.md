@@ -279,6 +279,30 @@ P10 已取消主酶阶段的独立 RetroPath 路线入口。P8 严格通过组�
 - P1–P10 定向收集 123 项；全仓库 468 项通过、2 项本地 Docker 测试按设计跳过，
   另有 93 个子测试通过。
 
+### P11.1 隐藏 KEGG 反应恢复评测（2026-08-25 更新）
+
+P11.1 的评测工具、数据契约和 12 例试运行集已实现：
+
+- 固定 EC 1–6 每类 2 条已知 KEGG 单步反应，搜索输入与金标准反应字段物理分离；
+- 每例运行 controlled sink 与完整 iML1515 A0 两种 profile，共 24 个核心任务；
+- 独立模块复用 P2→P10，输出来源模板、平衡计量、严格 GEM、精确正式 solution 的
+  Recall@1/3/5/10、MRR、Wilson 95% 区间、运行时间/IQR 和失败漏斗；
+- 模型、培养基、A0、RR02、MNXref、RetroPath runtime、生产源码树和任务 artifacts
+  均使用 SHA-256 绑定，支持 fail-closed resume；
+- 主酶恢复为可选 full-A0 扩展，首份本地核心基线默认不调用外部酶数据库；
+- 回测暴露并修复 RDKit `CalcMolFormula` 末尾电荷后缀无法进入 P8 的问题；
+- 终态失败默认可断点保留，显式 `--retry-failed` 才重试；controlled 基础设施失败会
+  熔断同案例 full-A0，避免同一目标连续拖垮 Docker/KNIME worker；
+- P11.1 定向测试已并入既有 RetroPath 测试模块；全仓库主测试集 482 项通过、2 项
+  本地 Docker 测试按设计跳过，另有 93 个子测试通过。
+
+真实 Docker run `20260825T090033Z_4f69c442` 已形成 24 个终态任务记录并固化
+`docs/reports/RetroPath P11.1基线报告.md`。其中 controlled/full-A0 可评测任务分别为
+7/6，保守 all-selected 精确恢复率均为 1/12（8.3%），可评测分母恢复率分别为
+1/7（14.3%）和 1/6（16.7%）。11 个非评测任务包含 7 个 P4 artifact 一致性失败、
+3 个服务超时/重启/不可用失败和 1 个配对熔断；这组结果是带失败漏斗的首份基线，
+而不是达标结论。P11.2 前应优先处理 P4 对原始结果语义的兼容与服务资源上限。
+
 ## 2. 用户工作流
 
 | 使用场景 | 命令 | 行为 |
@@ -335,7 +359,7 @@ P10 已取消主酶阶段的独立 RetroPath 路线入口。P8 严格通过组�
 | P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、拒绝原因、严格验证与逐步通量 | P1–P8 定向 107 项、全仓库 454 项通过；真实来源模板冒烟通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为 P8 可行混合路线生成候选酶 | candidate/combination/step/hypothesis 身份绑定；精确反应、来源模板、完整/核心 Reaction SMILES、Rule SMARTS 分级检索；结构命中只供人工复核 | 新增 RetroPath enzyme selection；扩展 Selenzyme client、main-enzyme CLI 和 P7 | requirements、Top-N/审计候选、Selenzyme 证据、带哈希 selection manifest | P1–P9 定向 116 项、全仓库 463 项通过；P8 防篡改、多假设分离、结构请求缓存、相似度 1 不误判、真实 MNXref 身份冒烟通过 | P8；CLI/.gitignore 单次授权已使用 | 已完成 |
 | P10 统一正式流程 | P1 | 将严格通过的混合路线纳入现有 solution、manifest 和主酶流程 | P8 PASS 组合物化；promotion 哈希提交；manifest 自动分流步骤；公共组合器支持 manual_review | src/pathway_analyze、src/write_manifest、src/main_protein_selection、src/info_show | 正式混合 solution、统一主酶 artifacts 和带 pending review 的 manifest | KEGG 编号/行为不变；篡改 fail closed；统一命令闭环；全仓库 468 项通过 | P8、P9 | 已完成 |
-| P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 待办 |
+| P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 进行中：P11.1 基线已完成，P11.2+ 待实施 |
 
 ## 5. 第一批应实施的文件
 
@@ -451,7 +475,8 @@ P2 已满足以上完成标准。P6 调用前先使用现有 `load_expansion_bun
 
 `RetroPathRuntimeProvenance` 保存 Wrapper 实际固定版本、Wrapper 自报版本、workflow、
 KNIME、RDKit 插件、RetroRules 版本及规则 SHA-256。`RetroPathRunResult` 使用 schema
-version 1 封装任务 ID、运行状态、返回码、参数、产物、预测实体、候选路线和错误。
+version 2 封装任务 ID、运行状态、返回码、稳定 failure code、参数、产物、预测实体、
+候选路线和错误。
 状态包含 `queued`、`running`、`succeeded`、`no_solution`、`source_in_sink`、
 `failed` 和 `timed_out`。
 
@@ -521,7 +546,7 @@ P5 返回三个候选文件的 SHA-256、候选/拒绝数量和 `RetroPathMergeR
 | 门禁 | 硬性要求 | 未通过处理 |
 |---|---|---|
 | 输入结构 | 目标和 sink 均能解析，立体化学可追溯 | 不进入 RetroPath，或从 sink 排除并记录 |
-| sink 身份 | 必须由 InChIKey 精确映射到 A0/AN 的 Cxxxxx | 路线拒绝 |
+| sink 身份 | 完整 InChIKey 精确命中优先；仅缺失立体层可保留并强制人工复核；明确构型冲突拒绝 | 降级或路线拒绝 |
 | 规则来源 | 默认只使用生化规则，不使用 USPTO 有机合成规则 | 路线拒绝或仅探索展示 |
 | 规则特异性 | 优先高特异规则；radius/diameter 按版本解释 | 低特异路线降级，不自动晋升 |
 | 反应有效性 | 非 no-op、结构可解析、方向明确 | 步骤拒绝 |
@@ -615,6 +640,7 @@ RetroPath depth N：
 执行结果至少区分：
 
     retropath_candidates_found
+    retropath_target_already_reachable
     retropath_no_scope
     retropath_source_in_sink
     retropath_input_invalid
@@ -691,7 +717,12 @@ P10 已获得一次性授权修改 `src/cli/commands/main_enzyme.py`、`src/cli/
 - [x] P8：补全计量并接 strict GEM
 - [x] P9：扩展主酶选择，加入 SelenzymeRF Reaction SMILES 查询
 - [x] P10：严格通过组合物化为统一 solution，并接入 manifest 驱动的主酶完整流程
-- [ ] P11：完成隐藏反应、promiscuity 和青蒿素等回测
+- [x] P11.1：完成评测设计、12 例数据集、双 profile 运行器和统计报告器
+- [x] P11.1：形成 24 个真实任务终态记录并固化带失败漏斗的基线报告
+- [x] P11.1 修复：分级结构身份、target/sink collision、重复产物计量、P8 立体缺失映射
+- [x] P11.1 修复：服务 30 分钟硬超时、6 GiB 连续采样熔断、稳定 failure_code 与 telemetry
+- [x] P11.1 修复后：重新完成 24 任务回测并固化新版漏斗报告
+- [ ] P11.2+：完成来源规则排除、promiscuity 和青蒿素等回测
 
 ## 14. 第一里程碑完成定义
 
@@ -707,3 +738,16 @@ P10 已获得一次性授权修改 `src/cli/commands/main_enzyme.py`、`src/cli/
 8. 所有预测反应和中间体使用 RP2 命名；
 9. 输出可审计候选路线、步骤、日志和 run manifest；
 10. 候选路线不会未经验证进入正式 solution、manifest 或主酶选择。
+
+## 15. P11.1 修复后回测结论（2026-08-26）
+
+- Run：`20260826T021333Z_2d21764c`，24/24 任务有终态；
+- 20 个任务可评测，2 个任务以真实 `resource_exhausted` 失败，2 个配对 full-A0
+  按基础设施熔断策略跳过；Docker 服务保持健康；
+- 可评测任务中，20/20 原始 scope 出现金标准 RR02 来源规则，18/20 形成金标准连通
+  候选，6/20 为完整立体身份精确恢复，8/20 恢复金标准平衡计量，4/20 通过严格
+  GEM，2/20 精确晋升为正式 solution；
+- C00900 重复底物案例由旧的 P8 reconstruction error 修复为 controlled/full-A0
+  均 `balanced_gold_rank=1`；
+- `ec3_r00913` 在 controlled/full-A0 中均完整 `formal_exact_recovered`；
+- 报告：`docs/reports/RetroPath P11.1修复后评测报告.md`。

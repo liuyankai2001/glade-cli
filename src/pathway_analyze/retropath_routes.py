@@ -17,7 +17,7 @@ from src.pathway_analyze.retropath_parser import (
     parse_retropath_network,
 )
 
-RETROPATH_PATH_SCHEMA_VERSION = 1
+RETROPATH_PATH_SCHEMA_VERSION = 2
 DEFAULT_MAX_ROUTES = 1000
 DEFAULT_MAX_SEARCH_STATES = 100_000
 
@@ -55,6 +55,8 @@ class RetrosyntheticPath:
     worst_rule_score: float
     score_semantics: str
     contains_auxiliary_fragments: bool
+    structure_match_quality: str = "exact"
+    stereo_review_required: bool = False
     review_required: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -79,6 +81,8 @@ class RetrosyntheticPath:
             "worst_rule_score": self.worst_rule_score,
             "score_semantics": self.score_semantics,
             "contains_auxiliary_fragments": self.contains_auxiliary_fragments,
+            "structure_match_quality": self.structure_match_quality,
+            "stereo_review_required": self.stereo_review_required,
             "review_required": self.review_required,
         }
 
@@ -235,6 +239,7 @@ def _path_from_partial(
             "target_compound_id": network.target_compound_id,
             "steps": steps,
             "sink_inchikeys": [item.inchikey for item in sink_matches],
+            "sink_match_types": [item.match_type for item in sink_matches],
         }
     )
     score_semantics = selected[0].score_semantics
@@ -262,6 +267,14 @@ def _path_from_partial(
         worst_rule_score=worst_score,
         score_semantics=score_semantics,
         contains_auxiliary_fragments=any(item.auxiliary_fragments for item in selected),
+        structure_match_quality=(
+            "stereo_missing"
+            if any(item.match_type == "stereo_missing" for item in sink_matches)
+            else "exact"
+        ),
+        stereo_review_required=any(
+            item.stereo_review_required for item in sink_matches
+        ),
     )
 
 
@@ -272,6 +285,7 @@ def _path_rank(path: RetrosyntheticPath) -> tuple[Any, ...]:
         else -path.worst_rule_score
     )
     return (
+        1 if path.stereo_review_required else 0,
         path.reaction_count,
         path.maximum_branch_depth,
         -path.minimum_rule_specificity,
@@ -345,13 +359,18 @@ def enumerate_sink_routes(
             for _, transformation_id in partial.choices
         ]
         if not selected:
-            return (0, 0, 0, 0.0, partial.choices, partial.sink_compound_ids)
+            return (0, 0, 0, 0, 0.0, partial.choices, partial.sink_compound_ids)
         score_semantics = selected[0].score_semantics
         scores = [item.score_raw for item in selected]
         worst_score = (
             max(scores) if score_semantics == "lower_is_better" else -min(scores)
         )
         return (
+            sum(
+                1
+                for compound_id in partial.sink_compound_ids
+                if sink_by_compound_id[compound_id].stereo_review_required
+            ),
             len(selected),
             max(item.iteration for item in selected) + 1,
             -min(item.minimum_rule_specificity for item in selected),

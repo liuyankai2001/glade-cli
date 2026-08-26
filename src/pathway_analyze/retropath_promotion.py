@@ -45,7 +45,7 @@ from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v1"
+RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v2"
 PROMOTION_MANIFEST_FILE_NAME = "formal_solution_promotion.json"
 
 _KEGG_REACTION = re.compile(r"^R\d{5}$", re.IGNORECASE)
@@ -91,6 +91,10 @@ _SUMMARY_RETROPATH_COLUMNS = (
     "retropath_candidate_id",
     "retropath_combination_id",
     "prediction_review_required",
+    "structure_match_quality",
+    "stereo_review_required",
+    "stereo_resolution_status",
+    "stereo_resolution_source",
     "promotion_id",
     "combination_truncated",
     "upstream_enumeration_truncated",
@@ -144,6 +148,10 @@ _STEP_RETROPATH_COLUMNS = (
     "stoichiometry_terms_json",
     "prediction_provenance_json",
     "prediction_review_required",
+    "structure_match_quality",
+    "stereo_review_required",
+    "stereo_resolution_status",
+    "stereo_resolution_source",
     "depends_on_step_ids",
 )
 _ELECTRON_SUMMARY_COLUMNS = (
@@ -600,6 +608,18 @@ def _build_solution_rows(
             "expansion_depth": str(step.get("expansion_depth") or "0"),
             "expansion_anchor_compounds": str(step.get("sink_anchor_kegg_ids") or ""),
             "prediction_review_required": "true",
+            "structure_match_quality": str(
+                passing.get("structure_match_quality") or "exact"
+            ),
+            "stereo_review_required": str(
+                passing.get("stereo_review_required") or "false"
+            ),
+            "stereo_resolution_status": str(
+                passing.get("stereo_resolution_status") or "not_required"
+            ),
+            "stereo_resolution_source": str(
+                passing.get("stereo_resolution_source") or ""
+            ),
             "depends_on_step_ids": str(step.get("depends_on_step_ids") or ""),
         }
         if step_source == "kegg_expansion":
@@ -823,6 +843,18 @@ def _build_solution_rows(
         "retropath_candidate_id": candidate_id,
         "retropath_combination_id": combination_id,
         "prediction_review_required": "true",
+        "structure_match_quality": str(
+            passing.get("structure_match_quality") or "exact"
+        ),
+        "stereo_review_required": str(
+            passing.get("stereo_review_required") or "false"
+        ),
+        "stereo_resolution_status": str(
+            passing.get("stereo_resolution_status") or "not_required"
+        ),
+        "stereo_resolution_source": str(
+            passing.get("stereo_resolution_source") or ""
+        ),
         "promotion_id": promotion_id,
         "combination_truncated": str(passing.get("combination_truncated") or "false"),
         "upstream_enumeration_truncated": str(

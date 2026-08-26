@@ -1,0 +1,698 @@
+source,met_id,met_name,compartment,kegg_id
+producible,h2o_c,H2O H2O,c,C00001
+producible,atp_c,ATP C10H12N5O13P3,c,C00002
+producible,nad_c,Nicotinamide adenine dinucleotide,c,C00003
+producible,nadh_c,Nicotinamide adenine dinucleotide - reduced,c,C00004
+producible,nadph_c,Nicotinamide adenine dinucleotide phosphate - reduced,c,C00005
+producible,nadp_c,Nicotinamide adenine dinucleotide phosphate,c,C00006
+producible,o2_c,O2 O2,c,C00007
+producible,adp_c,ADP C10H12N5O10P2,c,C00008
+producible,pi_c,Phosphate,c,C00009
+producible,coa_c,Coenzyme A,c,C00010
+producible,co2_c,CO2 CO2,c,C00011
+producible,ppi_c,Diphosphate,c,C00013
+producible,nh4_c,Ammonium,c,C00014
+producible,udp_c,UDP C9H11N2O12P2,c,C00015
+producible,fad_c,Flavin adenine dinucleotide oxidized,c,C00016
+producible,pydx5p_c,Pyridoxal 5'-phosphate,c,C00018
+producible,amet_c,S-Adenosyl-L-methionine,c,C00019
+producible,amp_c,AMP C10H12N5O7P,c,C00020
+producible,ahcys_c,S-Adenosyl-L-homocysteine,c,C00021
+producible,pyr_c,Pyruvate,c,C00022
+producible,accoa_c,Acetyl-CoA,c,C00024
+producible,glu__L_c,L-Glutamate,c,C00025
+producible,akg_c,2-Oxoglutarate,c,C00026
+producible,h2o2_c,Hydrogen peroxide,c,C00027
+producible,udpg_c,UDPglucose,c,C00029
+producible,glc__D_c,D-Glucose,c,C00031
+producible,pheme_c,Protoheme C34H30FeN4O4,c,C00032
+producible,ac_c,Acetate,c,C00033
+producible,gdp_c,GDP C10H12N5O11P2,c,C00035
+producible,oaa_c,Oxaloacetate,c,C00036
+producible,gly_c,Glycine,c,C00037
+producible,zn2_c,Zinc,c,C00038
+producible,ala__L_c,L-Alanine,c,C00041
+producible,succ_c,Succinate,c,C00042
+producible,uacgam_c,UDP-N-acetyl-D-glucosamine,c,C00043
+producible,gtp_c,GTP C10H12N5O14P3,c,C00044
+producible,lys__L_c,L-Lysine,c,C00047
+producible,glx_c,Glyoxylate,c,C00048
+producible,asp__L_c,L-Aspartate,c,C00049
+producible,gthrd_c,Reduced glutathione,c,C00051
+producible,udpgal_c,UDPgalactose,c,C00052
+producible,paps_c,3'-Phosphoadenylyl sulfate,c,C00053
+producible,pap_c,"Adenosine 3',5'-bisphosphate",c,C00054
+producible,cmp_c,CMP C9H12N3O8P,c,C00055
+producible,for_c,Formate,c,C00058
+producible,so4_c,Sulfate,c,C00059
+producible,fmn_c,FMN C17H19N4O9P,c,C00061
+producible,arg__L_c,L-Arginine,c,C00062
+producible,ctp_c,CTP C9H12N3O14P3,c,C00063
+producible,gln__L_c,L-Glutamine,c,C00064
+producible,ser__L_c,L-Serine,c,C00065
+producible,thmpp_c,Thiamine diphosphate,c,C00068
+producible,cu2_c,Copper,c,C00070
+producible,met__L_c,L-Methionine,c,C00073
+producible,pep_c,Phosphoenolpyruvate,c,C00074
+producible,utp_c,UTP C9H11N2O15P3,c,C00075
+producible,ca2_c,Calcium,c,C00076
+producible,orn_c,Ornithine,c,C00077
+producible,trp__L_c,L-Tryptophan,c,C00078
+producible,phe__L_c,L-Phenylalanine,c,C00079
+producible,h_c,H+,c,C00080
+producible,itp_c,ITP C10H11N4O14P3,c,C00081
+producible,tyr__L_c,L-Tyrosine,c,C00082
+producible,malcoa_c,Malonyl CoA C24H33N7O19P3S,c,C00083
+producible,acald_c,Acetaldehyde,c,C00084
+producible,urea_c,Urea CH4N2O,c,C00086
+producible,succoa_c,Succinyl-CoA,c,C00091
+producible,g6p_c,D-Glucose 6-phosphate,c,C00092
+producible,glyc3p_c,Glycerol 3-phosphate,c,C00093
+producible,so3_c,Sulfite,c,C00094
+producible,fru_c,D-Fructose,c,C00095
+producible,gdpmann_c,GDP-D-mannose,c,C00096
+producible,cys__L_c,L-Cysteine,c,C00097
+producible,ala_B_c,Beta-Alanine,c,C00099
+producible,ppcoa_c,Propanoyl-CoA,c,C00100
+producible,thf_c,"5,6,7,8-Tetrahydrofolate",c,C00101
+producible,g1p_c,D-Glucose 1-phosphate,c,C00103
+producible,idp_c,IDP C10H11N4O11P2,c,C00104
+producible,ump_c,UMP C9H11N2O9P,c,C00105
+producible,ura_c,Uracil,c,C00106
+producible,anth_c,Anthranilate,c,C00108
+producible,2obut_c,2-Oxobutanoate,c,C00109
+producible,dhap_c,Dihydroxyacetone phosphate,c,C00111
+producible,cdp_c,CDP C9H12N3O11P2,c,C00112
+producible,glyc_c,Glycerol,c,C00116
+producible,g3p_c,Glyceraldehyde 3-phosphate,c,C00118
+producible,prpp_c,5-Phospho-alpha-D-ribose 1-diphosphate,c,C00119
+producible,btn_c,Biotin,c,C00120
+producible,rib__D_c,D-Ribose,c,C00121
+producible,fum_c,Fumarate,c,C00122
+producible,leu__L_c,L-Leucine,c,C00123
+producible,gal_c,D-Galactose,c,C00124
+producible,gthox_c,Oxidized glutathione,c,C00127
+producible,ipdp_c,Isopentenyl diphosphate,c,C00129
+producible,imp_c,IMP C10H11N4O8P,c,C00130
+producible,datp_c,DATP C10H12N5O12P3,c,C00131
+producible,meoh_c,Methanol,c,C00132
+producible,ala__D_c,D-Alanine,c,C00133
+producible,ptrc_c,Putrescine,c,C00134
+producible,his__L_c,L-Histidine,c,C00135
+producible,btcoa_c,Butanoyl-CoA,c,C00136
+producible,acgam_c,N-Acetyl-D-glucosamine,c,C00140
+producible,3mob_c,3-Methyl-2-oxobutanoate,c,C00141
+producible,mlthf_c,"5,10-Methylenetetrahydrofolate",c,C00143
+producible,gmp_c,GMP C10H12N5O8P,c,C00144
+producible,ade_c,Adenine,c,C00147
+producible,pro__L_c,L-Proline,c,C00148
+producible,mal__L_c,L-Malate,c,C00149
+producible,asn__L_c,L-Asparagine,c,C00152
+producible,ncam_c,Nicotinamide,c,C00153
+producible,pmtcoa_c,Palmitoyl-CoA (n-C16:0CoA),c,C00154
+producible,hcys__L_c,L-Homocysteine,c,C00155
+producible,4hbz_c,4-Hydroxybenzoate,c,C00156
+producible,cit_c,Citrate,c,C00158
+producible,man_c,D-Mannose,c,C00159
+producible,glyclt_c,Glycolate C2H3O3,c,C00160
+producible,phpyr_c,Phenylpyruvate,c,C00166
+producible,udpglcur_c,UDP-D-glucuronate,c,C00167
+producible,hpyr_c,Hydroxypyruvate,c,C00168
+producible,cbp_c,Carbamoyl phosphate,c,C00169
+producible,5mta_c,5-Methylthioadenosine,c,C00170
+producible,cobalt2_c,Co2+,c,C00175
+producible,thym_c,Thymine C5H6N2O2,c,C00178
+producible,agm_c,Agmatine,c,C00179
+producible,glycogen_c,Glycogen C6H10O5,c,C00182
+producible,val__L_c,L-Valine,c,C00183
+producible,dha_c,Dihydroxyacetone,c,C00184
+producible,lac__L_c,L-Lactate,c,C00186
+producible,thr__L_c,L-Threonine,c,C00188
+producible,etha_c,Ethanolamine,c,C00189
+producible,23dhb_c,"2,3-Dihydroxybenzoate",c,C00196
+producible,3pg_c,3-Phospho-D-glycerate,c,C00197
+producible,ru5p__D_c,D-Ribulose 5-phosphate,c,C00199
+producible,dadp_c,DADP C10H12N5O9P2,c,C00206
+producible,adn_c,Adenosine,c,C00212
+producible,thymd_c,Thymidine C10H14N2O5,c,C00214
+producible,arab__D_c,D Arabinose C5H10O5,c,C00216
+producible,glu__D_c,D-Glutamate,c,C00217
+producible,msa_c,Malonate semialdehyde,c,C00222
+producible,aps_c,Adenosine 5'-phosphosulfate,c,C00224
+producible,actp_c,Acetyl phosphate,c,C00227
+producible,xu5p__D_c,D-Xylulose 5-phosphate,c,C00231
+producible,sucsal_c,Succinic semialdehyde,c,C00232
+producible,4mop_c,4-Methyl-2-oxopentanoate,c,C00233
+producible,10fthf_c,10-Formyltetrahydrofolate,c,C00234
+producible,dmpp_c,Dimethylallyl diphosphate,c,C00235
+producible,13dpg_c,3-Phospho-D-glyceroyl phosphate,c,C00236
+producible,k_c,Potassium,c,C00238
+producible,dcmp_c,DCMP C9H12N3O7P,c,C00239
+producible,gua_c,Guanine,c,C00242
+producible,hdca_c,Hexadecanoate (n-C16:0),c,C00249
+producible,pydx_c,Pyridoxal,c,C00250
+producible,chor_c,Chorismate,c,C00251
+producible,nac_c,Nicotinate,c,C00253
+producible,pphn_c,Prephenate,c,C00254
+producible,ribflv_c,Riboflavin C17H20N4O6,c,C00255
+producible,lac__D_c,D-Lactate,c,C00256
+producible,glcn_c,D-Gluconate,c,C00257
+producible,glyc__R_c,(R)-Glycerate,c,C00258
+producible,hxan_c,Hypoxanthine,c,C00262
+producible,hom__L_c,L-Homoserine,c,C00263
+producible,gcald_c,Glycolaldehyde,c,C00266
+producible,man6p_c,D-Mannose 6-phosphate,c,C00275
+producible,e4p_c,D-Erythrose 4-phosphate,c,C00279
+producible,h2s_c,Hydrogen sulfide,c,C00283
+producible,dgtp_c,DGTP C10H12N5O13P3,c,C00286
+producible,hco3_c,Bicarbonate,c,C00288
+producible,ins_c,Inosine,c,C00294
+producible,orot_c,Orotate C5H3N2O4,c,C00295
+producible,uri_c,Uridine,c,C00299
+producible,adprib_c,ADPribose C15H21N5O14P2,c,C00301
+producible,glu__L_c,L-Glutamate,c,C00302
+producible,gln__L_c,L-Glutamine,c,C00303
+producible,mg2_c,Magnesium,c,C00305
+producible,rbl__D_c,D-Ribulose,c,C00309
+producible,icit_c,Isocitrate,c,C00311
+producible,pydxn_c,Pyridoxine,c,C00314
+producible,spmd_c,Spermidine,c,C00315
+producible,gdpfuc_c,GDP-L-fucose,c,C00325
+producible,citr__L_c,L-Citrulline,c,C00327
+producible,dgsn_c,Deoxyguanosine,c,C00330
+producible,aacoa_c,Acetoacetyl-CoA,c,C00332
+producible,4abut_c,4-Aminobutanoate,c,C00334
+producible,dhor__S_c,(S)-Dihydroorotate,c,C00337
+producible,grdp_c,Geranyl diphosphate,c,C00341
+producible,6pgc_c,6-Phospho-D-gluconate,c,C00345
+producible,udcpp_c,Undecaprenyl phosphate,c,C00348
+producible,gam6p_c,D-Glucosamine 6-phosphate,c,C00352
+producible,fdp_c,"D-Fructose 1,6-bisphosphate",c,C00354
+producible,acgam6p_c,N-Acetyl-D-glucosamine 6-phosphate,c,C00357
+producible,damp_c,DAMP C10H12N5O6P,c,C00360
+producible,dgdp_c,DGDP C10H12N5O10P2,c,C00361
+producible,dgmp_c,DGMP C10H12N5O7P,c,C00362
+producible,dtdp_c,DTDP C10H13N2O11P2,c,C00363
+producible,dtmp_c,DTMP C10H13N2O8P,c,C00364
+producible,dump_c,DUMP C9H11N2O8P,c,C00365
+producible,urate_c,Urate C5H4N4O3,c,C00366
+producible,csn_c,Cytosine,c,C00380
+producible,xan_c,Xanthine,c,C00385
+producible,gsn_c,Guanosine,c,C00387
+producible,ile__L_c,L-Isoleucine,c,C00407
+producible,stcoa_c,Stearoyl-CoA (n-C18:0CoA),c,C00412
+producible,dhf_c,"7,8-Dihydrofolate",c,C00415
+producible,acon_C_c,Cis-Aconitate,c,C00417
+producible,lald__L_c,L-Lactaldehyde,c,C00424
+producible,56dura_c,"5,6-dihydrouracil",c,C00429
+producible,5aop_c,5-Amino-4-oxopentanoate,c,C00430
+producible,acorn_c,N2-Acetyl-L-ornithine,c,C00437
+producible,cbasp_c,N-Carbamoyl-L-aspartate,c,C00438
+producible,5mthf_c,5-Methyltetrahydrofolate,c,C00440
+producible,aspsa_c,L-Aspartate 4-semialdehyde,c,C00441
+producible,methf_c,"5,10-Methenyltetrahydrofolate",c,C00445
+producible,gal1p_c,Alpha-D-Galactose 1-phosphate,c,C00446
+producible,s17bp_c,"Sedoheptulose 1,7-bisphosphate",c,C00447
+producible,frdp_c,Farnesyl diphosphate,c,C00448
+producible,nmn_c,NMN C11H14N2O8P,c,C00455
+producible,dctp_c,DCTP C9H12N3O13P3,c,C00458
+producible,dttp_c,DTTP C10H13N2O14P3,c,C00459
+producible,dutp_c,DUTP C9H11N2O14P3,c,C00460
+producible,indole_c,Indole,c,C00463
+producible,etoh_c,Ethanol,c,C00469
+producible,cytd_c,Cytidine,c,C00475
+producible,skm_c,Shikimate,c,C00493
+producible,adpglc_c,ADPglucose C16H23N5O15P2,c,C00498
+producible,alltt_c,Allantoate,c,C00499
+producible,pant__R_c,(R)-Pantoate,c,C00522
+producible,duri_c,Deoxyuridine,c,C00526
+producible,pydam_c,Pyridoxamine,c,C00534
+producible,pppi_c,Inorganic triphosphate,c,C00536
+producible,mthgxl_c,Methylglyoxal,c,C00546
+producible,4abutn_c,4-Aminobutanal,c,C00555
+producible,dad_2_c,Deoxyadenosine,c,C00559
+producible,4abz_c,4-Aminobenzoate,c,C00568
+producible,camp_c,CAMP C10H11N5O6P,c,C00575
+producible,glyald_c,D-Glyceraldehyde,c,C00577
+producible,urdglyc_c,(-)-Ureidoglycolate,c,C00603
+producible,N1aspmd_c,N1-Acetylspermidine,c,C00612
+producible,r1p_c,Alpha-D-Ribose 1-phosphate,c,C00620
+producible,acglu_c,N-Acetyl-L-glutamate,c,C00624
+producible,pdx5p_c,Pyridoxine 5'-phosphate,c,C00627
+producible,2pg_c,D-Glycerate 2-phosphate,c,C00631
+producible,man1p_c,D-Mannose 1-phosphate,c,C00636
+producible,mnl1p_c,D-Mannitol 1-phosphate,c,C00644
+producible,pyam5p_c,Pyridoxamine 5'-phosphate,c,C00647
+producible,xmp_c,Xanthosine 5'-phosphate,c,C00655
+producible,g3p_c,Glyceraldehyde 3-phosphate,c,C00661
+producible,26dap_LL_c,"LL-2,6-Diaminoheptanedioate",c,C00666
+producible,glucys_c,Gamma-L-Glutamyl-L-cysteine,c,C00669
+producible,3mop_c,(S)-3-Methyl-2-oxopentanoate,c,C00671
+producible,2dr1p_c,2-Deoxy-D-ribose 1-phosphate,c,C00672
+producible,2dr5p_c,2-Deoxy-D-ribose 5-phosphate,c,C00673
+producible,26dap__M_c,"Meso-2,6-Diaminoheptanedioate",c,C00680
+producible,mmcoa__S_c,(S)-Methylmalonyl-CoA,c,C00683
+producible,dtdp4d6dm_c,DTDP-4-dehydro-6-deoxy-L-mannose,c,C00688
+producible,tre6p_c,"Alpha,alpha'-Trehalose 6-phosphate",c,C00689
+producible,uamag_c,UDP-N-acetylmuramoyl-L-alanyl-D-glutamate,c,C00692
+producible,cl_c,Chloride,c,C00698
+producible,xtp_c,XTP,c,C00700
+producible,o2s_c,Superoxide anion,c,C00704
+producible,dcdp_c,DCDP C9H12N3O10P2,c,C00705
+producible,ocdcea_c,Octadecenoate (n-C18:1),c,C00712
+producible,ser__L_c,L-Serine,c,C00716
+producible,cys__L_c,L-Cysteine,c,C00736
+producible,ser__D_c,D-Serine,c,C00740
+producible,sheme_c,Siroheme C42H36FeN4O16,c,C00748
+producible,his__L_c,L-Histidine,c,C00768
+producible,idon__L_c,L-Idonate,c,C00770
+producible,forcoa_c,Formyl-CoA(4-),c,C00798
+producible,oxur_c,Oxalureate,c,C00802
+producible,trp__L_c,L-Tryptophan,c,C00806
+producible,dtdpglu_c,DTDPglucose,c,C00842
+producible,dnad_c,Deamino-NAD+,c,C00857
+producible,histd_c,L-Histidinol,c,C00860
+producible,pnto__R_c,(R)-Pantothenate,c,C00864
+producible,b2coa_c,Crotonoyl-CoA,c,C00877
+producible,dcyt_c,Deoxycytidine,c,C00881
+producible,dpcoa_c,Dephospho-CoA,c,C00882
+producible,ichor_c,Isochorismate,c,C00885
+producible,prpncoa_c,Propenoyl-CoA,c,C00894
+producible,dhpt_c,Dihydropteroate,c,C00921
+producible,ppbng_c,Porphobilinogen,c,C00931
+producible,lald__D_c,D-Lactaldehyde,c,C00937
+producible,35cgmp_c,"3',5'-Cyclic GMP",c,C00942
+producible,3dhq_c,3-Dehydroquinate,c,C00944
+producible,mercppyr_c,Mercaptopyruvate,c,C00957
+producible,2dhp_c,2-Dehydropantoate,c,C00966
+producible,acser_c,O-Acetyl-L-serine,c,C00979
+producible,gal_c,D-Galactose,c,C00984
+producible,ghb_c,Gamma-hydroxybutyrate,c,C00989
+producible,alaala_c,D-Alanyl-D-alanine,c,C00993
+producible,pser__L_c,O-Phospho-L-serine,c,C01005
+producible,rbflvrd_c,Reduced riboflavin,c,C01007
+producible,3hpp_c,3-Hydroxypropanoate,c,C01013
+producible,hmbil_c,Hydroxymethylbilane,c,C01024
+producible,n8aspmd_c,N8-Acetylspermidine,c,C01029
+producible,dann_c,"7,8-Diaminononanoate",c,C01037
+producible,uamr_c,UDP-N-acetylmuramate,c,C01050
+producible,uppg3_c,Uroporphyrinogen III,c,C01051
+producible,5dglcn_c,5-Dehydro-D-gluconate,c,C01062
+producible,pppg9_c,Protoporphyrinogen IX,c,C01079
+producible,thmmp_c,Thiamin monophosphate,c,C01081
+producible,tre_c,Trehalose,c,C01083
+producible,8aonn_c,8-Amino-7-oxononanoate,c,C01092
+producible,sbt6p_c,D-Sorbitol 6-phosphate,c,C01096
+producible,fc1p_c,L-Fuculose 1-phosphate,c,C01099
+producible,hisp_c,L-Histidinol phosphate,c,C01100
+producible,ru5p__L_c,L-Ribulose 5-phosphate,c,C01101
+producible,phom_c,O-Phospho-L-homoserine,c,C01102
+producible,orot5p_c,Orotidine 5'-phosphate,c,C01103
+producible,ara5p_c,D-Arabinose 5-phosphate,c,C01112
+producible,suchms_c,O-Succinyl-L-homoserine,c,C01118
+producible,rml1p_c,L-Rhamnulose 1-phosphate,c,C01131
+producible,pan4p_c,Pantetheine 4'-phosphate,c,C01134
+producible,ametam_c,S-Adenosylmethioninamine,c,C01137
+producible,36dahx_c,"(3S)-3,6-Diaminohexanoate",c,C01142
+producible,3hbcoa_c,(S)-3-Hydroxybutanoyl-CoA,c,C01144
+producible,2h3oppan_c,2-Hydroxy-3-oxopropanoate,c,C01146
+producible,r15bp_c,"D-Ribose 1,5-bisphosphate",c,C01151
+producible,glu5sa_c,L-Glutamate 5-semialdehyde,c,C01165
+producible,uacmam_c,UDP-N-acetyl-D-mannosamine,c,C01170
+producible,34hpp_c,3-(4-Hydroxyphenyl)pyruvate,c,C01179
+producible,nicrnt_c,Nicotinate D-ribonucleotide,c,C01185
+producible,uama_c,UDP-N-acetylmuramoyl-L-alanine,c,C01212
+producible,gdpddman_c,GDP-4-dehydro-6-deoxy-D-mannose,c,C01222
+producible,ppgpp_c,"Guanosine 3',5'-bis(diphosphate)",c,C01228
+producible,g3pe_c,Sn-Glycero-3-phosphoethanolamine,c,C01233
+producible,6pgl_c,"6-phospho-D-glucono-1,5-lactone",c,C01236
+producible,acg5sa_c,N-Acetyl-L-glutamate 5-semialdehyde,c,C01250
+producible,ap4a_c,"P1,P4-Bis(5'-adenosyl) tetraphosphate",c,C01260
+producible,imacp_c,3-(Imidazol-4-yl)-2-oxopropyl phosphate,c,C01267
+producible,5apru_c,5-Amino-6-(5'-phosphoribosylamino)uracil,c,C01268
+producible,3psme_c,5-O-(1-Carboxyvinyl)-3-phosphoshikimate,c,C01269
+producible,2dh3dgal6p_c,2-Dehydro-3-deoxy-D-galactonate 6-phosphate,c,C01286
+producible,unaga_c,Undecaprenyl diphospho N-acetyl-glucosamine,c,C01289
+producible,6hmhpt_c,6-hydroxymethyl dihydropterin,c,C01300
+producible,2cpr5p_c,1-(2-Carboxyphenylamino)-1-deoxy-D-ribulose 5-phosphate,c,C01302
+producible,25drapp_c,"2,5-Diamino-6-(ribosylamino)-4-(3H)-pyrimidinone 5'-phosphate",c,C01304
+producible,cl_c,Chloride,c,C01327
+producible,h2o_c,H2O H2O,c,C01328
+producible,na1_c,Sodium,c,C01330
+producible,xdp_c,XDP,c,C01337
+producible,nh4_c,Ammonium,c,C01342
+producible,didp_c,DIDP; 2'-deoxyinosine-5'-diphosphate(3-),c,C01344
+producible,ditp_c,DITP(4-),c,C01345
+producible,dudp_c,DUDP C9H11N2O11P2,c,C01346
+producible,fadh2_c,Flavin adenine dinucleotide reduced,c,C01352
+producible,hco3_c,Bicarbonate,c,C01353
+producible,ala__L_c,L-Alanine,c,C01401
+producible,cgly_c,Cys Gly C5H10N2O3S,c,C01419
+producible,oxam_c,Oxamate,c,C01444
+producible,4crsol_c,P-Cresol,c,C01468
+producible,fru_c,D-Fructose,c,C01496
+producible,ocdca_c,Octadecanoate (n-C18:0),c,C01530
+producible,tyr__L_c,L-Tyrosine,c,C01536
+producible,alltn_c,Allantoin,c,C01551
+producible,cbm_c,Carbamate,c,C01563
+producible,hxa_c,Hexanoate (n-C6:0),c,C01585
+producible,orn_c,Ornithine,c,C01602
+producible,15dap_c,"1,5-Diaminopentane",c,C01672
+producible,met__L_c,L-Methionine,c,C01733
+producible,xtsn_c,Xanthosine,c,C01762
+producible,ddcacoa_c,Dodecanoyl-CoA (n-C12:0CoA),c,C01832
+producible,fmnh2_c,Reduced FMN,c,C01847
+producible,adprib_c,ADPribose C15H21N5O14P2,c,C01882
+producible,aact_c,Aminoacetone,c,C01888
+producible,dtbt_c,Dethiobiotin,c,C01909
+producible,occoa_c,Octanoyl-CoA (n-C8:0CoA),c,C01944
+producible,ghb_c,Gamma-hydroxybutyrate,c,C01991
+producible,phe__L_c,L-Phenylalanine,c,C02057
+producible,ppp9_c,Protoporphyrin,c,C02191
+producible,2mcit_c,2-Methylcitrate,c,C02225
+producible,cyst__L_c,L-Cystathionine,c,C02291
+producible,acon_T_c,Trans-Aconitate,c,C02341
+producible,arg__L_c,L-Arginine,c,C02385
+producible,dscl_c,Dihydrosirohydrochlorin,c,C02463
+producible,3c3hmp_c,3-Carboxy-3-hydroxy-4-methylpentanoate,c,C02504
+producible,tdcoa_c,Tetradecanoyl-CoA (n-C14:0CoA),c,C02593
+producible,2ippm_c,2-Isopropylmaleate,c,C02631
+producible,3dhsk_c,3-Dehydroshikimate,c,C02637
+producible,acglc__D_c,6-Acetyl-D-glucose,c,C02655
+producible,sucbz_c,O-Succinylbenzoate,c,C02730
+producible,prbatp_c,1-(5-Phosphoribosyl)-ATP,c,C02739
+producible,prbamp_c,1-(5-Phosphoribosyl)-AMP,c,C02741
+producible,urdglyc_c,(-)-Ureidoglycolate,c,C02766
+producible,ppap_c,Propanoyl phosphate,c,C02876
+producible,12ppd__R_c,"(R)-Propane-1,2-diol",c,C02912
+producible,12ppd__S_c,"(S)-Propane-1,2-diol",c,C02917
+producible,all6p_c,D-Allose 6-phosphate,c,C02962
+producible,metsox_S__L_c,L-Methionine Sulfoxide,c,C02989
+producible,4pasp_c,4-Phospho-L-aspartate,c,C03082
+producible,5mtr_c,5-Methylthio-D-ribose,c,C03089
+producible,pram_c,5-Phospho-beta-D-ribosylamine,c,C03090
+producible,sbzcoa_c,O-Succinylbenzoyl-CoA,c,C03160
+producible,skm5p_c,Shikimate 5-phosphate,c,C03175
+producible,appl_c,1-Aminopropan-2-ol,c,C03194
+producible,S2hglut_c,(S)-2-Hydroxyglutarate,c,C03196
+producible,dd2coa_c,Trans-Dodec-2-enoyl-CoA,c,C03221
+producible,3php_c,3-Phosphohydroxypyruvate,c,C03232
+producible,cpppg3_c,Coproporphyrinogen III,c,C03263
+producible,g3pg_c,Glycerophosphoglycerol,c,C03274
+producible,glu5p_c,L-Glutamate 5-phosphate,c,C03287
+producible,sucarg_c,N2-Succinyl-L-arginine,c,C03296
+producible,dtdprmn_c,DTDP-L-rhamnose,c,C03319
+producible,23dhdp_c,"2,3-Dihydrodipicolinate",c,C03340
+producible,gal1p_c,Alpha-D-Galactose 1-phosphate,c,C03384
+producible,4per_c,4-Phospho-D-erythronate,c,C03393
+producible,argsuc_c,N(omega)-(L-Arginino)succinate,c,C03406
+producible,sucorn_c,N2-Succinyl-L-ornithine,c,C03415
+producible,lgt__S_c,(R)-S-Lactoylglutathione,c,C03451
+producible,5fthf_c,5-Formyltetrahydrofolate,c,C03479
+producible,4ppan_c,D-4'-Phosphopantothenate,c,C03492
+producible,3ig3p_c,C'-(3-Indolyl)-glycerol 3-phosphate,c,C03506
+producible,2aobut_c,L-2-Amino-3-oxobutanoate,c,C03508
+producible,rhcys_c,S-Ribosyl-L-homocysteine,c,C03539
+producible,dhna_c,"1,4-Dihydroxy-2-naphthoate",c,C03657
+producible,quln_c,Quinolinate,c,C03722
+producible,udpgalfur_c,"UDP-D-galacto-1,4-furanose",c,C03733
+producible,r5p_c,Alpha-D-Ribose 5-phosphate,c,C03736
+producible,glu1sa_c,L-Glutamate 1-semialdehyde,c,C03741
+producible,tagdp__D_c,"D-Tagatose 1,6-biphosphate",c,C03785
+producible,dcamp_c,"N6-(1,2-Dicarboxyethyl)-AMP",c,C03794
+producible,gar_c,N1-(5-Phospho-D-ribosyl)glycinamide,c,C03838
+producible,1pyr5c_c,1-Pyrroline-5-carboxylate,c,C03912
+producible,thdp_c,"2,3,4,5-Tetrahydrodipicolinate",c,C03972
+producible,23dhba_c,"(2,3-Dihydroxybenzoyl)adenylate",c,C04030
+producible,ckdo_c,CMP-3-deoxy-D-manno-octulosonate,c,C04121
+producible,acg5p_c,N-Acetyl-L-glutamyl 5-phosphate,c,C04133
+producible,octdp_c,All-trans-Octaprenyl diphosphate,c,C04146
+producible,23ddhb_c,"2,3-Dihydro-2,3-dihydroxybenzoate",c,C04171
+producible,23dhbzs_c,"2,3-dihydroxybenzoylserine",c,C04204
+producible,2mcacn_c,Cis-2-Methylaconitate,c,C04225
+producible,3c4mop_c,3-Carboxy-4-methyl-2-oxopentanoate,c,C04236
+producible,acgam1p_c,N-Acetyl-D-glucosamine 1-phosphate,c,C04256
+producible,acmanap_c,N-Acetyl-D-mannosamine 6-phosphate,c,C04257
+producible,23dhmb_c,"(R)-2,3-Dihydroxy-3-methylbutanoate",c,C04272
+producible,pran_c,N-(5-Phospho-D-ribosyl)anthranilate,c,C04302
+producible,1pyr5c_c,1-Pyrroline-5-carboxylate,c,C04322
+producible,4mpetz_c,4-Methyl-5-(2-phosphoethyl)-thiazole,c,C04327
+producible,dmlz_c,"6,7-Dimethyl-8-(1-D-ribityl)lumazine",c,C04332
+producible,dtdp4addg_c,"DTDP-4-amino-4,6-dideoxy-D-galactose",c,C04346
+producible,4ppcys_c,N-((R)-4-Phosphopantothenoyl)-L-cysteine,c,C04352
+producible,fgam_c,N2-Formyl-N1-(5-phospho-D-ribosyl)glycinamide,c,C04376
+producible,3c2hmp_c,3-Carboxy-2-hydroxy-4-methylpentanoate,c,C04411
+producible,sl26da_c,"N-Succinyl-LL-2,6-diaminoheptanedioate",c,C04421
+producible,amob_c,S-Adenosyl-4-methylthio-2-oxobutanoate,c,C04425
+producible,2ddg6p_c,2-Dehydro-3-deoxy-D-gluconate 6-phosphate,c,C04442
+producible,5aprbu_c,5-Amino-6-(5'-phosphoribitylamino)uracil,c,C04454
+producible,sl2a6o_c,N-Succinyl-2-L-amino-6-oxoheptanedioate,c,C04462
+producible,kdo8p_c,3-Deoxy-D-manno-octulosonate 8-phosphate,c,C04478
+producible,gdptp_c,Guanosine 3'-diphosphate 5'-triphosphate,c,C04494
+producible,micit_c,Methylisocitrate,c,C04593
+producible,uaccg_c,UDP-N-acetyl-3-O-(1-carboxyvinyl)-D-glucosamine,c,C04631
+producible,u23ga_c,"UDP-2,3-bis(3-hydroxytetradecanoyl)glucosamine",c,C04652
+producible,eig3p_c,D-erythro-1-(Imidazol-4-yl)glycerol 3-phosphate,c,C04666
+producible,aicar_c,5-Amino-1-(5-Phospho-D-ribosyl)imidazole-4-carboxamide,c,C04677
+producible,2dda7p_c,2-Dehydro-3-deoxy-D-arabino-heptonate 7-phosphate,c,C04691
+producible,4r5au_c,4-(1-D-Ribitylamino)-5-aminouracil,c,C04732
+producible,fprica_c,5-Formamido-1-(5-phospho-D-ribosyl)imidazole-4-carboxamide,c,C04734
+producible,u3aga_c,UDP-3-O-(3-hydroxytetradecanoyl)-N-acetylglucosamine,c,C04738
+producible,5aizc_c,5-amino-1-(5-phospho-D-ribosyl)imidazole-4-carboxylate,c,C04751
+producible,2mahmp_c,2-Methyl-4-amino-5-hydroxymethylpyrimidine diphosphate,c,C04752
+producible,6hmhptpp_c,6-hydroxymethyl-dihydropterin pyrophosphate,c,C04807
+producible,25aics_c,(S)-2-[5-Amino-1-(5-phospho-D-ribosyl)imidazole-4-carboxamido]succinate,c,C04823
+producible,lipidX_c,"2,3-Bis(3-hydroxytetradecanoyl)-beta-D-glucosaminyl 1-phosphate",c,C04824
+producible,dhnpt_c,Dihydroneopterin,c,C04874
+producible,ugmda_c,"UDP-N-acetylmuramoyl-L-alanyl-D-glutamyl-meso-2,6-diaminopimeloyl-D-alanyl-D-alanine",c,C04882
+producible,ahdt_c,"2-Amino-4-hydroxy-6-(erythro-1,2,3-trihydroxypropyl)dihydropteridine triphosphate",c,C04895
+producible,prfp_c,1-(5-Phosphoribosyl)-5-[(5-phosphoribosylamino)methylideneamino]imidazole-4-carboxamide,c,C04896
+producible,prlp_c,5-[(5-phospho-1-deoxyribulos-1-ylamino)methylideneamino]-1-(5-phosphoribosyl)imidazole-4-carboxamide,c,C04916
+producible,lipidA_c,"2,3,2'3'-Tetrakis(beta-hydroxymyristoyl)-D-glucosaminyl-1,6-beta-D-glucosamine 1,4'-bisphosphate",c,C04919
+producible,lipidAds_c,Lipid A Disaccharide,c,C04932
+producible,fru_c,D-Fructose,c,C05003
+producible,dad_5_c,5'-Deoxyadenosine,c,C05198
+producible,acetol_c,Acetol cytosol,c,C05235
+producible,3hhdcoa_c,(S)-3-Hydroxyhexadecanoyl-CoA,c,C05258
+producible,3ohdcoa_c,3-Oxohexadecanoyl-CoA,c,C05259
+producible,3htdcoa_c,(S)-3-Hydroxytetradecanoyl-CoA,c,C05260
+producible,3otdcoa_c,3-Oxotetradecanoyl-CoA,c,C05261
+producible,3hddcoa_c,(S)-3-Hydroxydodecanoyl-CoA,c,C05262
+producible,3oddcoa_c,3-Oxododecanoyl-CoA,c,C05263
+producible,3hdcoa_c,(S)-3-Hydroxydecanoyl-CoA,c,C05264
+producible,3odcoa_c,3-Oxodecanoyl-CoA,c,C05265
+producible,3hocoa_c,(S)-3-Hydroxyoctanoyl-CoA,c,C05266
+producible,3oocoa_c,3-Oxooctanoyl-CoA,c,C05267
+producible,3hhcoa_c,(S)-3-Hydroxyhexanoyl-CoA,c,C05268
+producible,3ohcoa_c,3-Oxohexanoyl-CoA,c,C05269
+producible,hx2coa_c,Trans-Hex-2-enoyl-CoA,c,C05271
+producible,hdd2coa_c,Trans-Hexadec-2-enoyl-CoA,c,C05272
+producible,td2coa_c,Trans-Tetradec-2-enoyl-CoA,c,C05273
+producible,dc2coa_c,Trans-Dec-2-enoyl-CoA,c,C05275
+producible,oc2coa_c,Trans-Oct-2-enoyl-CoA,c,C05276
+producible,hcys__L_c,L-Homocysteine,c,C05330
+producible,f6p_c,D-Fructose 6-phosphate,c,C05345
+producible,s7p_c,Sedoheptulose 7-phosphate,c,C05382
+producible,din_c,Deoxyinosine,c,C05512
+producible,athr__L_c,L-Allo-threonine,c,C05519
+producible,gtspmd_c,Glutathionylspermidine,c,C05730
+producible,appl_c,1-Aminopropan-2-ol,c,C05771
+producible,scl_c,Sirohydrochlorin,c,C05778
+producible,3ophb_c,3-Octaprenyl-4-hydroxybenzoate,c,C05809
+producible,2oph_c,2-Octaprenylphenol,c,C05810
+producible,2ohph_c,2-Octaprenyl-6-hydroxyphenol,c,C05811
+producible,2omph_c,2-Octaprenyl-6-methoxyphenol,c,C05812
+producible,2shchc_c,"2-Succinyl-6-hydroxy-2,4-cyclohexadiene-1-carboxylate",c,C05817
+producible,seramp_c,L-seryl-AMP,c,C05820
+producible,enter_c,Enterochelin,c,C05821
+producible,iasp_c,Iminoaspartate,c,C05840
+producible,uagmda_c,"Undecaprenyl-diphospho-N-acetylmuramoyl-L-alanyl-D-glutamyl-meso-2,6-diaminopimeloyl-D-alanyl-D-alanine",c,C05897
+producible,uaagmda_c,"Undecaprenyl-diphospho-N-acetylmuramoyl-(N-acetylglucosamine)-L-ala-D-glu-meso-2,6-diaminopimeloyl-D-ala-D-ala",c,C05898
+producible,mpt_c,Molybdopterin,c,C05924
+producible,dhpmp_c,Dihydroneopterin monophosphate,c,C05925
+producible,sucglu_c,N2-Succinyl-L-glutamate,c,C05931
+producible,sucgsa_c,N2-Succinyl-L-glutamate 5-semialdehyde,c,C05932
+producible,lald__L_c,L-Lactaldehyde,c,C05999
+producible,2ahbut_c,(S)-2-Aceto-2-hydroxybutanoate,c,C06006
+producible,23dhmp_c,"(R)-2,3-Dihydroxy-3-methylpentanoate",c,C06007
+producible,alac__S_c,(S)-2-Acetolactate,c,C06010
+producible,u3hga_c,UDP-3-O-(3-hydroxytetradecanoyl)-D-glucosamine,c,C06022
+producible,kdolipid4_c,KDO-lipid IV(A),c,C06024
+producible,kdo2lipid4_c,KDO(2)-lipid IV(A),c,C06025
+producible,lipa_c,KDO(2)-lipid (A),c,C06026
+producible,ohpb_c,2-Oxo-3-hydroxy-4-phosphobutanoate,c,C06054
+producible,phthr_c,O-Phospho-4-hydroxy-L-threonine,c,C06055
+producible,4hthr_c,4-Hydroxy-L-threonine,c,C06056
+producible,gam1p_c,D-Glucosamine 1-phosphate,c,C06156
+producible,dimp_c,DIMP C10H12N4O7P,c,C06196
+producible,feenter_c,Fe-enterobactin,c,C06230
+producible,mobd_c,Molybdate,c,C06232
+producible,uacmamu_c,UDP-N-acetyl-D-mannosaminouronate,c,C06240
+producible,kdo2lipid4L_c,KDO(2)-lipid IV(A) with laurate,c,C06251
+producible,acanth_c,N-Acetylanthranilate,c,C06332
+producible,adphep_DD_c,ADP-D-glycero-D-manno-heptose,c,C06397
+producible,adphep_LD_c,ADP-L-glycero-D-manno-heptose,c,C06398
+producible,octa_c,Octanoate (n-C8:0),c,C06423
+producible,gmhep7p_c,D-Glycero-D-manno-heptose 7-phosphate,c,C07836
+producible,gmhep1p_c,D-Glycero-D-manno-heptose 1-phosphate,c,C07838
+producible,fru_c,D-Fructose,c,C10906
+producible,4adcho_c,4-amino-4-deoxychorismate,c,C11355
+producible,2me4p_c,2-C-methyl-D-erythritol 4-phosphate,c,C11434
+producible,4c2me_c,4-(cytidine 5'-diphospho)-2-C-methyl-D-erythritol,c,C11435
+producible,2p4c2me_c,2-phospho-4-(cytidine 5'-diphospho)-2-C-methyl-D-erythritol,c,C11436
+producible,dxyl5p_c,1-deoxy-D-xylulose 5-phosphate,c,C11437
+producible,2mecdp_c,"2-C-methyl-D-erythritol 2,4-cyclodiphosphate",c,C11453
+producible,so3_c,Sulfite,c,C11481
+producible,aconm_c,E-3-carboxy-2-pentenedioate 6-methyl ester,c,C11514
+producible,h2mb4p_c,1-hydroxy-2-methyl-2-(E)-butenyl 4-diphosphate,c,C11811
+producible,2amsa_c,2-Aminomalonate semialdehyde,c,C11822
+producible,dhptd_c,"4,5-dihydroxy-2,3-pentanedione",c,C11838
+producible,dtdp4d6dg_c,DTDP-4-dehydro-6-deoxy-D-glucose,c,C11907
+producible,fe2_c,Fe2+ mitochondria,c,C14818
+producible,fe3_c,Iron (Fe3+),c,C14819
+producible,db4p_c,"3,4-dihydroxy-2-butanone 4-phosphate",c,C15556
+producible,5caiz_c,5-phosphoribosyl-5-carboxyaminoimidazole,c,C15667
+producible,hemeO_c,Heme O C49H56FeN4O5,c,C15672
+producible,ggbutal_c,Gamma-glutamyl-gamma-butyraldehyde,c,C15700
+producible,gg4abut_c,Gamma-glutamyl-gamma aminobutyric acid,c,C15767
+producible,dhgly_c,Dehydroglycine,c,C15809
+producible,preq0_c,7-cyano-7-carbaguanine,c,C15996
+producible,metsox_R__L_c,L-methionine-R-sulfoxide,c,C15998
+producible,udpLa4n_c,Uridine 5''-diphospho-{beta}-4-deoxy-4-amino-L-arabinose,c,C16153
+producible,udpLa4fn_c,Uridine 5''-diphospho-{beta}-4-deoxy-4-formamido-L-arabinose,c,C16154
+producible,udpLa4o_c,UDP-4-keto-pyranose,c,C16155
+producible,3ohodcoa_c,3-Oxooctadecanoyl-CoA,c,C16216
+producible,od2coa_c,Trans-Octadec-2-enoyl-CoA,c,C16218
+producible,asp__L_c,L-Aspartate,c,C16433
+producible,pro__L_c,L-Proline,c,C16435
+producible,val__L_c,L-Valine,c,C16436
+producible,asn__L_c,L-Asparagine,c,C16438
+producible,leu__L_c,L-Leucine,c,C16439
+producible,lys__L_c,L-Lysine,c,C16440
+producible,2sephchc_c,2-succinyl-5-enolpyruvyl-6-hydroxy-3-cyclohexene-1-carboxylate,c,C16519
+producible,na15dap_c,"N-3-aminopropyl-1,5-diaminopentane",c,C16565
+producible,preq1_c,7-aminomethyl-7-deazaguanine,c,C16675
+producible,acmum6p_c,N-acetylmuramate 6-phosphate,c,C16698
+producible,q8_c,Ubiquinone-8,c,C17569
+producible,5pg35pg_c,5-Phosphoguanylyl(3->5)guanosine,c,C18076
+producible,allul6p_c,Allulose 6-phosphate,c,C18096
+producible,ni2_c,Nickel,c,C19609
+producible,mn2_c,Manganese,c,C19610
+producible,2tpr3dpcoa_c,2'-(5''-triphosphoribosyl)-3'-dephospho-CoA,c,C19771
+producible,mptamp_c,Adenylated molybdopterin,c,C19848
+producible,gmhep7p_c,D-Glycero-D-manno-heptose 7-phosphate,c,C19882
+producible,mocogdp_c,Molybdopterin guanine dinucleotide,c,C19928
+producible,uracp_c,Ureidoacrylate peracid,c,C20231
+producible,cph4_c,"6-carboxy-5,6,7,8-tetrahydropterin",c,C20239
+producible,cdg_c,7-deaza-7-carboxyguanine,c,C20248
+producible,poaac_c,Peroxyaminoacrylate,c,C20249
+producible,3amac_c,3-Aminoacrylate,c,C20253
+producible,dtdp4aaddg_c,"DTDP-4-acetamido-4,6-dideoxy-D-galactose",c,C20415
+producible,unagamu_c,Undecaprenyl-diphospho-N-acetylglucosamine-N-acetylmannosaminuronate,c,C20497
+producible,LalaDglu_c,L-alanine-D-glutamate,c,C20957
+producible,LalaLglu_c,L-alanine-L-glutamate,c,C20958
+producible,thmnp_c,Tetrahydromonapterin,c,C21007
+producible,rib__D_c,D-Ribose,c,C21057
+producible,mththf_c,"(2R,4S)-2-methyl-2,3,3,4-tetrahydroxytetrahydrofuran",c,C21382
+producible,h2o_c,H2O H2O,c,D00001
+producible,nad_c,Nicotinamide adenine dinucleotide,c,D00002
+producible,o2_c,O2 O2,c,D00003
+producible,co2_c,CO2 CO2,c,D00004
+producible,fad_c,Flavin adenine dinucleotide oxidized,c,D00005
+producible,glu__L_c,L-Glutamate,c,D00007
+producible,h2o2_c,Hydrogen peroxide,c,D00008
+producible,glc__D_c,D-Glucose,c,D00009
+producible,ac_c,Acetate,c,D00010
+producible,gly_c,Glycine,c,D00011
+producible,ala__L_c,L-Alanine,c,D00012
+producible,asp__L_c,L-Aspartate,c,D00013
+producible,gthrd_c,Reduced glutathione,c,D00014
+producible,gln__L_c,L-Glutamine,c,D00015
+producible,ser__L_c,L-Serine,c,D00016
+producible,met__L_c,L-Methionine,c,D00019
+producible,trp__L_c,L-Tryptophan,c,D00020
+producible,phe__L_c,L-Phenylalanine,c,D00021
+producible,tyr__L_c,L-Tyrosine,c,D00022
+producible,urea_c,Urea CH4N2O,c,D00023
+producible,cys__L_c,L-Cysteine,c,D00026
+producible,ura_c,Uracil,c,D00027
+producible,glyc_c,Glycerol,c,D00028
+producible,btn_c,Biotin,c,D00029
+producible,leu__L_c,L-Leucine,c,D00030
+producible,gthox_c,Oxidized glutathione,c,D00031
+producible,his__L_c,L-Histidine,c,D00032
+producible,ade_c,Adenine,c,D00034
+producible,pro__L_c,L-Proline,c,D00035
+producible,ncam_c,Nicotinamide,c,D00036
+producible,cit_c,Citrate,c,D00037
+producible,val__L_c,L-Valine,c,D00039
+producible,thr__L_c,L-Threonine,c,D00041
+producible,adn_c,Adenosine,c,D00045
+producible,nac_c,Nicotinate,c,D00049
+producible,ribflv_c,Riboflavin C17H20N4O6,c,D00050
+producible,ins_c,Inosine,c,D00054
+producible,orot_c,Orotate C5H3N2O4,c,D00055
+producible,4abut_c,4-Aminobutanoate,c,D00058
+producible,ile__L_c,L-Isoleucine,c,D00065
+producible,etoh_c,Ethanol,c,D00068
+producible,fru_c,D-Fructose,c,D00114
+producible,ocdca_c,Octadecanoate (n-C18:0),c,D00119
+producible,alltn_c,Allantoin,c,D00121
+producible,urea_c,Urea CH4N2O,c,D01749
+producible,cl_c,Chloride,c,D02057
+producible,lys__L_c,L-Lysine,c,D02304
+producible,fum_c,Fumarate,c,D02308
+producible,meoh_c,Methanol,c,D02309
+producible,ocdcea_c,Octadecenoate (n-C18:1),c,D02315
+producible,4abz_c,4-Aminobenzoate,c,D02456
+producible,amp_c,AMP C10H12N5O7P,c,D02769
+producible,etoh_c,Ethanol,c,D02798
+producible,nh4_c,Ammonium,c,D02915
+producible,nh4_c,Ammonium,c,D02916
+producible,arg__L_c,L-Arginine,c,D02982
+producible,gal_c,D-Galactose,c,D04291
+producible,glu__L_c,L-Glutamate,c,D04341
+producible,etoh_c,Ethanol,c,D04855
+producible,met__L_c,L-Methionine,c,D04983
+producible,met__L_c,L-Methionine,c,D04984
+producible,etha_c,Ethanolamine,c,D05074
+producible,octa_c,Octanoate (n-C8:0),c,D05220
+producible,hdca_c,Hexadecanoate (n-C16:0),c,D05341
+producible,pi_c,Phosphate,c,D05467
+producible,so4_c,Sulfate,c,D05963
+producible,h2o_c,H2O H2O,c,D06322
+producible,etoh_c,Ethanol,c,D06542
+producible,pnto__R_c,(R)-Pantothenate,c,D07413
+producible,ala_B_c,Beta-Alanine,c,D07561
+producible,5aop_c,5-Amino-4-oxopentanoate,c,D07567
+producible,citr__L_c,L-Citrulline,c,D07706
+producible,cytd_c,Cytidine,c,D07769
+producible,dha_c,Dihydroxyacetone,c,D07841
+producible,5fthf_c,5-Formyltetrahydrofolate,c,D07986
+producible,orn_c,Ornithine,c,D08302
+producible,k_c,Potassium,c,D08403
+producible,pydxn_c,Pyridoxine,c,D08454
+producible,atp_c,ATP C10H12N5O13P3,c,D08646
+producible,5mthf_c,5-Methyltetrahydrofolate,c,D09353
+producible,ura_c,Uracil,c,D09776
+producible,urea_c,Urea CH4N2O,c,D10496
+producible,tre_c,Trehalose,c,G00293
+producible,tre6p_c,"Alpha,alpha'-Trehalose 6-phosphate",c,G09795
+producible,uaagmda_c,"Undecaprenyl-diphospho-N-acetylmuramoyl-(N-acetylglucosamine)-L-ala-D-glu-meso-2,6-diaminopimeloyl-D-ala-D-ala",c,G10555
+producible,uagmda_c,"Undecaprenyl-diphospho-N-acetylmuramoyl-L-alanyl-D-glutamyl-meso-2,6-diaminopimeloyl-D-alanyl-D-alanine",c,G10556
+producible,udpg_c,UDPglucose,c,G10608
+producible,udpgal_c,UDPgalactose,c,G10609
+producible,uacgam_c,UDP-N-acetyl-D-glucosamine,c,G10610
+producible,udpglcur_c,UDP-D-glucuronate,c,G10612
+producible,gdpmann_c,GDP-D-mannose,c,G10614
+producible,gdpfuc_c,GDP-L-fucose,c,G10615
+producible,udp_c,UDP C9H11N2O12P2,c,G10619
+producible,gdp_c,GDP C10H12N5O11P2,c,G10620
+producible,cmp_c,CMP C9H12N3O8P,c,G10621
+producible,adpglc_c,ADPglucose C16H23N5O15P2,c,G11109
+producible,uacmam_c,UDP-N-acetyl-D-mannosamine,c,G11112
+producible,adp_c,ADP C10H12N5O10P2,c,G11113
+producible,kdo2lipid4_c,KDO(2)-lipid IV(A),c,G11160
+producible,kdolipid4_c,KDO-lipid IV(A),c,G11161
+producible,glycogen_c,Glycogen C6H10O5,c,G11603
+

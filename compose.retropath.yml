@@ -21,7 +21,11 @@ services:
       RETROPATH_WORKFLOW_VERSION: r20260212
       RETROPATH_JOBS_DIR: /var/lib/retropath/jobs
       RETROPATH_MAX_QUEUE: 8
-      RETROPATH_JOB_TIMEOUT_SECONDS: 3600
+      RETROPATH_JOB_TIMEOUT_SECONDS: 1800
+      RETROPATH_MEMORY_LIMIT_BYTES: 6442450944
+      RETROPATH_MEMORY_LIMIT_CONSECUTIVE_SAMPLES: 3
+      RETROPATH_RESOURCE_POLL_SECONDS: 2
+      RETROPATH_CGROUP_MEMORY_STAT_PATH: /sys/fs/cgroup/memory.stat
     volumes:
       - ./data/retropath/rules/rr02/retrorules_rr02_rp2_flat_retro.csv:/opt/retropath/rules/rr02.csv:ro
       - retropath-jobs:/var/lib/retropath/jobs

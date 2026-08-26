@@ -88,6 +88,7 @@ class JobManager:
                     status=result.status,
                     return_code=result.return_code,
                     error=result.error,
+                    failure_code=result.failure_code,
                 )
             except Exception as exc:  # pragma: no cover - defensive boundary
                 self.storage.finish_job(
@@ -95,7 +96,7 @@ class JobManager:
                     status="failed",
                     return_code=None,
                     error=f"internal worker error: {type(exc).__name__}: {exc}",
+                    failure_code="knime_execution_failed",
                 )
             finally:
                 self._queue.task_done()
-

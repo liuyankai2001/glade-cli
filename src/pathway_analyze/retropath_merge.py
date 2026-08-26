@@ -35,7 +35,7 @@ from src.pathway_analyze.retropath_routes import (
     RetrosyntheticPath,
 )
 
-HYBRID_CANDIDATE_SCHEMA_VERSION = 1
+HYBRID_CANDIDATE_SCHEMA_VERSION = 2
 DEFAULT_MAX_CANDIDATES = 5
 DEFAULT_MAX_WITNESS_PLANS = 3
 DEFAULT_MAX_TOTAL_STEPS = 10
@@ -128,6 +128,8 @@ class HybridCandidateRoute:
     worst_rule_score: float
     score_semantics: str
     contains_auxiliary_fragments: bool
+    structure_match_quality: str = "exact"
+    stereo_review_required: bool = False
     validation_status: str = "raw"
     review_required: bool = True
 
@@ -193,6 +195,8 @@ class HybridCandidateRoute:
             "worst_rule_score": self.worst_rule_score,
             "score_semantics": self.score_semantics,
             "contains_auxiliary_fragments": self.contains_auxiliary_fragments,
+            "structure_match_quality": self.structure_match_quality,
+            "stereo_review_required": self.stereo_review_required,
             "route_source": self.route_source,
             "contains_predicted_steps": True,
             "validation_status": self.validation_status,
@@ -513,7 +517,9 @@ def _attach_dependencies(
         for compound_id in candidate_step.product_compound_ids:
             retropath_producer_ids[compound_id].add(candidate_step.step_id)
 
-    sink_ids = {item.representative_kegg_id for item in sink_matches}
+    sink_by_observed_id = {
+        item.compound_id: item.representative_kegg_id for item in sink_matches
+    }
     updated: dict[str, HybridCandidateStep] = {}
     for plan_step, candidate_step in kegg_pairs:
         dependencies = set()
@@ -529,10 +535,11 @@ def _attach_dependencies(
         dependencies = set()
         for substrate_id in candidate_step.substrate_compound_ids:
             producers = set(retropath_producer_ids.get(substrate_id, set()))
-            if substrate_id in sink_ids:
-                producers.update(kegg_producer_ids.get(substrate_id, set()))
+            sink_kegg_id = sink_by_observed_id.get(substrate_id)
+            if sink_kegg_id is not None:
+                producers.update(kegg_producer_ids.get(sink_kegg_id, set()))
             dependencies.update(producers)
-            if not producers and substrate_id not in sink_ids:
+            if not producers and substrate_id not in sink_by_observed_id:
                 raise ValueError(
                     "biosynthetic RP2 substrate has no producer or sink: "
                     f"{substrate_id}"
@@ -603,6 +610,7 @@ def _candidate_id(
                 "representative_kegg_id": item.representative_kegg_id,
                 "inchikey": item.inchikey,
                 "minimum_depth": item.minimum_depth,
+                "match_type": item.match_type,
             }
             for item in ordered_sink_matches
         ],
@@ -624,12 +632,14 @@ def _candidate_rank(candidate: HybridCandidateRoute) -> tuple[Any, ...]:
         else -candidate.worst_rule_score
     )
     return (
+        1 if candidate.stereo_review_required else 0,
         candidate.retropath_steps,
         candidate.maximum_sink_depth,
         -candidate.minimum_rule_specificity,
         score_rank,
         candidate.total_steps,
         candidate.kegg_prefix_steps,
+        candidate.kegg_prefix_reaction_ids,
         candidate.candidate_id,
     )
 
@@ -876,7 +886,9 @@ def merge_retropath_candidates(
                 for item in retropath_steps
                 for compound_id in item.substrate_compound_ids
             }
-            missing_boundaries = set(sink_ids) - retropath_substrates
+            missing_boundaries = {
+                item.compound_id for item in normalized_sink_matches
+            } - retropath_substrates
             if missing_boundaries:
                 raise ValueError(
                     "P4 sink boundaries are not consumed by the biosynthetic "
@@ -972,6 +984,8 @@ def merge_retropath_candidates(
                     worst_rule_score=path.worst_rule_score,
                     score_semantics=path.score_semantics,
                     contains_auxiliary_fragments=path.contains_auxiliary_fragments,
+                    structure_match_quality=path.structure_match_quality,
+                    stereo_review_required=path.stereo_review_required,
                 )
                 generated.append(candidate)
                 for reaction in path_flipped:

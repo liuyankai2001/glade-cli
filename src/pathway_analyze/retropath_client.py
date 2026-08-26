@@ -263,6 +263,7 @@ class RetroPathJobState:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     return_code: Optional[int] = None
+    failure_code: Optional[str] = None
     error: Optional[str] = None
 
     @property
@@ -277,6 +278,7 @@ class RetroPathJobState:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "return_code": self.return_code,
+            "failure_code": self.failure_code,
             "error": self.error,
             "parameters": self.parameters.to_dict(),
         }
@@ -304,6 +306,7 @@ class RetroPathJobState:
             started_at=_optional_text(payload, "started_at"),
             finished_at=_optional_text(payload, "finished_at"),
             return_code=return_code,
+            failure_code=_optional_text(payload, "failure_code"),
             error=_optional_text(payload, "error"),
         )
 
@@ -1148,7 +1151,8 @@ class RetroPathHttpClient:
                     job_id=job.job_id,
                 )
             return
-        if manifest.get("schema_version") != 1:
+        manifest_schema = manifest.get("schema_version")
+        if manifest_schema not in {1, 2}:
             raise RetroPathClientError(
                 "protocol_error",
                 "service manifest schema_version is not supported",
@@ -1159,6 +1163,8 @@ class RetroPathHttpClient:
             "status": job.status,
             "return_code": job.return_code,
         }
+        if manifest_schema == 2:
+            expected_scalars["failure_code"] = job.failure_code
         for key, expected in expected_scalars.items():
             if manifest.get(key) != expected:
                 raise RetroPathClientError(
@@ -1203,6 +1209,15 @@ class RetroPathHttpClient:
             raise RetroPathClientError(
                 "protocol_error",
                 "service manifest rules SHA-256 does not match health",
+                job_id=job.job_id,
+            )
+        if manifest_schema == 2 and not isinstance(
+            manifest.get("resource_telemetry"),
+            Mapping,
+        ):
+            raise RetroPathClientError(
+                "protocol_error",
+                "service manifest resource_telemetry is missing",
                 job_id=job.job_id,
             )
         manifest_artifacts = manifest.get("artifacts")
@@ -1251,6 +1266,7 @@ class RetroPathHttpClient:
             job_id=job.job_id,
             status=job.status,
             return_code=job.return_code,
+            failure_code=job.failure_code,
             provenance=health.provenance,
             parameters=tuple(audit_parameters.items()),
             artifacts=tuple(local_artifacts),

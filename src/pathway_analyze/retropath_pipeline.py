@@ -37,7 +37,7 @@ from src.pathway_analyze.retropath_structure import KeggMolStructureProvider
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v1"
+RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v2"
 PIPELINE_RESULT_FILE_NAME = "pipeline_result.json"
 
 
@@ -244,6 +244,74 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             stage="input",
         ) from exc
 
+    if bool(getattr(input_bundle, "target_already_reachable", False)):
+        result_path = output_dir / PIPELINE_RESULT_FILE_NAME
+        payload = {
+            "schema_version": RETROPATH_PIPELINE_SCHEMA,
+            "ok": True,
+            "retropath_requested": True,
+            "search_engine": "retropath",
+            "status": "retropath_target_already_reachable",
+            "stage": "input",
+            "detail": (
+                "the exact target structure is already present in the "
+                "cumulative chassis sink; RetroPath was not submitted"
+            ),
+            "target_compound": target_compound,
+            "target_reachable_aliases": list(
+                getattr(input_bundle, "target_reachable_aliases", tuple())
+            ),
+            "expansion_depth": depth,
+            "sink_source": (
+                "chassis_A0" if depth == 0 else f"cumulative_expansion_A{depth}"
+            ),
+            "output_dir": str(output_dir),
+            "pipeline_result_file": str(result_path),
+            "job_id": None,
+            "service_status": "not_submitted",
+            "return_code": None,
+            "cache_hit": False,
+            "complete_path_count": 0,
+            "sink_match_count": 1,
+            "scope_present": False,
+            "candidate_count": 0,
+            "rejection_count": input_bundle.rejected_compound_count,
+            "input_summary": {
+                "reachable_compound_count": input_bundle.reachable_compound_count,
+                "sink_structure_count": input_bundle.sink_structure_count,
+                "rejected_compound_count": input_bundle.rejected_compound_count,
+            },
+            "artifacts": {
+                "expansion_source": {
+                    "path": str(expansion_bundle.expanded_file.resolve()),
+                    "sha256": _sha256_file(expansion_bundle.expanded_file),
+                },
+                "retropath_rules": {
+                    "path": str(rules_path),
+                    "sha256": _sha256_file(rules_path),
+                },
+                "target_source": {
+                    "path": str(input_bundle.target_source_path.resolve()),
+                    "sha256": input_bundle.target_source_sha256,
+                },
+                "chassis_sink": {
+                    "path": str(input_bundle.chassis_sink_path.resolve()),
+                    "sha256": input_bundle.chassis_sink_sha256,
+                },
+                "compound_mapping": {
+                    "path": str(input_bundle.compound_mapping_path.resolve()),
+                    "sha256": _sha256_file(input_bundle.compound_mapping_path),
+                },
+                "rejected_compounds": {
+                    "path": str(input_bundle.rejected_compounds_path.resolve()),
+                    "sha256": _sha256_file(input_bundle.rejected_compounds_path),
+                },
+            },
+        }
+        _atomic_write_json(result_path, payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return payload
+
     try:
         job_parameters = _job_parameters(config)
         with RetroPathHttpClient(
@@ -412,6 +480,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "job_id": client_run.result.job_id,
         "service_status": service_status,
         "return_code": client_run.result.return_code,
+        "failure_code": getattr(client_run.result, "failure_code", None),
         "cache_hit": client_run.cache_hit,
         "complete_path_count": enumeration_result.complete_path_count,
         "sink_match_count": len(enumeration_result.network.sink_matches),

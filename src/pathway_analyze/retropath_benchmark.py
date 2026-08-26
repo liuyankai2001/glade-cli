@@ -572,6 +572,7 @@ def _run_task(
     service_url: str,
     service_health: Mapping[str, Any],
     with_enzymes: bool,
+    force_retropath: bool = False,
 ) -> dict[str, Any]:
     task_dir = run_dir / "cases" / case.case_id / profile
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -583,6 +584,7 @@ def _run_task(
         shared_cache,
         service_url=service_url,
     )
+    config.retropath_force = bool(force_retropath)
     a0_sha = _prepare_a0(
         dataset,
         case,
@@ -1048,6 +1050,7 @@ def run_benchmark(
                     service_url=service_url,
                     service_health=health,
                     with_enzymes=with_enzymes,
+                    force_retropath=retry_failed,
                 )
             terminal_tasks[key] = task
             completed_records[key] = _task_record(task, run_dir=run_dir)

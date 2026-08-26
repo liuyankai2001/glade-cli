@@ -1,0 +1,272 @@
+{
+  "schema_version": "retropath_benchmark_cases.v1",
+  "benchmark_id": "p11_1_hidden_kegg_pilot12",
+  "description": "P11.1 positive-control recovery benchmark. Gold KEGG reactions remain represented in RR02; source-rule exclusion belongs to P11.2.",
+  "resources": {
+    "model": {
+      "path": "data/gem_models/iML1515.json",
+      "sha256": "b0f9199f048779bb08a14dfa6c09ec56d35b8750d2f99681980d0f098355fbf5"
+    },
+    "medium": {
+      "path": "data/mediums/default_medium.json",
+      "sha256": "58b456f6b68c78eec9764f63d144160e72dd065ddd4e791cbdb6347ce4ec7c7c"
+    },
+    "rr02": {
+      "path": "data/retropath/rules/rr02/retrorules_rr02_rp2_flat_retro.csv",
+      "sha256": "e24eb97d3172195d03abed6e7da07a4cfd53965553853d126aaa8a93b4bc552f"
+    },
+    "mnxref_index": {
+      "path": "data/retropath/mnxref/3.0/mnxref_rr02_subset.sqlite3",
+      "sha256": "2e83a7288d54446bc25793e9865f261b922d0092b2d7498f929c0a4682970c01"
+    },
+    "a0_snapshot": {
+      "path": "docs/retropath_benchmark/fixtures/iml1515_default_medium_a0.csv",
+      "sha256": "54822109ef354f6279a2c84da3edf707d3ec75f65f4b1f92220464ecd1c41094",
+      "compatible_sha256": [
+        "724da976c908354c247ef7410b62bd6093407ca7471f28f4138c7a72bf39d7fd"
+      ]
+    }
+  },
+  "defaults": {
+    "max_steps": 3,
+    "topx": 100,
+    "dmin": 2,
+    "dmax": 16,
+    "max_candidates": 10,
+    "top_k": [1, 3, 5, 10],
+    "run_fva": true,
+    "request_timeout_seconds": 120,
+    "get_attempts": 5,
+    "wait_timeout_seconds": 3900
+  },
+  "cases": [
+    {
+      "case_id": "ec1_r01574",
+      "ec_class": 1,
+      "search": {
+        "target_kegg_id": "C00652",
+        "target_mnxm_id": "MNXM778",
+        "controlled_sink_kegg_ids": ["C00003", "C00216"],
+        "controlled_sink_mnxm_ids": ["MNXM8", "MNXM544"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R01574",
+          "mnxr_id": "MNXR95907",
+          "ec_numbers": ["1.1.1.116", "1.1.1.117"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "NAD-dependent oxidoreductase example."
+    },
+    {
+      "case_id": "ec1_r01299",
+      "ec_class": 1,
+      "search": {
+        "target_kegg_id": "C00530",
+        "target_mnxm_id": "MNXM376",
+        "controlled_sink_kegg_ids": ["C00005", "C00007", "C00080", "C00156"],
+        "controlled_sink_mnxm_ids": ["MNXM1", "MNXM4", "MNXM6", "MNXM164"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R01299",
+          "mnxr_id": "MNXR106908",
+          "ec_numbers": ["1.14.13.64"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "NADPH/O2-dependent oxidoreductase example."
+    },
+    {
+      "case_id": "ec2_r10062",
+      "ec_class": 2,
+      "search": {
+        "target_kegg_id": "C00719",
+        "target_mnxm_id": "MNXM289",
+        "controlled_sink_kegg_ids": ["C00019", "C00037"],
+        "controlled_sink_mnxm_ids": ["MNXM16", "MNXM29"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R10062",
+          "mnxr_id": "MNXR113445",
+          "ec_numbers": ["2.1.1.162"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "SAM-dependent transferase example."
+    },
+    {
+      "case_id": "ec2_r00006",
+      "ec_class": 2,
+      "search": {
+        "target_kegg_id": "C00900",
+        "target_mnxm_id": "MNXM426",
+        "controlled_sink_kegg_ids": ["C00022", "C00080"],
+        "controlled_sink_mnxm_ids": ["MNXM1", "MNXM23"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R00006",
+          "mnxr_id": "MNXR106335",
+          "ec_numbers": ["2.2.1.6"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Carbon-transfer example with repeated pyruvate stoichiometry."
+    },
+    {
+      "case_id": "ec3_r10629",
+      "ec_class": 3,
+      "search": {
+        "target_kegg_id": "C13050",
+        "target_mnxm_id": "MNXM94564",
+        "controlled_sink_kegg_ids": ["C00003"],
+        "controlled_sink_mnxm_ids": ["MNXM8"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R10629",
+          "mnxr_id": "MNXR113953",
+          "ec_numbers": ["3.2.2.6"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Single structural sink hydrolase example."
+    },
+    {
+      "case_id": "ec3_r00913",
+      "ec_class": 3,
+      "search": {
+        "target_kegg_id": "C03065",
+        "target_mnxm_id": "MNXM4332",
+        "controlled_sink_kegg_ids": ["C00086", "C00099"],
+        "controlled_sink_mnxm_ids": ["MNXM117", "MNXM144"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R00913",
+          "mnxr_id": "MNXR106746",
+          "ec_numbers": ["3.5.3.17"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Two-precursor hydrolase example."
+    },
+    {
+      "case_id": "ec4_r02305",
+      "ec_class": 4,
+      "search": {
+        "target_kegg_id": "C01841",
+        "target_mnxm_id": "MNXM1585",
+        "controlled_sink_kegg_ids": ["C00448"],
+        "controlled_sink_mnxm_ids": ["MNXM34"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R02305",
+          "mnxr_id": "MNXR107433",
+          "ec_numbers": ["4.2.3.7"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Terpene cyclase/lyase example."
+    },
+    {
+      "case_id": "ec4_r10597",
+      "ec_class": 4,
+      "search": {
+        "target_kegg_id": "C00587",
+        "target_mnxm_id": "MNXM737",
+        "controlled_sink_kegg_ids": ["C00251"],
+        "controlled_sink_mnxm_ids": ["MNXM337"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R10597",
+          "mnxr_id": "MNXR113924",
+          "ec_numbers": ["4.1.3.45"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Single structural sink carbon-carbon lyase example."
+    },
+    {
+      "case_id": "ec5_r02007",
+      "ec_class": 5,
+      "search": {
+        "target_kegg_id": "C03190",
+        "target_mnxm_id": "MNXM3396",
+        "controlled_sink_kegg_ids": ["C00341"],
+        "controlled_sink_mnxm_ids": ["MNXM100"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R02007",
+          "mnxr_id": "MNXR107274",
+          "ec_numbers": ["5.5.1.8", "5.5.1.22"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Bornyl diphosphate synthase case previously used for the P10 identity smoke test."
+    },
+    {
+      "case_id": "ec5_r01057",
+      "ec_class": 5,
+      "search": {
+        "target_kegg_id": "C00117",
+        "target_mnxm_id": "MNXM116",
+        "controlled_sink_kegg_ids": ["C00620"],
+        "controlled_sink_mnxm_ids": ["MNXM295"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R01057",
+          "mnxr_id": "MNXR106810",
+          "ec_numbers": ["5.4.2.2", "5.4.2.7"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "Intramolecular phosphate transfer example."
+    },
+    {
+      "case_id": "ec6_r01322",
+      "ec_class": 6,
+      "search": {
+        "target_kegg_id": "C00566",
+        "target_mnxm_id": "MNXM1509",
+        "controlled_sink_kegg_ids": ["C00002", "C00010", "C00158"],
+        "controlled_sink_mnxm_ids": ["MNXM3", "MNXM12", "MNXM131"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R01322",
+          "mnxr_id": "MNXR106924",
+          "ec_numbers": ["6.2.1.18"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "ATP/CoA-dependent ligase example."
+    },
+    {
+      "case_id": "ec6_r01991",
+      "ec_class": 6,
+      "search": {
+        "target_kegg_id": "C00884",
+        "target_mnxm_id": "MNXM56612",
+        "controlled_sink_kegg_ids": ["C00002", "C00135", "C00334", "C00768"],
+        "controlled_sink_mnxm_ids": ["MNXM3", "MNXM134", "MNXM192"]
+      },
+      "gold": {
+        "steps": [{
+          "reaction_id": "R01991",
+          "mnxr_id": "MNXR107263",
+          "ec_numbers": ["6.3.2.11"],
+          "uniprot_accessions": []
+        }]
+      },
+      "notes": "ATP-dependent peptide ligase example with KEGG synonym anchors."
+    }
+  ]
+}

@@ -31,17 +31,27 @@ class JobStorage:
                     started_at TEXT,
                     finished_at TEXT,
                     return_code INTEGER,
+                    failure_code TEXT,
                     error TEXT,
                     parameters_json TEXT NOT NULL,
                     job_dir TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "failure_code" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN failure_code TEXT"
+                )
             connection.execute(
                 """
                 UPDATE jobs
                    SET status = 'failed',
                        finished_at = ?,
+                       failure_code = 'service_restarted',
                        error = 'service restarted while the job was running'
                  WHERE status = 'running'
                 """,
@@ -90,7 +100,8 @@ class JobStorage:
             cursor = connection.execute(
                 """
                 UPDATE jobs
-                   SET status = 'running', started_at = ?, error = NULL
+                   SET status = 'running', started_at = ?,
+                       failure_code = NULL, error = NULL
                  WHERE job_id = ? AND status = 'queued'
                 """,
                 (started_at, job_id),
@@ -106,15 +117,24 @@ class JobStorage:
         status: str,
         return_code: int | None,
         error: str | None,
+        failure_code: str | None = None,
     ) -> None:
         with self._write_lock, self._connect() as connection:
             connection.execute(
                 """
                 UPDATE jobs
-                   SET status = ?, finished_at = ?, return_code = ?, error = ?
+                   SET status = ?, finished_at = ?, return_code = ?,
+                       failure_code = ?, error = ?
                  WHERE job_id = ?
                 """,
-                (status, utcnow(), return_code, error, job_id),
+                (
+                    status,
+                    utcnow(),
+                    return_code,
+                    failure_code,
+                    error,
+                    job_id,
+                ),
             )
 
     def get_job(self, job_id: str) -> dict[str, object] | None:
@@ -127,4 +147,3 @@ class JobStorage:
         job = dict(row)
         job["parameters"] = json.loads(str(job.pop("parameters_json")))
         return job
-

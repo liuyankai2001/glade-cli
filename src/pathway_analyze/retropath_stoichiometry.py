@@ -22,6 +22,7 @@ from src.pathway_analyze.retropath_mnxref import (
     MnxrefIndex,
     MnxrefReactionTemplate,
 )
+from src.pathway_analyze.retropath_identity import compare_inchis
 
 
 STOICHIOMETRY_SCHEMA_VERSION = "retropath_stoichiometry.v1"
@@ -357,22 +358,43 @@ def _assign_side_properties(
         )
         for index, molecule in enumerate(molecules)
     ]
-    by_key: dict[str, list[CompoundProperty]] = defaultdict(list)
-    for item in molecule_properties:
-        by_key[item.inchikey].append(item)
+    available = list(molecule_properties)
     terms: list[CompletedTerm] = []
+
+    def matching_index(
+        property_value: CompoundProperty | None,
+        expected_key: str,
+    ) -> int | None:
+        exact = next(
+            (
+                index
+                for index, item in enumerate(available)
+                if expected_key and item.inchikey == expected_key
+            ),
+            None,
+        )
+        if exact is not None or property_value is None or not property_value.inchi:
+            return exact
+        for index, item in enumerate(available):
+            if item.inchi and compare_inchis(
+                property_value.inchi,
+                item.inchi,
+            ).match_type == "stereo_missing":
+                return index
+        return None
+
     for compound_id, coefficient in stoichiometry:
         property_value = known.get(compound_id)
         expected_key = property_value.inchikey if property_value is not None else ""
         match = _RP2_INCHIKEY_ID.fullmatch(compound_id)
         if match is not None:
             expected_key = match.group("inchikey")
-        matching = by_key.get(expected_key, []) if expected_key else []
-        if not matching:
+        selected_index = matching_index(property_value, expected_key)
+        if selected_index is None:
             raise ValueError(
                 f"cannot map {compound_id} to a Reaction SMILES component"
             )
-        structure = matching.pop(0)
+        structure = available.pop(selected_index)
         if property_value is None:
             property_value = CompoundProperty(
                 compound_id=compound_id,
@@ -391,6 +413,25 @@ def _assign_side_properties(
             raise ValueError(
                 f"P2 and Reaction SMILES structures disagree for {compound_id}"
             )
+        rounded_coefficient = round(coefficient)
+        duplicate_components = (
+            max(0, int(rounded_coefficient) - 1)
+            if math.isclose(coefficient, rounded_coefficient, abs_tol=1e-9)
+            else 0
+        )
+        for _ in range(duplicate_components):
+            duplicate_index = matching_index(property_value, expected_key)
+            if duplicate_index is None:
+                break
+            duplicate = available.pop(duplicate_index)
+            if (
+                duplicate.formula != property_value.formula
+                or duplicate.charge != property_value.charge
+            ):
+                raise ValueError(
+                    "duplicate Reaction SMILES components disagree for "
+                    f"{compound_id}"
+                )
         terms.append(
             CompletedTerm(
                 side="",
@@ -399,7 +440,7 @@ def _assign_side_properties(
                 role="predicted_core",
             )
         )
-    if any(values for values in by_key.values()):
+    if available:
         raise ValueError("Reaction SMILES has structural components absent from P5")
     return tuple(terms)
 

@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import math
+import re
 import statistics
 import tempfile
 from collections import Counter, defaultdict
@@ -54,6 +55,113 @@ def _truth(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _pipeline_artifact_path(
+    pipeline: Mapping[str, Any],
+    name: str,
+) -> Path | None:
+    artifacts = pipeline.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return None
+    record = artifacts.get(name)
+    if isinstance(record, Mapping):
+        value = record.get("path")
+    else:
+        value = record
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    return path.resolve() if path.is_absolute() else path
+
+
+def _raw_gold_rule_rank(
+    pipeline: Mapping[str, Any],
+    gold_mnxr_ids: Sequence[str],
+) -> int | None:
+    raw_dir = _pipeline_artifact_path(pipeline, "raw_directory")
+    rules_path = _pipeline_artifact_path(pipeline, "retropath_rules")
+    if raw_dir is None or rules_path is None or not rules_path.is_file():
+        return None
+    scope_path = next(
+        (
+            raw_dir / name
+            for name in ("target_scope.csv", "scope.csv", "results.csv")
+            if (raw_dir / name).is_file()
+        ),
+        None,
+    )
+    if scope_path is None:
+        return None
+    observed_rule_ids = {
+        rule_id.strip("[] '\"")
+        for row in _read_csv(scope_path)
+        for rule_id in split_ids(row.get("Rule ID"))
+        if rule_id.strip("[] '\"")
+    }
+    observed_sources: set[str] = set()
+    for row in _read_csv(rules_path):
+        if str(row.get("Rule ID") or "").strip() not in observed_rule_ids:
+            continue
+        observed_sources.update(
+            match.upper()
+            for value in row.values()
+            for match in re.findall(r"MNXR\d+", str(value or ""), re.IGNORECASE)
+        )
+    return 1 if set(gold_mnxr_ids) <= observed_sources else None
+
+
+def _candidate_connectivity_ranks(
+    pipeline: Mapping[str, Any],
+    gold_mnxr_ids: Sequence[str],
+) -> tuple[int | None, int | None]:
+    routes_path = _pipeline_artifact_path(pipeline, "candidate_routes")
+    steps_path = _pipeline_artifact_path(pipeline, "candidate_steps")
+    if (
+        routes_path is None
+        or steps_path is None
+        or not routes_path.is_file()
+        or not steps_path.is_file()
+    ):
+        return None, None
+    routes = _read_csv(routes_path)
+    steps = _read_csv(steps_path)
+    rank_by_candidate = {
+        str(row.get("candidate_id") or "").strip(): _as_int(
+            row.get("candidate_rank")
+        )
+        for row in routes
+    }
+    sources_by_candidate: dict[str, set[str]] = defaultdict(set)
+    for row in steps:
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        sources_by_candidate[candidate_id].update(
+            item.upper() for item in split_ids(row.get("source_reaction_ids"))
+        )
+    gold = set(gold_mnxr_ids)
+    connectivity = sorted(
+        rank_by_candidate[candidate_id]
+        for candidate_id, sources in sources_by_candidate.items()
+        if rank_by_candidate.get(candidate_id, 0) > 0 and gold <= sources
+    )
+    exact_candidates = {
+        str(row.get("candidate_id") or "").strip()
+        for row in routes
+        if not _truth(row.get("stereo_review_required"))
+        and str(row.get("structure_match_quality") or "exact").strip()
+        == "exact"
+    }
+    stereo_resolved = sorted(
+        rank_by_candidate[candidate_id]
+        for candidate_id, sources in sources_by_candidate.items()
+        if candidate_id in exact_candidates
+        and rank_by_candidate.get(candidate_id, 0) > 0
+        and gold <= sources
+    )
+    return (
+        connectivity[0] if connectivity else None,
+        stereo_resolved[0] if stereo_resolved else None,
+    )
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -183,6 +291,12 @@ def score_core_artifacts(
         "candidate_top_k_truncated": bool(
             pipeline.get("candidate_top_k_truncated")
         ),
+        "raw_gold_rule_rank": _raw_gold_rule_rank(
+            pipeline,
+            case.gold_mnxr_ids,
+        ),
+        "connectivity_gold_rank": None,
+        "stereo_resolved_gold_rank": None,
         "gold_template_rank": None,
         "balanced_gold_rank": None,
         "strict_gem_gold_rank": None,
@@ -195,6 +309,10 @@ def score_core_artifacts(
         "enzyme_accession_rank": None,
         "enzyme_evaluation_status": "not_run",
     }
+    (
+        result["connectivity_gold_rank"],
+        result["stereo_resolved_gold_rank"],
+    ) = _candidate_connectivity_ranks(pipeline, case.gold_mnxr_ids)
     if validation_dir is None:
         return result
     resolved_validation = Path(validation_dir)
@@ -309,6 +427,9 @@ def aggregate_results(
     summary_rows: list[dict[str, Any]] = []
     profile_summaries: dict[str, Any] = {}
     rank_fields = {
+        "raw_gold_rule_recall": "raw_gold_rule_rank",
+        "connectivity_gold_recall": "connectivity_gold_rank",
+        "stereo_resolved_gold_recall": "stereo_resolved_gold_rank",
         "gold_template_recall": "gold_template_rank",
         "balanced_gold_recall": "balanced_gold_rank",
         "strict_gem_gold_recall": "strict_gem_gold_rank",
@@ -578,6 +699,9 @@ def render_markdown_report(
     )
     summary_rows = aggregate.get("summary_rows", [])
     metric_labels = (
+        ("raw_gold_rule_recall", "原始 RR02 规则出现"),
+        ("connectivity_gold_recall", "结构连通路线恢复"),
+        ("stereo_resolved_gold_recall", "立体身份精确恢复"),
         ("gold_template_recall", "来源模板恢复"),
         ("balanced_gold_recall", "平衡计量恢复"),
         ("strict_gem_gold_recall", "严格 GEM 恢复"),
@@ -645,14 +769,17 @@ def render_markdown_report(
             "",
             "## 单案例结果",
             "",
-            "| Case | EC 类 | Profile | 状态 | Scope | 模板排名 | 平衡排名 | GEM 排名 | 精确排名 | 耗时 |",
-            "|---|---:|---|---|---:|---:|---:|---:|---:|---:|",
+            "| Case | EC 类 | Profile | 状态 | Scope | 原始规则 | 连通排名 | 立体精确 | 模板排名 | 平衡排名 | GEM 排名 | 精确排名 | 耗时 |",
+            "|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for task in sorted(tasks, key=lambda item: (str(item.get("case_id")), str(item.get("profile")))):
         metrics = task.get("metrics", {})
         values = []
         for field in (
+            "raw_gold_rule_rank",
+            "connectivity_gold_rank",
+            "stereo_resolved_gold_rank",
             "gold_template_rank",
             "balanced_gold_rank",
             "strict_gem_gold_rank",
@@ -769,6 +896,11 @@ def generate_benchmark_report(
                 "runtime_seconds": task.get("runtime_seconds"),
                 "scope_hit": metrics.get("scope_hit"),
                 "candidate_count": metrics.get("candidate_count"),
+                "raw_gold_rule_rank": metrics.get("raw_gold_rule_rank"),
+                "connectivity_gold_rank": metrics.get("connectivity_gold_rank"),
+                "stereo_resolved_gold_rank": metrics.get(
+                    "stereo_resolved_gold_rank"
+                ),
                 "gold_template_rank": metrics.get("gold_template_rank"),
                 "balanced_gold_rank": metrics.get("balanced_gold_rank"),
                 "strict_gem_gold_rank": metrics.get("strict_gem_gold_rank"),
@@ -797,6 +929,43 @@ def generate_benchmark_report(
         {"profile": profile, "stage": stage, "code": code, "count": count}
         for (profile, stage, code), count in sorted(failure_counts.items())
     ]
+    funnel_metric_fields = (
+        ("selected", None),
+        ("operational_completed", "__completed__"),
+        ("raw_gold_rule", "raw_gold_rule_rank"),
+        ("connectivity", "connectivity_gold_rank"),
+        ("stereo_resolved", "stereo_resolved_gold_rank"),
+        ("balanced", "balanced_gold_rank"),
+        ("strict_gem", "strict_gem_gold_rank"),
+        ("formal_exact", "formal_exact_gold_rank"),
+    )
+    for profile in sorted({str(task.get("profile") or "") for task in tasks}):
+        selected = [task for task in tasks if task.get("profile") == profile]
+        for stage, field in funnel_metric_fields:
+            if field is None:
+                count = len(selected)
+            elif field == "__completed__":
+                count = sum(_task_is_evaluable(task) for task in selected)
+            else:
+                count = sum(
+                    _as_int(task.get("metrics", {}).get(field)) > 0
+                    for task in selected
+                )
+            funnel_rows.append(
+                {
+                    "profile": profile,
+                    "stage": stage,
+                    "code": "passed",
+                    "count": count,
+                }
+            )
+    funnel_rows.sort(
+        key=lambda row: (
+            str(row.get("profile") or ""),
+            str(row.get("stage") or ""),
+            str(row.get("code") or ""),
+        )
+    )
     markdown = render_markdown_report(run, tasks, aggregate)
     summary = {
         "schema_version": "retropath_benchmark_report.v1",

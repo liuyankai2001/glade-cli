@@ -20,6 +20,7 @@ from rdkit import Chem
 from rdkit.Chem import inchi as rd_inchi
 from rdkit.Chem import rdMolDescriptors
 
+from src.pathway_analyze.retropath_identity import structure_identity
 from src.pathway_analyze.retropath_models import PredictedCompound
 
 
@@ -278,10 +279,13 @@ def compound_from_kegg_mol(
         f"rdkit:{rdkit.__version__}",
     )
     try:
+        identity = structure_identity(standard_inchi)
         return PredictedCompound.create(
             compound_id=normalized_id,
             inchi=standard_inchi,
             inchikey=inchikey,
+            stereo_stripped_inchikey=identity.stereo_stripped_inchikey,
+            stereo_specified=identity.stereo_specified,
             isomeric_smiles=smiles,
             formula=formula,
             charge=charge,

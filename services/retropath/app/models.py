@@ -35,7 +35,7 @@ def public_job(job: dict[str, object]) -> dict[str, object]:
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
         "return_code": job.get("return_code"),
+        "failure_code": job.get("failure_code"),
         "error": job.get("error"),
         "parameters": job["parameters"],
     }
-

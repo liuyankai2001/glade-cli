@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Tuple, TypeAlias
 
 
-RETROPATH_MODEL_SCHEMA_VERSION = 1
+RETROPATH_MODEL_SCHEMA_VERSION = 2
+RETROPATH_IDENTITY_SCHEMA_VERSION = 1
 
 KEGG_COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 KEGG_REACTION_ID_PATTERN = re.compile(r"^R\d{5}$")
@@ -281,7 +282,7 @@ def _predicted_compound_id(inchi: str, inchikey: Optional[str]) -> str:
         {
             "entity_type": "compound",
             "inchi": inchi,
-            "schema_version": RETROPATH_MODEL_SCHEMA_VERSION,
+            "schema_version": RETROPATH_IDENTITY_SCHEMA_VERSION,
         }
     )
     return f"RP2CPD:{digest}"
@@ -302,7 +303,7 @@ def _predicted_reaction_id(
             "product_compounds": list(product_compounds),
             "reaction_smiles": reaction_smiles,
             "rule_id": rule_id,
-            "schema_version": RETROPATH_MODEL_SCHEMA_VERSION,
+            "schema_version": RETROPATH_IDENTITY_SCHEMA_VERSION,
             "substrate_compounds": list(substrate_compounds),
         }
     )
@@ -324,7 +325,7 @@ def _candidate_route_id(
             "matched_sink_depth": matched_sink_depth,
             "matched_sink_kegg_id": matched_sink_kegg_id,
             "retropath_reaction_ids": list(retropath_reaction_ids),
-            "schema_version": RETROPATH_MODEL_SCHEMA_VERSION,
+            "schema_version": RETROPATH_IDENTITY_SCHEMA_VERSION,
             "target_compound_id": target_compound_id,
         }
     )
@@ -339,6 +340,8 @@ class PredictedCompound:
     inchi: str
     name: str = ""
     inchikey: Optional[str] = None
+    stereo_stripped_inchikey: Optional[str] = None
+    stereo_specified: Optional[bool] = None
     isomeric_smiles: Optional[str] = None
     formula: Optional[str] = None
     charge: Optional[int] = None
@@ -350,6 +353,12 @@ class PredictedCompound:
         compound_id = _normalize_compound_id(self.compound_id)
         inchi = _normalize_inchi(self.inchi)
         inchikey = _normalize_inchikey(self.inchikey)
+        stereo_stripped_inchikey = _normalize_inchikey(
+            self.stereo_stripped_inchikey
+        )
+        stereo_specified = self.stereo_specified
+        if stereo_specified is not None and not isinstance(stereo_specified, bool):
+            raise ValueError("stereo_specified must be a boolean or null")
         kegg_ids = _normalize_kegg_compound_ids(self.kegg_ids)
         name = _normalize_optional_string(self.name, "name") or ""
         isomeric_smiles = _normalize_optional_string(
@@ -387,6 +396,12 @@ class PredictedCompound:
         object.__setattr__(self, "inchi", inchi)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "inchikey", inchikey)
+        object.__setattr__(
+            self,
+            "stereo_stripped_inchikey",
+            stereo_stripped_inchikey,
+        )
+        object.__setattr__(self, "stereo_specified", stereo_specified)
         object.__setattr__(self, "isomeric_smiles", isomeric_smiles)
         object.__setattr__(self, "formula", formula)
         object.__setattr__(self, "charge", charge)
@@ -402,6 +417,8 @@ class PredictedCompound:
         compound_id: Optional[str] = None,
         name: str = "",
         inchikey: Optional[str] = None,
+        stereo_stripped_inchikey: Optional[str] = None,
+        stereo_specified: Optional[bool] = None,
         isomeric_smiles: Optional[str] = None,
         formula: Optional[str] = None,
         charge: Optional[int] = None,
@@ -430,6 +447,8 @@ class PredictedCompound:
             inchi=normalized_inchi,
             name=name,
             inchikey=normalized_inchikey,
+            stereo_stripped_inchikey=stereo_stripped_inchikey,
+            stereo_specified=stereo_specified,
             isomeric_smiles=isomeric_smiles,
             formula=formula,
             charge=charge,
@@ -444,6 +463,8 @@ class PredictedCompound:
             "name": self.name,
             "inchi": self.inchi,
             "inchikey": self.inchikey,
+            "stereo_stripped_inchikey": self.stereo_stripped_inchikey,
+            "stereo_specified": self.stereo_specified,
             "isomeric_smiles": self.isomeric_smiles,
             "formula": self.formula,
             "charge": self.charge,
@@ -461,6 +482,8 @@ class PredictedCompound:
             inchi=_required(payload, "inchi"),
             name=payload.get("name", ""),
             inchikey=payload.get("inchikey"),
+            stereo_stripped_inchikey=payload.get("stereo_stripped_inchikey"),
+            stereo_specified=payload.get("stereo_specified"),
             isomeric_smiles=payload.get("isomeric_smiles"),
             formula=payload.get("formula"),
             charge=payload.get("charge"),
@@ -1044,6 +1067,7 @@ class RetroPathRunResult:
     job_id: str
     status: str
     return_code: Optional[int] = None
+    failure_code: Optional[str] = None
     provenance: Optional[RetroPathRuntimeProvenance] = None
     parameters: Tuple[Tuple[str, JsonScalar], ...] = tuple()
     artifacts: Tuple[str, ...] = tuple()
@@ -1074,6 +1098,10 @@ class RetroPathRunResult:
             isinstance(return_code, bool) or not isinstance(return_code, int)
         ):
             raise ValueError("return_code must be an integer or null")
+        failure_code = _normalize_optional_string(
+            self.failure_code,
+            "failure_code",
+        )
         provenance = self.provenance
         if provenance is not None and not isinstance(
             provenance,
@@ -1098,6 +1126,7 @@ class RetroPathRunResult:
         object.__setattr__(self, "job_id", job_id)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "return_code", return_code)
+        object.__setattr__(self, "failure_code", failure_code)
         object.__setattr__(self, "provenance", provenance)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "artifacts", artifacts)
@@ -1120,6 +1149,7 @@ class RetroPathRunResult:
             "job_id": self.job_id,
             "status": self.status,
             "return_code": self.return_code,
+            "failure_code": self.failure_code,
             "provenance": (
                 self.provenance.to_dict() if self.provenance is not None else None
             ),
@@ -1150,6 +1180,7 @@ class RetroPathRunResult:
             job_id=_required(payload, "job_id"),
             status=_required(payload, "status"),
             return_code=payload.get("return_code"),
+            failure_code=payload.get("failure_code"),
             provenance=provenance,
             parameters=payload.get("parameters", {}),
             artifacts=payload.get("artifacts", tuple()),

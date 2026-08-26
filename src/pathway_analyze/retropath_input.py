@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from src.pathway_analyze.expand_chassis_metabolites import ExpansionBundle
+from src.pathway_analyze.retropath_identity import (
+    compare_inchis,
+    structure_identity,
+)
 from src.pathway_analyze.retropath_models import PredictedCompound
 from src.pathway_analyze.retropath_structure import (
     StructureProvider,
@@ -37,6 +41,8 @@ COMPOUND_MAPPING_COLUMNS = (
     "minimum_depth",
     "inchi",
     "inchikey",
+    "stereo_stripped_inchikey",
+    "stereo_specified",
     "isomeric_smiles",
     "formula",
     "charge",
@@ -83,6 +89,7 @@ class CompoundMapping:
     is_representative: bool
 
     def to_row(self) -> dict[str, Any]:
+        identity = structure_identity(self.compound.inchi)
         return {
             "role": self.role,
             "kegg_id": self.compound.compound_id,
@@ -95,6 +102,15 @@ class CompoundMapping:
             ),
             "inchi": self.compound.inchi,
             "inchikey": self.compound.inchikey or "",
+            "stereo_stripped_inchikey": (
+                self.compound.stereo_stripped_inchikey
+                or identity.stereo_stripped_inchikey
+            ),
+            "stereo_specified": str(
+                identity.stereo_specified
+                if self.compound.stereo_specified is None
+                else self.compound.stereo_specified
+            ).lower(),
             "isomeric_smiles": self.compound.isomeric_smiles or "",
             "formula": self.compound.formula or "",
             "charge": "" if self.compound.charge is None else self.compound.charge,
@@ -122,6 +138,8 @@ class RetroPathInputBundle:
     rejected_compounds_path: Path
     target_source_sha256: str
     chassis_sink_sha256: str
+    target_already_reachable: bool = False
+    target_reachable_aliases: Tuple[str, ...] = tuple()
 
     @property
     def sink_structure_count(self) -> int:
@@ -304,6 +322,8 @@ def _merge_sink_group(
         name=representative.name,
         inchi=representative.inchi,
         inchikey=representative.inchikey,
+        stereo_stripped_inchikey=representative.stereo_stripped_inchikey,
+        stereo_specified=representative.stereo_specified,
         isomeric_smiles=representative.isomeric_smiles,
         formula=representative.formula,
         charge=representative.charge,
@@ -559,8 +579,33 @@ def build_retropath_inputs(
         if compound is not None:
             resolved_sink.append(compound)
 
+    filtered_sink: list[PredictedCompound] = []
+    target_reachable_aliases: list[str] = []
+    for compound in resolved_sink:
+        identity_match = compare_inchis(target.inchi, compound.inchi)
+        if identity_match.match_type == "exact":
+            target_reachable_aliases.append(compound.compound_id)
+            filtered_sink.append(compound)
+            continue
+        if identity_match.match_type in {"stereo_missing", "stereo_conflict"}:
+            rejections.append(
+                StructureRejection(
+                    role="sink",
+                    kegg_id=compound.compound_id,
+                    minimum_depth=compound.minimum_depth,
+                    reason_code="target_connectivity_collision",
+                    reason_detail=(
+                        f"target {target.compound_id} and sink share connectivity, "
+                        f"formula, and charge but have {identity_match.match_type} "
+                        "stereochemistry; excluded from this RetroPath sink"
+                    ),
+                )
+            )
+            continue
+        filtered_sink.append(compound)
+
     sink_compounds, sink_mappings, conflict_rejections = _group_sink_structures(
-        resolved_sink
+        filtered_sink
     )
     rejections.extend(conflict_rejections)
     rejections.sort(key=_rejection_sort_key)
@@ -599,6 +644,8 @@ def build_retropath_inputs(
         rejected_compounds_path=artifacts[3],
         target_source_sha256=artifacts[4],
         chassis_sink_sha256=artifacts[5],
+        target_already_reachable=bool(target_reachable_aliases),
+        target_reachable_aliases=tuple(sorted(target_reachable_aliases)),
     )
 
 
