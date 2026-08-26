@@ -462,37 +462,87 @@ def _parse_solution_ids(value: Any) -> tuple[int, ...]:
         raise ValueError(f"通量验证文件中的 solution_ids 无效：{value!r}") from exc
 
 
-def _select_passed_validation(
+_KEGG_VALIDATION_NOT_RUN_WARNING = (
+    "GEM validation has not been run for this KEGG route; the route remains "
+    "writable but requires manual review before experimental use."
+)
+_KEGG_VALIDATION_FAILED_WARNING = (
+    "GEM validation did not pass for this KEGG route; the route remains "
+    "writable but requires manual review before experimental use."
+)
+
+
+def _not_run_kegg_validation(*, issue: str | None = None) -> dict[str, Any]:
+    return {
+        "validation_status": "not_run",
+        "fba_status": "not_run",
+        "pfba_status": "not_run",
+        "fva_status": "not_run",
+        "cofactor_mode": "not_run",
+        "cofactor_relaxed": False,
+        "opened_generic_compound_ids": None,
+        "issues": issue or _KEGG_VALIDATION_NOT_RUN_WARNING,
+    }
+
+
+def _append_validation_issue(validation: dict[str, Any], issue: str) -> None:
+    current = str(validation.get("issues") or "").strip()
+    if not current:
+        validation["issues"] = issue
+    elif issue not in current:
+        validation["issues"] = f"{current} | {issue}"
+
+
+def _select_optional_kegg_validation(
     path: Path,
     solution_id: int,
-    expansion_depth: int,
 ) -> dict[str, Any]:
-    validation_command = (
-        f"validate -i <输入文件> -s {solution_id} -m per -d {expansion_depth}"
-    )
     if not path.is_file():
-        raise FileNotFoundError(
-            f"solution {solution_id} 尚未进行独立 GEM 验证；请先执行："
-            f"{validation_command}"
-        )
-    matches = [
-        row
-        for row in _read_csv_rows(path)
-        if str(row.get("validation_mode", "")).strip() == "per-solution"
-        and _parse_solution_ids(row.get("solution_ids")) == (solution_id,)
-    ]
-    if not matches:
-        raise ValueError(
-            f"solution {solution_id} 没有独立通量验证结果；请先执行 "
-            f"{validation_command}"
+        return _not_run_kegg_validation()
+
+    try:
+        rows = _read_csv_rows(path)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        return _not_run_kegg_validation(
+            issue=(
+                "GEM validation evidence could not be read and was ignored: "
+                f"{exc}. {_KEGG_VALIDATION_NOT_RUN_WARNING}"
+            )
         )
 
+    matches: list[dict[str, str]] = []
+    malformed_rows = 0
+    for row in rows:
+        if str(row.get("validation_mode", "")).strip() != "per-solution":
+            continue
+        try:
+            row_solution_ids = _parse_solution_ids(row.get("solution_ids"))
+        except ValueError:
+            malformed_rows += 1
+            continue
+        if row_solution_ids == (solution_id,):
+            matches.append(row)
+
+    if not matches:
+        issue = _KEGG_VALIDATION_NOT_RUN_WARNING
+        if malformed_rows:
+            issue = (
+                f"Ignored {malformed_rows} malformed per-solution GEM validation "
+                f"record(s). {issue}"
+            )
+        return _not_run_kegg_validation(issue=issue)
+
     validation = _normalize_row(matches[-1])
-    status = str(validation.get("validation_status") or "")
-    if not status.startswith("PASS_"):
-        raise ValueError(
-            f"solution {solution_id} 未通过通量验证，当前状态：{status or '未知'}"
+    status = str(validation.get("validation_status") or "").strip()
+    if not status:
+        return _not_run_kegg_validation(
+            issue=(
+                "The matching GEM validation record has no validation_status and "
+                f"was ignored. {_KEGG_VALIDATION_NOT_RUN_WARNING}"
+            )
         )
+    if not status.startswith("PASS_"):
+        _append_validation_issue(validation, _KEGG_VALIDATION_FAILED_WARNING)
     return validation
 
 
@@ -789,10 +839,9 @@ def write_solution(config: Any) -> dict[str, Any]:
             solution_id,
         )
     else:
-        validation = _select_passed_validation(
+        validation = _select_optional_kegg_validation(
             validation_dir / "gem_validation_summary.csv",
             solution_id,
-            expansion_depth,
         )
     electron_summary = _select_optional_solution_row(
         gap_dir / "solution_electron_summary.csv",

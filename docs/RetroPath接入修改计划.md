@@ -371,7 +371,7 @@ P11.1 的评测工具、数据契约和 12 例试运行集已实现：
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
 | P8 计量与 GEM 验证 | P1 | 以 strict 或 relaxed 判断完整路线可行性 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量；relaxed 只开放路线涉及的通用载体 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、模式、开放载体、验证与逐步通量 | strict/relaxed 对照、provenance、防篡改和全仓库回归通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为预测混合路线生成候选酶 | raw step 可直接使用全部 RR02 替代规则证据；P8 后增加 hypothesis/完整计量证据；精确反应、来源模板、完整/核心 Reaction SMILES、Rule SMARTS 分级检索；结构命中只供人工复核 | 新增 RetroPath enzyme selection；扩展 Selenzyme client、main-enzyme CLI 和 P7 | requirements、Top-N/审计候选、Selenzyme 证据、带哈希 selection manifest | 未验证/已验证身份均可进入统一主酶检索；多规则不重复计算必需步骤；相似度 1 不误判 | P8 可选；CLI/.gitignore 单次授权已使用 | 已完成 |
-| P10 统一流程 | P1 | 将全部 Top-K 混合路线纳入现有 solution、manifest 和主酶流程 | P5 后立即物化；P8 只覆盖状态/证据；materialization 哈希提交；manifest 自动分流步骤；公共组合器支持 manual_review | src/pathway_analyze、src/write_manifest、src/main_protein_selection、src/info_show | 统一混合 solution、可选验证覆盖、统一主酶 artifacts 和带 pending review 的 manifest | KEGG 编号/行为不变；P8 前/通过/失败均可写；solution ID 不变；篡改 fail closed；全仓库 496 项通过 | P5、P9，P8 可选 | 已完成 |
+| P10 统一流程 | P1 | 将全部 Top-K 混合路线纳入现有 solution、manifest 和主酶流程 | P5 后立即物化；P8 只覆盖状态/证据；materialization 哈希提交；manifest 自动分流步骤；公共组合器支持 manual_review | src/pathway_analyze、src/write_manifest、src/main_protein_selection、src/info_show | 统一混合 solution、可选验证覆盖、统一主酶 artifacts 和带 pending review 的 manifest | KEGG 编号和路线不变；KEGG/RetroPath 未验证、通过、失败均可写；solution ID 不变；篡改 fail closed；全仓库回归通过 | P5、P9，GEM/P8 验证均可选 | 已完成 |
 | P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 进行中：P11.1 基线已完成，P11.2+ 待实施 |
 
 ## 5. 第一批应实施的文件
@@ -608,7 +608,7 @@ P9 已为 src/main_protein_selection/selenzyme_retrieval.py 增加 Reaction SMIL
 
 | 测试类别 | 关键场景 | 预期结果 |
 |---|---|---|
-| 回归测试 | 不指定 <code>--retropath</code> | 现有 KEGG 输出、路径和行为不变 |
+| 回归测试 | 不指定 <code>--retropath</code> | KEGG 输出和路径不变；GEM 验证作为可选证据，未验证或失败仍可写入 |
 | depth 0 | A0 有合法和非法结构 | sink 只包含合法、去重后的 A0，失败项进入 rejection |
 | 累计 depth | A0、F1、F2 有交叉底物 | depth 2 sink 包含 A0∪F1∪F2，最小 depth 正确 |
 | 缺失 expand | 指定 depth 3 + RetroPath，但无 depth 3 结果 | 提示先执行 expand |

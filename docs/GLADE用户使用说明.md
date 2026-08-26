@@ -284,7 +284,9 @@ python main.py info -i demo01.json --solution 1 --step 2 -d 0
 
 ## 7. GEM 通量验证
 
-对于纯 KEGG 路线，写入 manifest 前必须进行独立的 per-solution 验证。
+GEM 验证对纯 KEGG 和 RetroPath 路线都是可选的。它用于提供底盘中的通量可行性
+证据，不再决定路线能否写入 manifest。若希望评估某条纯 KEGG 路线，推荐使用独立的
+per-solution 验证。
 
 验证路线 1：
 
@@ -306,7 +308,7 @@ python main.py validate -i demo01.json -m per -c strict -d 0
 
 参数含义：
 
-- `-m per`：每条路线单独加入 GEM 并验证；写入路线前必须存在这种结果；
+- `-m per`：每条路线单独加入 GEM 并验证，适合为单条路线生成独立证据；
 - `-m pooled`：将所选路线放在同一个模型中联合检查；
 - `-m both`：同时生成独立和联合结果；
 - `-c strict`：严格处理通用辅因子，默认模式；
@@ -321,8 +323,10 @@ outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
 └── gem_validation_route_fluxes.csv
 ```
 
-只有状态以 `PASS_` 开头的纯 KEGG 独立验证结果才能写入 manifest。RetroPath
-预测路线采用下面 7.1 节的可选验证与强制风险标记策略。
+纯 KEGG 路线在未验证、验证通过或验证失败时都可以写入 manifest。未验证时记录
+`validation_status=not_run`；存在独立验证结果时保留原始 `PASS_*` 或 `FAIL_*`、通量、
+辅因子模式和问题说明。未通过只增加人工复核提示，不再阻断写入。RetroPath 预测路线
+采用下面 7.1 节相同的可选验证原则，并额外保留预测风险标记。
 
 ### 7.1 RetroPath 候选计量补全与严格验证
 
@@ -454,7 +458,7 @@ SelenzymeRF 结构相似结果始终是预测性证据：即使 reaction similar
 
 ## 8. 选择并写入路线
 
-路线 1 通过独立验证后执行：
+选择路线 1 后即可执行；GEM 验证可在写入前按需运行：
 
 ```powershell
 python main.py write -i demo01.json --solution 1 -d 0
@@ -464,7 +468,7 @@ python main.py write -i demo01.json --solution 1 -d 0
 
 - 核对目标化合物、搜索深度和路线编号；
 - 拒绝含阻断反应或不可推荐的路线；
-- 核对独立 GEM 验证结果；
+- 读取可选的独立 GEM 验证结果；没有结果时记录为 `not_run`；
 - 将路线按实际生物合成方向重新编号；
 - 将路线和电子系统信息写入 `design_manifest.json`；
 - 清除与旧路线绑定的主酶、辅助蛋白、CDS、表达、质粒和组装选择。
@@ -969,7 +973,8 @@ python main.py gap -i demo01.json -d 0
 python main.py info -i demo01.json --gap -d 0
 python main.py info -i demo01.json --solution 1 -d 0
 
-# 2. 验证并选择路线
+# 2. 可选验证并选择路线
+# 如果暂时不需要 GEM 验证，可以省略下一行
 python main.py validate -i demo01.json -s 1 -m per -c strict -d 0
 python main.py write -i demo01.json --solution 1 -d 0
 
@@ -1008,6 +1013,7 @@ KEGG 无解后改用 RetroPath 时，路线与主酶阶段为：
 ```powershell
 python main.py gap -i demo01.json --retropath -d 0
 python main.py info -i demo01.json --retropath -d 0
+# 可选：验证选中的统一 solution
 python main.py validate -i demo01.json -s 1 -m per -d 0
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
 # 从上一条命令的“正式Solution编号”中选择 N
