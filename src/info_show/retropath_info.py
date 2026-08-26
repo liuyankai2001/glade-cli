@@ -31,6 +31,7 @@ from src.pathway_analyze.retropath_analyze import (
     REJECTED_ROUTES_FILE_NAME,
 )
 from src.pathway_analyze.retropath_gem_validation import (
+    PASSING_ROUTE_VALIDATION_STATUSES,
     RETROPATH_GEM_VALIDATION_SCHEMA,
     VALIDATION_FLUX_FILE_NAME,
     VALIDATION_MANIFEST_FILE_NAME,
@@ -131,6 +132,7 @@ class _P8Overlay:
     candidate_statuses: Mapping[int, str]
     passing_combinations: Mapping[int, tuple[str, ...]]
     flux_by_candidate_step: Mapping[tuple[int, str], float]
+    cofactor_mode: str = ""
     warning: str = ""
 
 
@@ -672,7 +674,7 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
             {},
             {},
             {},
-            "尚未运行 P8 严格计量和 GEM 验证",
+            warning="尚未运行 P8 计量和 GEM 验证",
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -744,7 +746,7 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
                         )
                         == rank
                         and row.get("validation_status")
-                        == "PASS_STRICT_ROUTE_FLUX"
+                        in PASSING_ROUTE_VALIDATION_STATUSES
                         and str(row.get("combination_id") or "")
                     }
                 )
@@ -767,14 +769,29 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
                     flux_by_step[(rank, str(row.get("step_id") or ""))] = float(
                         row.get("directed_fba_flux") or "nan"
                     )
-        return _P8Overlay("current", statuses, passing, flux_by_step)
+        raw_parameters = manifest.get("parameters")
+        parameters = raw_parameters if isinstance(raw_parameters, Mapping) else {}
+        return _P8Overlay(
+            "current",
+            statuses,
+            passing,
+            flux_by_step,
+            cofactor_mode=str(
+                parameters.get("cofactor_mode")
+                or (
+                    "strict_l1"
+                    if parameters.get("strict_cofactor_mode")
+                    else ""
+                )
+            ),
+        )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         return _P8Overlay(
             "stale",
             {},
             {},
             {},
-            f"P8 验证结果已过期或损坏，未应用其状态：{exc}",
+            warning=f"P8 验证结果已过期或损坏，未应用其状态：{exc}",
         )
 
 
@@ -1049,6 +1066,8 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
             rank,
             "未验证",
         )
+        route_summary["P8GEM状态"] = route_summary["P8严格GEM状态"]
+        route_summary["P8辅因子模式"] = overlay.cofactor_mode or "未验证"
         route_summary["P8可行计量假设数"] = len(
             overlay.passing_combinations.get(rank, tuple())
         )
@@ -1087,6 +1106,7 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         "候选路线数": len(context.candidate_routes),
         "拒绝路线数": len(context.rejected_routes),
         "P8验证状态": overlay.state,
+        "P8辅因子模式": overlay.cofactor_mode or "未验证",
         "候选路线摘要": route_summaries,
         "拒绝原因统计": _rejection_summary(context.rejected_routes),
         "警告": _unique([
@@ -1145,6 +1165,8 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
     overlay = _p8_overlay(context)
     common["P8验证状态"] = overlay.state
     common["P8严格GEM状态"] = overlay.candidate_statuses.get(rank, "未验证")
+    common["P8GEM状态"] = common["P8严格GEM状态"]
+    common["P8辅因子模式"] = overlay.cofactor_mode or "未验证"
     common["P8可行计量假设"] = list(
         overlay.passing_combinations.get(rank, tuple())
     )

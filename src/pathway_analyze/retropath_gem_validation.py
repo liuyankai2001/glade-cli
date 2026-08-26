@@ -1,4 +1,4 @@
-"""Strict GEM validation for fully reconstructed RetroPath candidate DAGs."""
+"""Strict/relaxed GEM validation for reconstructed RetroPath candidate DAGs."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from src.pathway_analyze.gem_validation import (
     DEFAULT_FVA_FRACTION,
     DEFAULT_GROWTH_FRACTION,
     DEFAULT_REACTION_UPPER_BOUND,
+    GENERIC_COFACTOR_IDS,
     KeggRestClient,
     add_kegg_reaction,
     apply_growth_floor,
@@ -32,6 +33,7 @@ from src.pathway_analyze.gem_validation import (
     get_primary_objective_reaction_id,
     load_medium,
     normalize_annotation_values,
+    open_generic_cofactor_sinks,
     safe_float,
     sanitize_id,
 )
@@ -62,7 +64,7 @@ from src.pathway_analyze.retropath_stoichiometry import (
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v2"
+RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v3"
 VALIDATION_MANIFEST_FILE_NAME = "validation_manifest.json"
 STOICHIOMETRY_HYPOTHESES_FILE_NAME = "stoichiometry_hypotheses.csv"
 STOICHIOMETRY_TERMS_FILE_NAME = "stoichiometry_terms.csv"
@@ -74,6 +76,13 @@ DEFAULT_MAX_STEP_HYPOTHESES = 8
 DEFAULT_MAX_CANDIDATE_COMBINATIONS = 32
 # Keep the forced-route flux safely above common LP feasibility tolerances.
 DEFAULT_ROUTE_MIN_FLUX = 1e-4
+
+PASS_STRICT_ROUTE_FLUX = "PASS_STRICT_ROUTE_FLUX"
+PASS_RELAXED_ROUTE_FLUX = "PASS_RELAXED_ROUTE_FLUX"
+PASSING_ROUTE_VALIDATION_STATUSES = frozenset({
+    PASS_STRICT_ROUTE_FLUX,
+    PASS_RELAXED_ROUTE_FLUX,
+})
 
 HYPOTHESIS_COLUMNS = (
     "candidate_rank",
@@ -131,6 +140,9 @@ SUMMARY_COLUMNS = (
     "active_route_step_count",
     "blocked_route_step_ids",
     "created_metabolite_ids",
+    "cofactor_mode",
+    "cofactor_relaxed",
+    "opened_generic_compound_ids",
     "issues",
     "combination_truncated",
 )
@@ -407,6 +419,48 @@ def _formula_matches(metabolite: cobra.Metabolite, prop: CompoundProperty) -> bo
     return model_formula == expected_formula and charge is not None and int(charge) == prop.charge
 
 
+def _property_kegg_ids(prop: CompoundProperty) -> tuple[str, ...]:
+    result: set[str] = set()
+    compound_id = str(prop.compound_id or "").strip().upper()
+    if re.fullmatch(r"C\d{5}", compound_id):
+        result.add(compound_id)
+    for xref in prop.xrefs:
+        prefix, separator, identifier = str(xref or "").partition(":")
+        normalized = identifier.strip().upper()
+        if separator and prefix.strip().lower() == "kegg" and re.fullmatch(
+            r"C\d{5}", normalized
+        ):
+            result.add(normalized)
+    return tuple(sorted(result))
+
+
+def _generic_cofactor_ids_for_hypotheses(
+    hypotheses: Sequence[CompletedReactionHypothesis],
+) -> tuple[str, ...]:
+    return tuple(sorted({
+        compound_id
+        for hypothesis in hypotheses
+        for term in hypothesis.terms
+        for compound_id in _property_kegg_ids(term.compound)
+        if compound_id in GENERIC_COFACTOR_IDS
+    }))
+
+
+def _generic_cofactor_ids_for_reaction(
+    reaction: cobra.Reaction,
+) -> tuple[str, ...]:
+    return tuple(sorted({
+        normalized
+        for metabolite in reaction.metabolites
+        for value in normalize_annotation_values(
+            (metabolite.annotation or {}).get("kegg.compound")
+        )
+        if (
+            normalized := str(value).strip().upper().removeprefix("CPD:")
+        ) in GENERIC_COFACTOR_IDS
+    }))
+
+
 class _MetaboliteResolver:
     def __init__(self, model: cobra.Model, compartment: str) -> None:
         self.model = model
@@ -442,6 +496,20 @@ class _MetaboliteResolver:
         )
         return compatible[0] if compatible else None
 
+    @staticmethod
+    def _annotate_kegg_identity(
+        metabolite: cobra.Metabolite,
+        prop: CompoundProperty,
+    ) -> None:
+        identifiers = set(
+            normalize_annotation_values(
+                (metabolite.annotation or {}).get("kegg.compound")
+            )
+        )
+        identifiers.update(_property_kegg_ids(prop))
+        if identifiers:
+            metabolite.annotation["kegg.compound"] = sorted(identifiers)
+
     def resolve(self, prop: CompoundProperty) -> cobra.Metabolite:
         candidates: list[cobra.Metabolite] = []
         if prop.source_mnxm_id:
@@ -460,6 +528,7 @@ class _MetaboliteResolver:
                 candidates.extend(self.by_chebi.get(identifier.upper(), []))
         selected = self._choose(candidates, prop)
         if selected is not None:
+            self._annotate_kegg_identity(selected, prop)
             return selected
         metabolite_id = sanitize_id(
             f"p8_{prop.compound_id}_{self.compartment}"
@@ -480,8 +549,7 @@ class _MetaboliteResolver:
             metabolite.annotation["metanetx.chemical"] = prop.source_mnxm_id
         if prop.inchikey:
             metabolite.annotation["inchi_key"] = prop.inchikey
-        if re.fullmatch(r"C\d{5}", prop.compound_id):
-            metabolite.annotation["kegg.compound"] = prop.compound_id
+        self._annotate_kegg_identity(metabolite, prop)
         self.model.add_metabolites([metabolite])
         self.created.add(metabolite.id)
         return metabolite
@@ -582,7 +650,13 @@ def _validate_combination(
     minimum_flux: float,
     run_fva: bool,
     combination_truncated: bool,
+    cofactor_mode: str = "strict_l1",
 ) -> _ModelValidation:
+    normalized_cofactor_mode = str(cofactor_mode or "").strip().lower()
+    if normalized_cofactor_mode == "strict":
+        normalized_cofactor_mode = "strict_l1"
+    if normalized_cofactor_mode not in {"strict_l1", "relaxed"}:
+        raise ValueError("cofactor_mode must be strict_l1 or relaxed")
     model = base_model.copy()
     resolver = _MetaboliteResolver(model, DEFAULT_COMPARTMENT)
     reaction_index = build_kegg_reaction_index(model)
@@ -590,6 +664,10 @@ def _validate_combination(
     hypothesis_by_step = {item.step_id: item for item in hypotheses}
     route_reactions: list[_RouteReaction] = []
     issues: list[str] = []
+    generic_compounds_in_route = set(
+        _generic_cofactor_ids_for_hypotheses(hypotheses)
+    )
+    opened_generic_compounds: tuple[str, ...] = tuple()
     combination_id = _combination_id(candidate_id, hypotheses)
     try:
         for row in sorted(
@@ -632,8 +710,11 @@ def _validate_combination(
                     direction,
                     minimum_flux,
                 )
+                generic_compounds_in_route.update(
+                    _generic_cofactor_ids_for_reaction(reaction)
+                )
             else:
-                reaction, _, _, issue = add_kegg_reaction(
+                reaction, _, generic_compounds, issue = add_kegg_reaction(
                     model,
                     route_scope=sanitize_id(combination_id),
                     reaction_id=reaction_id,
@@ -647,8 +728,29 @@ def _validate_combination(
                     raise ValueError(issue or f"cannot add KEGG reaction {reaction_id}")
                 reaction.lower_bound = max(reaction.lower_bound, minimum_flux)
                 sign = 1.0
+                generic_compounds_in_route.update(generic_compounds)
             route_reactions.append(
                 _RouteReaction(step_index, step_id, source, reaction.id, sign)
+            )
+
+        if normalized_cofactor_mode == "relaxed":
+            opened_generic_compounds = open_generic_cofactor_sinks(
+                model=model,
+                compound_ids=generic_compounds_in_route,
+                client=kegg_client,
+                metabolite_index=build_kegg_metabolite_index(model),
+                preferred_compartment=DEFAULT_COMPARTMENT,
+                bound=DEFAULT_REACTION_UPPER_BOUND,
+            )
+            if opened_generic_compounds:
+                issues.append(
+                    "relaxed cofactor mode opened generic carrier sinks: "
+                    + ";".join(opened_generic_compounds)
+                )
+        elif generic_compounds_in_route:
+            issues.append(
+                "strict_l1 cofactor mode left generic carriers closed: "
+                + ";".join(sorted(generic_compounds_in_route))
             )
 
         target_property = _property_for_target(target, known_properties, hypotheses)
@@ -762,7 +864,11 @@ def _validate_combination(
         elif blocked:
             validation_status = "FAIL_ROUTE_STEP_NO_FLUX"
         else:
-            validation_status = "PASS_STRICT_ROUTE_FLUX"
+            validation_status = (
+                PASS_RELAXED_ROUTE_FLUX
+                if normalized_cofactor_mode == "relaxed"
+                else PASS_STRICT_ROUTE_FLUX
+            )
         row = {
             "candidate_rank": candidate_rank,
             "candidate_id": candidate_id,
@@ -784,6 +890,13 @@ def _validate_combination(
             "active_route_step_count": len(route_reactions) - len(blocked),
             "blocked_route_step_ids": ";".join(blocked),
             "created_metabolite_ids": ";".join(sorted(resolver.created)),
+            "cofactor_mode": normalized_cofactor_mode,
+            "cofactor_relaxed": str(
+                normalized_cofactor_mode == "relaxed"
+            ).lower(),
+            "opened_generic_compound_ids": ";".join(
+                opened_generic_compounds
+            ),
             "issues": " | ".join(issues),
             "combination_truncated": str(combination_truncated).lower(),
         }
@@ -813,6 +926,13 @@ def _validate_combination(
                     str(row.get("step_id") or "") for row in steps
                 ),
                 "created_metabolite_ids": ";".join(sorted(resolver.created)),
+                "cofactor_mode": normalized_cofactor_mode,
+                "cofactor_relaxed": str(
+                    normalized_cofactor_mode == "relaxed"
+                ).lower(),
+                "opened_generic_compound_ids": ";".join(
+                    opened_generic_compounds
+                ),
                 "issues": str(exc),
                 "combination_truncated": str(combination_truncated).lower(),
             },
@@ -866,18 +986,22 @@ def _hypothesis_rows(
 
 
 def validate_retropath_candidates(config: Any) -> dict[str, Any]:
-    """Reconstruct and strictly validate selected P5 candidates."""
+    """Reconstruct and validate selected P5 candidates in strict/relaxed mode."""
 
     if str(getattr(config, "validation_mode", "per")).strip().lower() not in {
         "per",
         "per-solution",
     }:
         raise ValueError("RetroPath validation supports only per-candidate mode")
-    if str(getattr(config, "validation_cofactor_mode", "strict")).strip().lower() not in {
-        "strict",
-        "strict_l1",
-    }:
-        raise ValueError("RetroPath validation supports only strict cofactor mode")
+    cofactor_mode = str(
+        getattr(config, "validation_cofactor_mode", "strict")
+    ).strip().lower()
+    if cofactor_mode == "strict":
+        cofactor_mode = "strict_l1"
+    if cofactor_mode not in {"strict_l1", "relaxed"}:
+        raise ValueError(
+            "RetroPath validation cofactor mode must be strict or relaxed"
+        )
     inputs = _load_candidate_inputs(config)
     available_ranks = [
         _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1)
@@ -1031,6 +1155,11 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
                             str(item.get("step_id") or "") for item in steps
                         ),
                         "created_metabolite_ids": "",
+                        "cofactor_mode": cofactor_mode,
+                        "cofactor_relaxed": str(
+                            cofactor_mode == "relaxed"
+                        ).lower(),
+                        "opened_generic_compound_ids": "",
                         "issues": "one or more RP2 steps lack a complete balanced template",
                         "combination_truncated": "false",
                     }
@@ -1053,16 +1182,26 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
                     minimum_flux=DEFAULT_ROUTE_MIN_FLUX,
                     run_fva=run_fva,
                     combination_truncated=combination_truncated,
+                    cofactor_mode=cofactor_mode,
                 )
                 validations.append(validation)
             passed = any(
-                item.row["validation_status"] == "PASS_STRICT_ROUTE_FLUX"
+                item.row["validation_status"]
+                in PASSING_ROUTE_VALIDATION_STATUSES
                 for item in validations
             )
             candidate_statuses[rank] = (
-                "PASS_STRICT_HYPOTHESIS_EXISTS"
+                (
+                    "PASS_RELAXED_HYPOTHESIS_EXISTS"
+                    if cofactor_mode == "relaxed"
+                    else "PASS_STRICT_HYPOTHESIS_EXISTS"
+                )
                 if passed
-                else "FAIL_STRICT_GEM"
+                else (
+                    "FAIL_RELAXED_GEM"
+                    if cofactor_mode == "relaxed"
+                    else "FAIL_STRICT_GEM"
+                )
             )
             for validation in validations:
                 row = dict(validation.row)
@@ -1112,7 +1251,9 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "parameters": {
             "growth_fraction": DEFAULT_GROWTH_FRACTION,
             "route_minimum_flux": DEFAULT_ROUTE_MIN_FLUX,
-            "strict_cofactor_mode": True,
+            "cofactor_mode": cofactor_mode,
+            "cofactor_relaxed": cofactor_mode == "relaxed",
+            "strict_cofactor_mode": cofactor_mode == "strict_l1",
             "max_step_hypotheses": DEFAULT_MAX_STEP_HYPOTHESES,
             "max_candidate_combinations": DEFAULT_MAX_CANDIDATE_COMBINATIONS,
             "fva_run": run_fva,
@@ -1139,7 +1280,7 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         },
         "artifacts": artifact_records,
         "formal_promotion_allowed": any(
-            row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
+            row.get("validation_status") in PASSING_ROUTE_VALIDATION_STATUSES
             for row in summary_rows
         ),
         "stereo_review_required": any(
@@ -1147,7 +1288,7 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             for row in summary_rows
         ),
         "stereo_policy": (
-            "strict GEM feasibility does not resolve missing stereochemistry; "
+            "GEM feasibility does not resolve missing stereochemistry; "
             "affected routes remain eligible only with manual-review metadata"
         ),
     }
@@ -1167,6 +1308,8 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "expansion_depth": inputs.depth,
         "selected_candidate_ranks": list(selected_ranks),
         "candidate_statuses": manifest["candidate_statuses"],
+        "cofactor_mode": cofactor_mode,
+        "cofactor_relaxed": cofactor_mode == "relaxed",
         "validation_dir": str(output_dir.resolve()),
         "validation_manifest": str(manifest_path.resolve()),
         "validation_manifest_sha256": manifest_sha256,
@@ -1197,6 +1340,9 @@ def run_retropath_validation(config: Any) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_MAX_CANDIDATE_COMBINATIONS",
     "DEFAULT_ROUTE_MIN_FLUX",
+    "PASS_RELAXED_ROUTE_FLUX",
+    "PASS_STRICT_ROUTE_FLUX",
+    "PASSING_ROUTE_VALIDATION_STATUSES",
     "RETROPATH_GEM_VALIDATION_SCHEMA",
     "run_retropath_validation",
     "validate_retropath_candidates",

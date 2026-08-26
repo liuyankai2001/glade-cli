@@ -1,4 +1,4 @@
-"""P8-gated enzyme candidate retrieval for isolated RetroPath routes."""
+"""Enzyme candidate retrieval for optionally P8-validated RetroPath routes."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 )
 from src.pathway_analyze.retropath_gem_validation import (
     HYPOTHESIS_COLUMNS,
+    PASSING_ROUTE_VALIDATION_STATUSES,
     RETROPATH_GEM_VALIDATION_SCHEMA,
     STOICHIOMETRY_HYPOTHESES_FILE_NAME,
     STOICHIOMETRY_TERMS_FILE_NAME,
@@ -409,10 +410,13 @@ def _load_p9_inputs(config: Any) -> _ValidatedP9Inputs:
     statuses = manifest.get("candidate_statuses")
     if (
         not isinstance(statuses, Mapping)
-        or statuses.get(str(rank)) != "PASS_STRICT_HYPOTHESIS_EXISTS"
+        or str(statuses.get(str(rank)) or "") not in {
+            "PASS_STRICT_HYPOTHESIS_EXISTS",
+            "PASS_RELAXED_HYPOTHESIS_EXISTS",
+        }
     ):
         raise ValueError(
-            f"RetroPath candidate {rank} has no P8 strict GEM-passing hypothesis"
+            f"RetroPath candidate {rank} has no P8 GEM-passing hypothesis"
         )
 
     summary_path = _verified_p8_artifact(
@@ -436,7 +440,7 @@ def _load_p9_inputs(config: Any) -> _ValidatedP9Inputs:
         for row in summary
         if _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1) == rank
         and row.get("candidate_id") == candidate_id
-        and row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
+        and row.get("validation_status") in PASSING_ROUTE_VALIDATION_STATUSES
         and str(row.get("combination_id") or "").strip()
     )
     if not passing:

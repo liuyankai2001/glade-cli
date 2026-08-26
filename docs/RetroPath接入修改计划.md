@@ -213,7 +213,7 @@ P7 验收记录：
 - 7 项 P7 离线测试通过；当前 P1–P7 RetroPath 测试模块共 95 项通过；全仓库回归
   442 项通过、2 项需显式本地服务地址的测试按设计跳过。
 
-### P8 计量补全与严格 GEM 验证（2026-08-25 更新）
+### P8 计量补全与 strict/relaxed GEM 验证（2026-08-26 更新）
 
 P8 已实现 RR02 来源模板驱动的 RP2 计量/辅因子补全，并将 RetroPath solution 接入
 严格 COBRA/GEM 验证。P8 是可选覆盖层：不改变 P5 候选，不改变 solution 数量或编号。
@@ -230,8 +230,9 @@ P8 验收记录：
   变化恢复 `MNXM2/H2O` 并得到唯一元素/电荷平衡假设；
 - 每个 RP2 步骤最多保留 8 个完整假设，每条候选最多验证 32 个组合，所有裁剪均
   审计；不完整公式、R-group、transport、未平衡或无法对齐的来源模板被拒绝；
-- 严格 GEM 同时要求至少 10% 基线生长、目标正通量以及候选 DAG 每一步按指定方向
-  至少 `1e-4` 通量；不会开放 generic cofactor sink，也不会因底盘旁路产生假通过；
+- strict GEM 同时要求至少 10% 基线生长、目标正通量以及候选 DAG 每一步按指定方向
+  至少 `1e-4` 通量，不开放 generic cofactor sink；relaxed 保持相同计量、增长、目标
+  和逐步通量约束，但为路线实际涉及的通用载体开放可审计 sink；
 - `--retropath-candidates` 不带编号时验证全部候选，带编号时只验证指定候选；原
   KEGG `validate` 分支不变，RetroPath v1 拒绝 pooled/both 和 relaxed 模式；
 - 输出计量假设、逐项参与物、拒绝原因、严格验证摘要、逐步通量和带哈希 manifest；
@@ -288,7 +289,7 @@ P10 已取消主酶阶段的独立 RetroPath 路线入口，并将“严格通�
   设计，但 manifest 固定保留 `review_required`、验证状态和显式风险信息；
 - RP2 主酶检索在未验证状态即可使用来源 UniProt/EC/Rhea、核心 Reaction SMILES 和
   所有 RR02 Rule SMARTS；P8 通过后可额外使用完整计量 Reaction SMILES/精确映射；
-- 2026-08-26 调整后的全仓库测试为 496 项通过。
+- 2026-08-26 strict/relaxed 调整后的全仓库测试为 498 项通过。
 
 ### P11.1 隐藏 KEGG 反应恢复评测（2026-08-25 更新）
 
@@ -368,7 +369,7 @@ P11.1 的评测工具、数据契约和 12 例试运行集已实现：
 | P5 路线翻转与拼接 | P0 | 构建完整混合候选路线 | 将 Target→sink 分支图翻转为 sink→Target；恢复全部 expansion witness；合并共享步骤并限制 Top-K | 新增 retropath_merge.py、retropath_analyze.py；复用 materialize_frontier_solution | candidate_routes.csv、candidate_steps.csv、rejected_routes.csv | 13 项 P5 测试通过；depth 0 无 prefix、depth N 多 sink DAG 和方向正确、不伪造 KEGG ID | P2、P4 | 已完成 |
 | P6 CLI、编排与物化 | P0 | 暴露显式开关并生成统一路线 | gap 增加 <code>--retropath</code>，默认 False；增加本地服务、规则、步数和超时配置；不自动 expand；P5 后物化全部 Top-K | 新增 retropath_pipeline.py、retropath_materialization.py；修改 src/cli/commands/gap.py、src/config/run_config.py | 两种搜索方式、pipeline_result.json、solution_materialization.json、统一 solution | 不加参数时直接调用原 KEGG 入口；depth 0/N 符合约定；KEGG slice 保留且 Top-K 编号稳定 | 单次授权已使用 | 已完成 |
 | P7 候选信息展示 | P1 | 让用户看懂命中与风险 | 增加独立 info 摘要、候选 DAG 和单步视图；显示命中 Cxxxxx、depth、KEGG prefix、RP2 suffix、规则证据、拒绝原因和验证风险 | 新增 retropath_info.py；扩展 info CLI | 中文 JSON 摘要、候选详情和单步详情 | 7 项 P7 测试通过；校验 schema、目标/depth、SHA-256、数量和 DAG 关系 | P5、P6；单次 CLI/.gitignore 授权已使用 | 已完成 |
-| P8 计量与 GEM 验证 | P1 | 判断完整路线是否严格可行 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、拒绝原因、严格验证与逐步通量 | P1–P8 定向 107 项、全仓库 454 项通过；真实来源模板冒烟通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
+| P8 计量与 GEM 验证 | P1 | 以 strict 或 relaxed 判断完整路线可行性 | 固定 MNXref v3.0；按 RR02 来源模板恢复共底物/辅因子；校验分子式、电荷和平衡；强制完整候选 DAG 同时承载通量；relaxed 只开放路线涉及的通用载体 | 新增 mnxref/stoichiometry/retropath GEM 模块；扩展 validate 和 P7 | 计量假设、参与项、模式、开放载体、验证与逐步通量 | strict/relaxed 对照、provenance、防篡改和全仓库回归通过 | P5–P7；数据/CLI/.gitignore 单次授权已使用 | 已完成 |
 | P9 SelenzymeRF 与主酶选择 | P1 | 为预测混合路线生成候选酶 | raw step 可直接使用全部 RR02 替代规则证据；P8 后增加 hypothesis/完整计量证据；精确反应、来源模板、完整/核心 Reaction SMILES、Rule SMARTS 分级检索；结构命中只供人工复核 | 新增 RetroPath enzyme selection；扩展 Selenzyme client、main-enzyme CLI 和 P7 | requirements、Top-N/审计候选、Selenzyme 证据、带哈希 selection manifest | 未验证/已验证身份均可进入统一主酶检索；多规则不重复计算必需步骤；相似度 1 不误判 | P8 可选；CLI/.gitignore 单次授权已使用 | 已完成 |
 | P10 统一流程 | P1 | 将全部 Top-K 混合路线纳入现有 solution、manifest 和主酶流程 | P5 后立即物化；P8 只覆盖状态/证据；materialization 哈希提交；manifest 自动分流步骤；公共组合器支持 manual_review | src/pathway_analyze、src/write_manifest、src/main_protein_selection、src/info_show | 统一混合 solution、可选验证覆盖、统一主酶 artifacts 和带 pending review 的 manifest | KEGG 编号/行为不变；P8 前/通过/失败均可写；solution ID 不变；篡改 fail closed；全仓库 496 项通过 | P5、P9，P8 可选 | 已完成 |
 | P11 回测与阈值校准 | P1 | 量化假阳性和收益 | 隐藏已知 KEGG 反应做恢复测试；排除来源规则做 promiscuity 测试；加入青蒿素非酶促边界案例 | tests、docs | 回测报告和参数建议 | top-k 恢复、平衡、GEM、酶证据通过率可复现 | P5 起可分批实施 | 进行中：P11.1 基线已完成，P11.2+ 待实施 |
@@ -564,7 +565,7 @@ P5 返回三个候选文件的 SHA-256、候选/拒绝数量和 `RetroPathMergeR
 | 反应有效性 | 非 no-op、结构可解析、方向明确 | 步骤拒绝 |
 | 共底物/辅因子 | P8 严格验证时必须可恢复；raw solution 明确标记 core_only | P8 失败，原预测路线保留 |
 | 元素/电荷平衡 | P8 严格 GEM 前必须通过 | P8 失败，原预测路线保留 |
-| GEM | 只有 strict_l1 通过才标记 passed | failed/not_run 都可写，但不得标记为已验证 |
+| GEM | strict_l1 或 relaxed 可分别标记通过，验证模式必须保留 | relaxed 通过仍附带载体开放风险；failed/not_run 也可写 |
 | 酶证据 | 精确反应、规则来源或 SelenzymeRF 结构相似检索至少一种有效 | 无候选时主酶组合不完整，路线仍保留 |
 | 非酶促步骤 | 允许标记 nonenzymatic，不得强制选主酶 | 进入工艺/人工复核 |
 | 人工复核 | 含 RP2 步骤时默认需要 | 可继续设计，但不得表述为已复核或已实验验证 |

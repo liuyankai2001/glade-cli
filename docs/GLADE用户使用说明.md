@@ -336,7 +336,7 @@ python main.py write -i demo01.json --solution N -d 0
 ```
 
 未运行 P8 时，路线状态为 `not_run/core_only/not_run`，manifest 会保留
-`review_required=true` 和“严格 GEM 尚未运行”的警告。
+`review_required=true` 和“GEM 验证尚未运行”的警告。
 
 首次使用 P8 前安装与 RR02 同版本的 MNXref v3.0 子集：
 
@@ -356,15 +356,23 @@ uv run python -m src.pathway_analyze.retropath_mnxref status
 python main.py validate -i demo01.json --retropath-candidates -d 0
 ```
 
+使用 relaxed 辅因子模式诊断全部候选：
+
+```powershell
+python main.py validate -i demo01.json --retropath-candidates -c relaxed -d 0
+```
+
 只验证候选 1 和 2：
 
 ```powershell
 python main.py validate -i demo01.json --retropath-candidates 1 2 -d 0
 ```
 
-RetroPath 验证只支持独立候选和严格辅因子模式；不能使用 `-m pooled`、`-m both` 或
-`-c relaxed`。系统只使用 RR02 明确指向的 MNXR/KEGG/Rhea 来源模板，不会根据 EC
-或元素差额自行猜测 NAD/NADP 等辅因子。
+RetroPath 验证只支持独立候选，不能使用 `-m pooled` 或 `-m both`；辅因子模式支持
+`-c strict`（默认）和 `-c relaxed`。两种模式都只使用 RR02 明确指向的
+MNXR/KEGG/Rhea 来源模板补全计量，不会根据 EC 或元素差额自行猜测辅因子。
+`relaxed` 仅为路线实际涉及的通用载体建立可审计 sink，并在结果和 manifest 中记录
+`cofactor_relaxed=true` 与 `opened_generic_compound_ids`。
 
 主要输出：
 
@@ -940,10 +948,10 @@ outputs/C00811/final_assembly/
 | 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
 
-RetroPath 候选视图读取 `depthN/retropath/` 下的隔离证据；只有通过 P8 严格验证并写入
-promotion manifest 的组合才会成为正式 solution。视图会校验 P6/P8 版本、目标、
-depth 和文件 SHA-256；出现“候选文件校验失败”时应重新运行同一 depth 的
-`gap --retropath` 和 `validate --retropath-candidates`，不要手动修改 CSV。
+RetroPath 候选视图读取 `depthN/retropath/` 下的证据；全部 Top-K 物化后即可成为
+统一 solution，P8 strict/relaxed 验证均为可选覆盖证据。视图会校验 P6/P8 版本、
+目标、depth 和文件 SHA-256；出现“候选文件校验失败”时应重新运行同一 depth 的
+`gap --retropath`，需要验证时再运行 `validate --retropath-candidates`，不要手动修改 CSV。
 
 失败的 RetroPath 运行也可以用 `info --retropath` 查看失败阶段和原因；只有成功且
 存在候选时才能使用 `info --retropath-candidate N`。该参数仅用于查看搜索候选，

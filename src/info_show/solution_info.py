@@ -48,7 +48,10 @@ STEP_FIELD_NAMES = {
     "prediction_review_required": "预测风险待复核",
     "validation_status": "RetroPath验证状态",
     "stoichiometry_status": "计量补全状态",
-    "gem_status": "严格GEM状态",
+    "gem_status": "GEM验证状态",
+    "cofactor_mode": "辅因子验证模式",
+    "cofactor_relaxed": "是否放宽通用载体",
+    "opened_generic_compound_ids": "已开放通用载体",
 }
 
 FIELD_VALUE_NAMES = {
@@ -181,7 +184,7 @@ def _step_overview(
         result.update({
             "RetroPath验证状态": row.get("validation_status"),
             "计量补全状态": row.get("stoichiometry_status"),
-            "严格GEM状态": row.get("gem_status"),
+            "GEM验证状态": row.get("gem_status"),
         })
     return result
 
@@ -377,7 +380,12 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         common.update({
             "RetroPath验证状态": summary.get("validation_status"),
             "计量补全状态": summary.get("stoichiometry_status"),
-            "严格GEM状态": summary.get("gem_status"),
+            "GEM验证状态": summary.get("gem_status"),
+            "辅因子验证模式": summary.get("cofactor_mode"),
+            "是否放宽通用载体": bool(summary.get("cofactor_relaxed")),
+            "已开放通用载体": _split_values(
+                summary.get("opened_generic_compound_ids")
+            ),
             "验证风险": _split_values(summary.get("validation_issue")),
         })
     if selected_step_index is not None:

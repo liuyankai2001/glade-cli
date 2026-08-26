@@ -43,6 +43,7 @@ from src.pathway_analyze.retropath_promotion import (
 )
 from src.pathway_analyze.retropath_gem_validation import (
     HYPOTHESIS_COLUMNS,
+    PASSING_ROUTE_VALIDATION_STATUSES,
     RETROPATH_GEM_VALIDATION_SCHEMA,
     STOICHIOMETRY_HYPOTHESES_FILE_NAME,
     STOICHIOMETRY_TERMS_FILE_NAME,
@@ -63,6 +64,9 @@ _SUMMARY_STATE_COLUMNS = (
     "validation_status",
     "stoichiometry_status",
     "gem_status",
+    "cofactor_mode",
+    "cofactor_relaxed",
+    "opened_generic_compound_ids",
     "validation_issue",
 )
 _STEP_STATE_COLUMNS = (
@@ -72,12 +76,16 @@ _STEP_STATE_COLUMNS = (
 )
 
 _NOT_VALIDATED_WARNING = (
-    "Strict GEM validation has not been run; this predicted route requires "
+    "GEM validation has not been run; this predicted route requires "
     "manual review before experimental use."
 )
 _VALIDATION_FAILED_WARNING = (
-    "Strict GEM validation did not pass; this predicted route remains "
+    "GEM validation did not pass; this predicted route remains "
     "writable but requires manual review before experimental use."
+)
+_RELAXED_VALIDATION_WARNING = (
+    "Relaxed cofactor validation opened generic carrier sinks; feasibility "
+    "is diagnostic and requires manual review before experimental use."
 )
 
 
@@ -342,6 +350,9 @@ def _raw_solution_rows(
         "validation_status": "not_run",
         "stoichiometry_status": "core_only",
         "gem_status": "not_run",
+        "cofactor_mode": "not_run",
+        "cofactor_relaxed": "false",
+        "opened_generic_compound_ids": "",
         "validation_issue": _NOT_VALIDATED_WARNING,
         "combination_truncated": "false",
         "upstream_enumeration_truncated": str(
@@ -453,6 +464,9 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
                     "status": "not_run",
                     "stoichiometry_status": "core_only",
                     "gem_status": "not_run",
+                    "cofactor_mode": "not_run",
+                    "cofactor_relaxed": False,
+                    "opened_generic_compound_ids": [],
                     "combination_id": "",
                     "stoichiometry_hypothesis_ids": [],
                     "issues": [_NOT_VALIDATED_WARNING],
@@ -838,6 +852,9 @@ def apply_retropath_validation_overlay(
                     "status": "not_run",
                     "stoichiometry_status": "core_only",
                     "gem_status": "not_run",
+                    "cofactor_mode": "not_run",
+                    "cofactor_relaxed": False,
+                    "opened_generic_compound_ids": [],
                     "combination_id": "",
                     "stoichiometry_hypothesis_ids": [],
                     "issues": [_NOT_VALIDATED_WARNING],
@@ -853,14 +870,30 @@ def apply_retropath_validation_overlay(
             ]
             passing = [
                 row for row in candidate_rows
-                if row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
+                if row.get("validation_status")
+                in PASSING_ROUTE_VALIDATION_STATUSES
                 and str(row.get("combination_id") or "").strip()
             ]
+            validation_mode = str(
+                (candidate_rows[0].get("cofactor_mode") if candidate_rows else "")
+                or p8_manifest.get("parameters", {}).get("cofactor_mode")
+                or "strict_l1"
+            ).strip().lower()
+            cofactor_relaxed = validation_mode == "relaxed"
+            opened_generic_compounds = sorted({
+                compound_id
+                for row in candidate_rows
+                for compound_id in _split(
+                    row.get("opened_generic_compound_ids")
+                )
+            })
             issues = tuple(dict.fromkeys(
                 str(row.get("issues") or "").strip()
                 for row in candidate_rows
                 if str(row.get("issues") or "").strip()
             ))
+            if cofactor_relaxed:
+                issues = tuple(dict.fromkeys((*issues, _RELAXED_VALIDATION_WARNING)))
             if passing:
                 selected = passing[0]
                 status = "passed"
@@ -899,6 +932,9 @@ def apply_retropath_validation_overlay(
                 "status": status,
                 "stoichiometry_status": stoichiometry_status,
                 "gem_status": gem_status,
+                "cofactor_mode": validation_mode,
+                "cofactor_relaxed": cofactor_relaxed,
+                "opened_generic_compound_ids": opened_generic_compounds,
                 "combination_id": combination_id,
                 "stoichiometry_hypothesis_ids": hypothesis_ids,
                 "issues": list(issues),
@@ -920,10 +956,21 @@ def apply_retropath_validation_overlay(
         row["validation_status"] = validation["status"]
         row["stoichiometry_status"] = validation["stoichiometry_status"]
         row["gem_status"] = validation["gem_status"]
+        row["cofactor_mode"] = validation["cofactor_mode"]
+        row["cofactor_relaxed"] = str(
+            validation["cofactor_relaxed"]
+        ).lower()
+        row["opened_generic_compound_ids"] = ";".join(
+            validation["opened_generic_compound_ids"]
+        )
         row["validation_issue"] = "; ".join(validation["issues"])
         row["retropath_combination_id"] = validation["combination_id"]
         if validation["status"] == "passed":
-            row["reaction_resolution_status"] = "predicted_strict_stoichiometry"
+            row["reaction_resolution_status"] = (
+                "predicted_relaxed_stoichiometry"
+                if validation["cofactor_relaxed"]
+                else "predicted_strict_stoichiometry"
+            )
             validated_electron_summary = selected_by_solution[solution_id][2]
             for field, value in validated_electron_summary.items():
                 if field not in {"solution_id", "solution_source"}:

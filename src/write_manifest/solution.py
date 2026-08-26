@@ -42,12 +42,20 @@ RETROPATH_SOLUTION_SUMMARY_FIELDS = (
     "validation_status",
     "stoichiometry_status",
     "gem_status",
+    "cofactor_mode",
+    "cofactor_relaxed",
+    "opened_generic_compound_ids",
     "validation_issue",
     "promotion_id",
     "combination_truncated",
     "upstream_enumeration_truncated",
     "candidate_top_k_truncated",
 )
+
+RETROPATH_PASS_VALIDATION_STATUSES = frozenset({
+    "PASS_STRICT_ROUTE_FLUX",
+    "PASS_RELAXED_ROUTE_FLUX",
+})
 
 SOLUTION_STEP_FIELDS = (
     "step_index",
@@ -583,6 +591,9 @@ def _select_retropath_materialization_validation(
             "status": "not_run",
             "stoichiometry_status": "core_only",
             "gem_status": "not_run",
+            "cofactor_mode": "not_run",
+            "cofactor_relaxed": False,
+            "opened_generic_compound_ids": [],
             "combination_id": "",
             "stoichiometry_hypothesis_ids": [],
             "issues": [],
@@ -590,10 +601,12 @@ def _select_retropath_materialization_validation(
     normalized: dict[str, Any] = {
         "validation_status": state.get("status", "not_run"),
         "fba_status": state.get("gem_status", "not_run"),
-        "cofactor_mode": (
-            "strict" if state.get("stoichiometry_status") == "completed" else "not_run"
+        "cofactor_mode": state.get("cofactor_mode", "not_run"),
+        "cofactor_relaxed": bool(state.get("cofactor_relaxed", False)),
+        "opened_generic_compound_ids": ";".join(
+            str(item)
+            for item in state.get("opened_generic_compound_ids", [])
         ),
-        "cofactor_relaxed": False,
         "issues": "; ".join(str(item) for item in state.get("issues", [])),
         "retropath_candidate_rank": mapping.get("candidate_rank"),
         "retropath_candidate_id": mapping.get("candidate_id"),
@@ -628,11 +641,11 @@ def _select_retropath_materialization_validation(
         and str(row.get("combination_id") or "").strip()
         == str(state.get("combination_id") or "").strip()
         and str(row.get("validation_status") or "").strip()
-        == "PASS_STRICT_ROUTE_FLUX"
+        in RETROPATH_PASS_VALIDATION_STATUSES
     ]
     if len(matches) != 1:
         raise ValueError(
-            f"RetroPath solution {solution_id} 没有唯一的 P8 严格通过记录"
+            f"RetroPath solution {solution_id} 没有唯一的 P8 通过记录"
         )
     row = matches[0]
     normalized.update(
@@ -653,6 +666,11 @@ def _select_retropath_materialization_validation(
             ),
             "blocked_route_reaction_ids": row.get("blocked_route_step_ids"),
             "issues": row.get("issues"),
+            "cofactor_mode": row.get("cofactor_mode"),
+            "cofactor_relaxed": row.get("cofactor_relaxed"),
+            "opened_generic_compound_ids": row.get(
+                "opened_generic_compound_ids"
+            ),
             "combination_truncated": row.get("combination_truncated"),
         }
     )
@@ -862,6 +880,13 @@ def write_solution(config: Any) -> dict[str, Any]:
             "stoichiometry_status": state.get("stoichiometry_status", "completed"),
             "gem_status": state.get("gem_status", "passed"),
             "validation_issues": state.get("issues", []),
+            "cofactor_mode": state.get("cofactor_mode", "not_run"),
+            "cofactor_relaxed": bool(
+                state.get("cofactor_relaxed", False)
+            ),
+            "opened_generic_compound_ids": state.get(
+                "opened_generic_compound_ids", []
+            ),
             "materialization_manifest": str(
                 (
                     gap_dir
