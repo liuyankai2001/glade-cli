@@ -185,8 +185,8 @@ python main.py info -i demo01.json --chassis
 
 ## 5. 可选：扩展底盘可达代谢物集合
 
-如果直接使用底盘原始可生成集合找不到路线，可以按 KEGG 反应逐层扩展。扩展深度必须
-大于等于 1：
+如果直接使用底盘原始可生成集合找不到路线，可以按 KEGG 反应逐层扩展。每个定向
+KEGG 反应计一层；同一酶连续催化两个反应仍计两层。扩展深度必须大于等于 1：
 
 ```powershell
 python main.py expand -i demo01.json -d 1
@@ -210,6 +210,20 @@ chassis_expanded_reachable_depth_2.csv
 
 `frontier` 文件只记录该层新增结果；`expanded_reachable` 文件记录截至该深度的累计
 可达集合。
+
+扩展采用 carrier-aware 策略：普通主底物必须全部位于上一层累计集合；P450 还原酶、
+ferredoxin、thioredoxin 等已识别电子载体不阻断主产物，但载体自身不会进入 frontier
+或 RetroPath sink。CSV 和 manifest 会记录电子载体、风险、净变化、辅助角色以及
+`auxiliary_requirements_json`。因此“扩展可达”表示补充相应 KEGG 反应和工程辅助系统后
+可以抵达，不表示底盘天然已经具备这些酶和电子再生能力。
+
+注释为 `first/second/... step of ... reaction` 的 KEGG 条目是多步路线中已经拆分好的
+独立组件反应，每个仍计一层；只有 `three-step reaction (see R...+R...)` 这类汇总条目
+继续被拒绝，避免把多个酶促步骤冒充一层。
+
+扩展策略升级后，旧版 `chassis_forward_expansion.v1` 和
+`chassis_forward_expansion.v2_carrier_aware` 结果不可复用；再次使用对应 depth 前需
+重新执行 `expand -d N`。
 
 查看指定扩展深度：
 

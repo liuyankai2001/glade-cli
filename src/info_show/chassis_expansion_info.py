@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.pathway_analyze.expand_chassis_metabolites import (
+    EXPANSION_RULE_VERSION,
+)
+
 
 def _read_manifest(path: Path) -> dict[str, Any]:
     if not path.is_file():
@@ -44,6 +48,16 @@ def _as_int(value: Any, field: str) -> int:
         raise ValueError(f"{field} 不是有效整数：{value!r}") from exc
 
 
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [
+        item.strip()
+        for item in str(value or "").split(";")
+        if item.strip()
+    ]
+
+
 def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
     """Return a compact Chinese summary for one existing expansion depth."""
 
@@ -54,6 +68,11 @@ def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
     output_dir = Path(config.chassis_output_path).expanduser().resolve()
     manifest_path = output_dir / "chassis_expansion_manifest.json"
     manifest = _read_manifest(manifest_path)
+    if manifest.get("algorithm_version") != EXPANSION_RULE_VERSION:
+        raise ValueError(
+            "底盘扩展结果使用旧版扩展策略，请重新运行 "
+            f"expand -d {requested_depth}"
+        )
     max_depth = _as_int(manifest.get("max_depth", 0), "max_depth")
     if requested_depth > max_depth:
         raise ValueError(
@@ -117,6 +136,15 @@ def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
     )
     if missing_reactions:
         warnings.append(f"本层有 {missing_reactions} 个 KEGG 反应未能加载")
+    carrier_review_count = _as_int(
+        layer.get("carrier_review_required_compound_count", 0),
+        "carrier_review_required_compound_count",
+    )
+    if carrier_review_count:
+        warnings.append(
+            f"本层有 {carrier_review_count} 个新增化合物依赖电子载体，"
+            "需要辅助系统与载体兼容性复核"
+        )
     return {
         "运行成功": True,
         "目标化合物ID": target_id,
@@ -138,6 +166,19 @@ def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
             "eligible_reaction_count",
         ),
         "本层缺失反应数": missing_reactions,
+        "本层载体支持反应数": _as_int(
+            layer.get("carrier_supported_reaction_count", 0),
+            "carrier_supported_reaction_count",
+        ),
+        "本层载体支持化合物数": _as_int(
+            layer.get("carrier_supported_compound_count", 0),
+            "carrier_supported_compound_count",
+        ),
+        "本层载体复核化合物数": carrier_review_count,
+        "本层所需辅助角色": _as_text_list(
+            layer.get("required_auxiliary_roles")
+        ),
+        "本层电子载体": _as_text_list(layer.get("electron_carrier_ids")),
         "警告": warnings,
     }
 

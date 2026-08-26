@@ -137,14 +137,30 @@ def _raw_solution_rows(
         left = _parse_stoichiometry(step.get("substrate_stoichiometry_json"))
         right = _parse_stoichiometry(step.get("product_stoichiometry_json"))
         products = tuple(compound_id for compound_id, _ in right)
-        if len(products) != 1:
-            raise ValueError(f"{step_id} must have exactly one biosynthetic product")
+        if step_source == "kegg_expansion":
+            anchors = set(_split(step.get("sink_anchor_kegg_ids")))
+            anchored_products = tuple(
+                compound_id for compound_id in products if compound_id in anchors
+            )
+            if len(anchored_products) != 1:
+                raise ValueError(
+                    f"{step_id} must have exactly one anchored KEGG product"
+                )
+            primary_product = anchored_products[0]
+        elif step_source == "retropath":
+            if len(products) != 1:
+                raise ValueError(
+                    f"{step_id} must have exactly one RetroPath core product"
+                )
+            primary_product = products[0]
+        else:
+            raise ValueError(f"unsupported hybrid step source: {step_source}")
         precursors = tuple(compound_id for compound_id, _ in left)
         common = {
             "solution_id": solution_id,
             "step_index": step_index,
-            "produced_compound_id": products[0],
-            "produced_compound_name": _safe_compound_name(kegg, products[0]),
+            "produced_compound_id": primary_product,
+            "produced_compound_name": _safe_compound_name(kegg, primary_product),
             "direction": "left_to_right",
             "oxygen_required": "false",
             "thermo_direction": "unknown",

@@ -1,9 +1,11 @@
 """按 KEGG 反应把底盘可提供化合物集合做同步分层扩展。
 
 ``A0`` 来自 GEM/FBA 生成的 ``producible_kegg_compounds.csv``。第 ``n``
-层扩展只允许使用冻结的 ``A(n-1)`` 中全部底物，并把首次生成的化合物记为
-``Fn``；累计集合 ``An = A0 ∪ F1 ... ∪ Fn``。每个新化合物都会保留生成它
-的定向 KEGG 反应，供 gap 搜索命中扩展锚点后恢复完整反应路线。
+层扩展只允许使用冻结的 ``A(n-1)`` 中全部主底物，并把一个 KEGG 反应首次
+生成的化合物记为 ``Fn``；累计集合 ``An = A0 ∪ F1 ... ∪ Fn``。明确识别的
+电子载体不作为主底物或扩展产物，但会保留完整反应、风险和辅助系统需求。
+每个新化合物都会保留生成它的定向 KEGG 反应，供 gap 搜索命中扩展锚点后
+恢复完整反应路线。
 """
 
 from __future__ import annotations
@@ -25,21 +27,25 @@ from src.pathway_analyze.kegg_gap_analyze import (
     KeggRestClient,
     classify_reaction_resolution,
     directional_stoichiometry,
+    format_electron_carrier_net_changes,
+    is_component_step_comment,
     load_endogenous_direction_index,
     make_reaction_option,
     option_is_endogenous,
 )
 
 
-EXPANSION_RULE_VERSION = "chassis_forward_expansion.v1"
+EXPANSION_RULE_VERSION = (
+    "chassis_forward_expansion.v3_component_step_aware"
+)
 COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 FRONTIER_FILE_TEMPLATE = "chassis_frontier_depth_{depth}.csv"
 EXPANDED_FILE_TEMPLATE = "chassis_expanded_reachable_depth_{depth}.csv"
 MANIFEST_FILE_NAME = "chassis_expansion_manifest.json"
 DEFAULT_EXPANSION_PROGRESS_INTERVAL = 250
 
-# 这些 ID 表示未明确指定的电子载体或大分子伙伴。即使它们碰巧出现在 A0，
-# 也不能据此宣称一个具体 KEGG 反应已经具备全部可实现底物。
+# 这些 ID 表示电子载体或大分子伙伴。它们不作为可扩展主底物，也不会进入
+# frontier/sink；反应仍可生成主产物，同时必须携带电子风险和辅助系统需求。
 GENERIC_CARRIER_IDS = frozenset(
     {
         "C00028",  # Acceptor
@@ -69,6 +75,8 @@ EXPANSION_COLUMNS = (
     "bridge_direction",
     "bridge_substrate_ids",
     "bridge_product_ids",
+    "bridge_all_substrate_ids",
+    "bridge_all_product_ids",
     "bridge_is_endogenous",
     "thermo_direction",
     "oxygen_required",
@@ -77,6 +85,15 @@ EXPANSION_COLUMNS = (
     "coa_burden",
     "electron_risk_level",
     "electron_risk_score",
+    "electron_risk_evidence",
+    "electron_carrier_ids",
+    "electron_requirement_classes",
+    "electron_carrier_net_changes",
+    "avoid_if_alternative_exists",
+    "required_auxiliary_roles",
+    "auxiliary_requirement_status",
+    "auxiliary_requirements_json",
+    "carrier_review_required",
     "enzyme_ecs",
     "ko_ids",
 )
@@ -90,6 +107,7 @@ class ForwardExpansionWitness:
     depth: int
     reaction_id: str
     direction: str
+    # 仅包含需要沿扩展 DAG 继续解决的主底物/主产物。
     substrate_compounds: Tuple[str, ...]
     product_compounds: Tuple[str, ...]
     is_endogenous: bool
@@ -102,6 +120,27 @@ class ForwardExpansionWitness:
     electron_risk_score: int
     enzyme_ecs: Tuple[str, ...]
     ko_ids: Tuple[str, ...]
+    # v2 新增字段放在末尾并提供默认值，保持 v1 调用方式可用。
+    # 完整底物/产物保留原始 KEGG 定向计量中的全部 Cxxxxx。
+    all_substrate_compounds: Tuple[str, ...] = ()
+    all_product_compounds: Tuple[str, ...] = ()
+    electron_risk_evidence: Tuple[str, ...] = ()
+    electron_carrier_ids: Tuple[str, ...] = ()
+    electron_requirement_classes: Tuple[str, ...] = ()
+    electron_carrier_net_stoichiometry: Tuple[Tuple[str, float], ...] = ()
+    avoid_if_alternative_exists: bool = False
+    required_auxiliary_roles: Tuple[str, ...] = ()
+    auxiliary_requirement_status: str = "not_required"
+    auxiliary_requirements_json: str = "[]"
+    carrier_review_required: bool = False
+
+    def __post_init__(self) -> None:
+        """为旧构造器补齐完整计量字段。"""
+
+        if not self.all_substrate_compounds:
+            object.__setattr__(self, "all_substrate_compounds", self.substrate_compounds)
+        if not self.all_product_compounds:
+            object.__setattr__(self, "all_product_compounds", self.product_compounds)
 
     @property
     def signature(self) -> Tuple[str, str, str, Tuple[str, ...]]:
@@ -210,6 +249,8 @@ def _witness_to_row(witness: ForwardExpansionWitness) -> Dict[str, Any]:
         "bridge_direction": witness.direction,
         "bridge_substrate_ids": ";".join(witness.substrate_compounds),
         "bridge_product_ids": ";".join(witness.product_compounds),
+        "bridge_all_substrate_ids": ";".join(witness.all_substrate_compounds),
+        "bridge_all_product_ids": ";".join(witness.all_product_compounds),
         "bridge_is_endogenous": witness.is_endogenous,
         "thermo_direction": witness.thermo_direction,
         "oxygen_required": witness.oxygen_required,
@@ -218,12 +259,37 @@ def _witness_to_row(witness: ForwardExpansionWitness) -> Dict[str, Any]:
         "coa_burden": witness.coa_burden,
         "electron_risk_level": witness.electron_risk_level,
         "electron_risk_score": witness.electron_risk_score,
+        "electron_risk_evidence": "; ".join(witness.electron_risk_evidence),
+        "electron_carrier_ids": ";".join(witness.electron_carrier_ids),
+        "electron_requirement_classes": ";".join(
+            witness.electron_requirement_classes
+        ),
+        "electron_carrier_net_changes": format_electron_carrier_net_changes(
+            witness.electron_carrier_net_stoichiometry
+        ),
+        "avoid_if_alternative_exists": witness.avoid_if_alternative_exists,
+        "required_auxiliary_roles": ";".join(witness.required_auxiliary_roles),
+        "auxiliary_requirement_status": witness.auxiliary_requirement_status,
+        "auxiliary_requirements_json": witness.auxiliary_requirements_json,
+        "carrier_review_required": witness.carrier_review_required,
         "enzyme_ecs": ";".join(witness.enzyme_ecs),
         "ko_ids": ";".join(witness.ko_ids),
     }
 
 
 def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
+    net_changes: list[Tuple[str, float]] = []
+    raw_net_changes = row.get("electron_carrier_net_changes")
+    if raw_net_changes is None or (
+        isinstance(raw_net_changes, float) and pd.isna(raw_net_changes)
+    ):
+        raw_net_changes = ""
+    for token in str(raw_net_changes).split(";"):
+        token = token.strip()
+        if not token:
+            continue
+        carrier_id, amount = token.split(":", 1)
+        net_changes.append((carrier_id.strip(), float(amount)))
     return ForwardExpansionWitness(
         product_compound=str(row.get("kegg_id", "")).strip(),
         depth=_as_int(row.get("depth")),
@@ -231,6 +297,8 @@ def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
         direction=str(row.get("bridge_direction", "")).strip(),
         substrate_compounds=_split_ids(row.get("bridge_substrate_ids")),
         product_compounds=_split_ids(row.get("bridge_product_ids")),
+        all_substrate_compounds=_split_ids(row.get("bridge_all_substrate_ids")),
+        all_product_compounds=_split_ids(row.get("bridge_all_product_ids")),
         is_endogenous=_as_bool(row.get("bridge_is_endogenous")),
         thermo_direction=str(row.get("thermo_direction", "neutral")).strip(),
         oxygen_required=_as_bool(row.get("oxygen_required")),
@@ -239,6 +307,23 @@ def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
         coa_burden=_as_float(row.get("coa_burden")),
         electron_risk_level=str(row.get("electron_risk_level", "none")).strip(),
         electron_risk_score=_as_int(row.get("electron_risk_score")),
+        electron_risk_evidence=_split_ids(row.get("electron_risk_evidence")),
+        electron_carrier_ids=_split_ids(row.get("electron_carrier_ids")),
+        electron_requirement_classes=_split_ids(
+            row.get("electron_requirement_classes")
+        ),
+        electron_carrier_net_stoichiometry=tuple(net_changes),
+        avoid_if_alternative_exists=_as_bool(
+            row.get("avoid_if_alternative_exists")
+        ),
+        required_auxiliary_roles=_split_ids(row.get("required_auxiliary_roles")),
+        auxiliary_requirement_status=str(
+            row.get("auxiliary_requirement_status") or "not_required"
+        ).strip(),
+        auxiliary_requirements_json=str(
+            row.get("auxiliary_requirements_json") or "[]"
+        ).strip(),
+        carrier_review_required=_as_bool(row.get("carrier_review_required")),
         enzyme_ecs=_split_ids(row.get("enzyme_ecs")),
         ko_ids=_split_ids(row.get("ko_ids")),
     )
@@ -307,7 +392,12 @@ def _manifest_matches(
         and manifest.get("algorithm_version") == EXPANSION_RULE_VERSION
         and manifest.get("a0_sha256") == a0_sha256
         and manifest.get("direction_policy") == "bidirectional_reject_disfavored"
-        and manifest.get("compound_policy") == "Cxxxxx_strict_all_substrates"
+        and manifest.get("compound_policy")
+        == "Cxxxxx_strict_main_substrates_carrier_aware"
+        and manifest.get("carrier_policy")
+        == "recognized_electron_carriers_nonblocking_not_reachable"
+        and manifest.get("multistep_policy")
+        == "component_steps_allowed_summaries_rejected"
     )
 
 
@@ -395,6 +485,19 @@ def load_expansion_bundle(
         "bridge_reaction_id",
         "bridge_direction",
         "bridge_substrate_ids",
+        "bridge_product_ids",
+        "bridge_all_substrate_ids",
+        "bridge_all_product_ids",
+        "electron_risk_level",
+        "electron_risk_score",
+        "electron_risk_evidence",
+        "electron_carrier_ids",
+        "electron_requirement_classes",
+        "electron_carrier_net_changes",
+        "required_auxiliary_roles",
+        "auxiliary_requirement_status",
+        "auxiliary_requirements_json",
+        "carrier_review_required",
     }
     missing = sorted(required - set(df.columns))
     if missing:
@@ -423,6 +526,93 @@ def load_expansion_bundle(
     )
 
 
+def _carrier_aware_electron_fields(
+    option: Any,
+    *,
+    carrier_ids: Tuple[str, ...],
+    consumed: Sequence[Tuple[str, float]],
+    produced: Sequence[Tuple[str, float]],
+) -> Dict[str, Any]:
+    requirement = option.electron_requirement
+    classified_ids = set(requirement.carrier_ids)
+    unclassified_ids = tuple(
+        carrier_id for carrier_id in carrier_ids if carrier_id not in classified_ids
+    )
+    evidence = list(requirement.evidence)
+    evidence.extend(
+        f"explicit_unclassified_carrier:{carrier_id}"
+        for carrier_id in unclassified_ids
+    )
+    requirement_classes = list(requirement.requirement_classes)
+    if unclassified_ids:
+        requirement_classes.append("unclassified_electron_carrier")
+
+    auxiliary_payload = [
+        {
+            "role": item.role,
+            "necessity": item.necessity,
+            "confidence": item.confidence,
+            "selection_status": item.selection_status,
+            "carrier_ids": list(item.carrier_ids),
+            "evidence": list(item.evidence),
+        }
+        for item in requirement.auxiliary_requirements
+    ]
+    if unclassified_ids:
+        auxiliary_payload.append({
+            "role": "generic_electron_transfer_partner",
+            "necessity": "possibly_required",
+            "confidence": "medium",
+            "selection_status": "pending_user_selection",
+            "carrier_ids": list(unclassified_ids),
+            "evidence": [
+                f"explicit_unclassified_carrier:{carrier_id}"
+                for carrier_id in unclassified_ids
+            ],
+        })
+
+    carrier_net = {carrier_id: 0.0 for carrier_id in carrier_ids}
+    for compound_id, coefficient in consumed:
+        if compound_id in carrier_net:
+            carrier_net[compound_id] -= float(coefficient)
+    for compound_id, coefficient in produced:
+        if compound_id in carrier_net:
+            carrier_net[compound_id] += float(coefficient)
+    risk_score = max(
+        int(requirement.risk_score),
+        2 if unclassified_ids else 0,
+    )
+    return {
+        "carrier_ids": carrier_ids,
+        "requirement_classes": tuple(dict.fromkeys(requirement_classes)),
+        "risk_level": {0: "none", 1: "low", 2: "high"}.get(
+            risk_score,
+            "high",
+        ),
+        "risk_score": risk_score,
+        "evidence": tuple(dict.fromkeys(evidence)),
+        "carrier_net_stoichiometry": tuple(
+            (carrier_id, carrier_net[carrier_id]) for carrier_id in carrier_ids
+        ),
+        "avoid_if_alternative_exists": bool(
+            requirement.avoid_if_alternative_exists or carrier_ids
+        ),
+        "required_auxiliary_roles": tuple(
+            dict.fromkeys(str(item["role"]) for item in auxiliary_payload)
+        ),
+        "auxiliary_requirement_status": (
+            "pending_user_selection" if auxiliary_payload else "not_required"
+        ),
+        "auxiliary_requirements_json": json.dumps(
+            auxiliary_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "carrier_review_required": bool(carrier_ids),
+    }
+
+
 def _reaction_witnesses(
     *,
     reaction: Any,
@@ -434,7 +624,12 @@ def _reaction_witnesses(
     rejection_counts: Counter[str] | None = None,
 ) -> Tuple[ForwardExpansionWitness, ...]:
     resolution = classify_reaction_resolution(reaction)
-    if resolution.is_incomplete or resolution.is_multistep or resolution.hard_blocker:
+    component_step = is_component_step_comment(reaction)
+    if (
+        resolution.is_incomplete
+        or resolution.hard_blocker
+        or (resolution.is_multistep and not component_step)
+    ):
         if rejection_counts is not None:
             rejection_counts[f"resolution:{resolution.reason}"] += 1
         return tuple()
@@ -442,19 +637,41 @@ def _reaction_witnesses(
     witnesses: list[ForwardExpansionWitness] = []
     for direction in ("left_to_right", "right_to_left"):
         consumed, produced = directional_stoichiometry(reaction, direction)
-        substrates = _normalize_id_tuple(compound_id for compound_id, _ in consumed)
-        products = _normalize_id_tuple(compound_id for compound_id, _ in produced)
-        if not substrates or not products:
+        all_substrates = _normalize_id_tuple(
+            compound_id for compound_id, _ in consumed
+        )
+        all_products = _normalize_id_tuple(
+            compound_id for compound_id, _ in produced
+        )
+        if not all_substrates or not all_products:
             if rejection_counts is not None:
                 rejection_counts["empty_substrates_or_products"] += 1
             continue
-        if not all(COMPOUND_ID_PATTERN.fullmatch(item) for item in (*substrates, *products)):
+        if not all(
+            COMPOUND_ID_PATTERN.fullmatch(item)
+            for item in (*all_substrates, *all_products)
+        ):
             if rejection_counts is not None:
                 rejection_counts["non_Cxxxxx_compound"] += 1
             continue
-        if GENERIC_CARRIER_IDS.intersection((*substrates, *products)):
+        carrier_ids = _normalize_id_tuple(
+            GENERIC_CARRIER_IDS.intersection(
+                (*all_substrates, *all_products)
+            )
+        )
+        substrates = tuple(
+            compound_id
+            for compound_id in all_substrates
+            if compound_id not in GENERIC_CARRIER_IDS
+        )
+        products = tuple(
+            compound_id
+            for compound_id in all_products
+            if compound_id not in GENERIC_CARRIER_IDS
+        )
+        if not substrates or not products:
             if rejection_counts is not None:
-                rejection_counts["generic_carrier"] += 1
+                rejection_counts["empty_main_substrates_or_products"] += 1
             continue
         substrate_set = set(substrates)
         if not substrate_set.issubset(available_compounds):
@@ -475,12 +692,18 @@ def _reaction_witnesses(
                 compound_id=product_id,
                 reaction=reaction,
                 direction=direction,
-                ignored_common_compounds=set(),
+                ignored_common_compounds=set(GENERIC_CARRIER_IDS),
             )
             if option.screening.thermo_direction == "disfavored":
                 if rejection_counts is not None:
                     rejection_counts["thermodynamically_disfavored"] += 1
                 continue
+            electron = _carrier_aware_electron_fields(
+                option,
+                carrier_ids=carrier_ids,
+                consumed=consumed,
+                produced=produced,
+            )
             witnesses.append(
                 ForwardExpansionWitness(
                     product_compound=product_id,
@@ -489,6 +712,8 @@ def _reaction_witnesses(
                     direction=direction,
                     substrate_compounds=substrates,
                     product_compounds=products,
+                    all_substrate_compounds=all_substrates,
+                    all_product_compounds=all_products,
                     is_endogenous=option_is_endogenous(
                         option,
                         endogenous_reactions,
@@ -499,8 +724,31 @@ def _reaction_witnesses(
                     nadph_burden=option.screening.nadph_burden,
                     sam_burden=option.screening.sam_burden,
                     coa_burden=option.screening.coa_burden,
-                    electron_risk_level=option.electron_requirement.risk_level,
-                    electron_risk_score=option.electron_requirement.risk_score,
+                    electron_risk_level=electron["risk_level"],
+                    electron_risk_score=electron["risk_score"],
+                    electron_risk_evidence=electron["evidence"],
+                    electron_carrier_ids=electron["carrier_ids"],
+                    electron_requirement_classes=electron[
+                        "requirement_classes"
+                    ],
+                    electron_carrier_net_stoichiometry=electron[
+                        "carrier_net_stoichiometry"
+                    ],
+                    avoid_if_alternative_exists=electron[
+                        "avoid_if_alternative_exists"
+                    ],
+                    required_auxiliary_roles=electron[
+                        "required_auxiliary_roles"
+                    ],
+                    auxiliary_requirement_status=electron[
+                        "auxiliary_requirement_status"
+                    ],
+                    auxiliary_requirements_json=electron[
+                        "auxiliary_requirements_json"
+                    ],
+                    carrier_review_required=electron[
+                        "carrier_review_required"
+                    ],
                     enzyme_ecs=tuple(reaction.enzyme_ecs),
                     ko_ids=tuple(reaction.ko_ids),
                 )
@@ -722,6 +970,30 @@ def ensure_expansion_depth(
         eligible_reaction_count = len(
             {witness.reaction_id for witness in ordered_layer}
         )
+        carrier_witnesses = [
+            witness for witness in ordered_layer if witness.electron_carrier_ids
+        ]
+        carrier_supported_reaction_count = len({
+            witness.reaction_id for witness in carrier_witnesses
+        })
+        carrier_supported_compound_count = len({
+            witness.product_compound for witness in carrier_witnesses
+        })
+        carrier_review_required_compound_count = len({
+            witness.product_compound
+            for witness in ordered_layer
+            if witness.carrier_review_required
+        })
+        layer_auxiliary_roles = sorted({
+            role
+            for witness in ordered_layer
+            for role in witness.required_auxiliary_roles
+        })
+        layer_carrier_ids = sorted({
+            carrier_id
+            for witness in ordered_layer
+            for carrier_id in witness.electron_carrier_ids
+        })
         all_witnesses.extend(ordered_layer)
         available.update(new_frontier)
 
@@ -755,6 +1027,13 @@ def ensure_expansion_depth(
             "frontier_compound_count": len(new_frontier),
             "witness_count": len(ordered_layer),
             "cumulative_compound_count": len(available),
+            "carrier_supported_reaction_count": carrier_supported_reaction_count,
+            "carrier_supported_compound_count": carrier_supported_compound_count,
+            "carrier_review_required_compound_count": (
+                carrier_review_required_compound_count
+            ),
+            "required_auxiliary_roles": layer_auxiliary_roles,
+            "electron_carrier_ids": layer_carrier_ids,
             "rejection_counts": dict(sorted(rejection_counts.items())),
             "prefetch_elapsed_seconds": round(prefetch_elapsed, 3),
             "layer_elapsed_seconds": round(
@@ -769,6 +1048,7 @@ def ensure_expansion_depth(
             f"eligible_reactions={eligible_reaction_count}, "
             f"new_compounds={len(new_frontier)}, "
             f"reaction_witnesses={len(ordered_layer)}, "
+            f"carrier_supported_compounds={carrier_supported_compound_count}, "
             f"cumulative_compounds={len(available)}, "
             f"prefetch={prefetch_elapsed:.1f}s, "
             f"elapsed={time.perf_counter() - layer_started:.1f}s"
@@ -797,7 +1077,12 @@ def ensure_expansion_depth(
         "a0_file": str(base_path.resolve()),
         "max_depth": requested_depth,
         "direction_policy": "bidirectional_reject_disfavored",
-        "compound_policy": "Cxxxxx_strict_all_substrates",
+        "compound_policy": "Cxxxxx_strict_main_substrates_carrier_aware",
+        "carrier_policy": (
+            "recognized_electron_carriers_nonblocking_not_reachable"
+        ),
+        "multistep_policy": "component_steps_allowed_summaries_rejected",
+        "depth_semantics": "one_directional_kegg_reaction_per_layer",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "layers": layers_meta,
     }

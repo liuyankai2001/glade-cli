@@ -345,7 +345,7 @@ P11.1 的评测工具、数据契约和 12 例试运行集已实现：
 | 符号 | 定义 |
 |---|---|
 | A0 | GEM/FBA 在当前模型、培养基和生长约束下直接证明可生成的 KEGG 化合物集合 |
-| Fn | 第 n 层通过 KEGG 反应新发现的 frontier 化合物集合 |
+| Fn | 第 n 层通过一个定向 KEGG 反应新发现的 frontier 化合物集合；电子载体不作为主底物或 frontier 产物 |
 | An | 截至第 n 层的累计可达集合，An = A(n-1) ∪ Fn |
 | X1…Xm | 一条完整 RetroPath 分支路径命中的全部 sink 边界化合物 |
 | KEGG prefix | expansion witness 恢复出的 A0→X1…Xm 合成反应树 |
@@ -356,6 +356,12 @@ P11.1 的评测工具、数据契约和 12 例试运行集已实现：
     A0 --KEGG known reaction DAG--> X1…Xm --RetroPath predicted DAG--> Target
 
 当所有 sink 的 depth = 0 时，它们均属于 A0，KEGG prefix 为空。
+
+`expand` 使用 component-step-aware v3：所有普通主底物仍须可达；明确识别的电子载体
+只生成风险、净变化和辅助系统需求，不阻断主产物，也不进入 sink。深度按反应数而非唯一
+EC/KO 数计算；无 EC/KO 但结构完整的 KEGG 原子反应继续允许。多步路线中明确标记为
+`first/second/... step` 的独立组件反应按一层扩展，汇总反应仍被拒绝。v1/v2 manifest
+视为过期，必须重新生成。
 
 ## 4. 总体修改计划表
 
@@ -611,6 +617,8 @@ P9 已为 src/main_protein_selection/selenzyme_retrieval.py 增加 Reaction SMIL
 | 回归测试 | 不指定 <code>--retropath</code> | KEGG 输出和路径不变；GEM 验证作为可选证据，未验证或失败仍可写入 |
 | depth 0 | A0 有合法和非法结构 | sink 只包含合法、去重后的 A0，失败项进入 rejection |
 | 累计 depth | A0、F1、F2 有交叉底物 | depth 2 sink 包含 A0∪F1∪F2，最小 depth 正确 |
+| 电子载体扩展 | 主底物可达且反应含 P450/ferredoxin 等载体 | 主产物进入下一层；载体不进入 sink；辅助角色和风险完整保留 |
+| KEGG 组件步骤 | `first/second step of three-step reaction` 与对应汇总反应同时存在 | 组件步骤各计一层；汇总反应不进入 frontier |
 | 缺失 expand | 指定 depth 3 + RetroPath，但无 depth 3 结果 | 提示先执行 expand |
 | 结构映射 | 多个 Cxxxxx 共享一个结构 | mapping 保留全部 ID，按最小 depth 选默认边界 |
 | 无 scope | RetroPath 成功但未命中 sink | 返回 retropath_no_scope，不视为执行失败 |
