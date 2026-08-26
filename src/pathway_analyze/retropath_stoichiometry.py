@@ -27,6 +27,7 @@ from src.pathway_analyze.retropath_mnxref import (
 STOICHIOMETRY_SCHEMA_VERSION = "retropath_stoichiometry.v1"
 DEFAULT_MAX_STEP_HYPOTHESES = 8
 _FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*(?:\.\d+)?)")
+_FORMULA_CHARGE_SUFFIX = re.compile(r"[+-]\d*$")
 _ELEMENT_SYMBOLS = frozenset(
     Chem.GetPeriodicTable().GetElementSymbol(atomic_number)
     for atomic_number in range(1, 119)
@@ -172,6 +173,13 @@ def _canonical_sha256(payload: Mapping[str, Any]) -> str:
 def parse_formula(formula: str) -> dict[str, float]:
     normalized = str(formula or "").strip()
     if not normalized or "*" in normalized:
+        raise ValueError("formula is missing or incomplete")
+    # RDKit CalcMolFormula appends the formal charge (for example ``H+``,
+    # ``Zn+2`` or ``C30H21FeN3O15-3``).  Charge is already carried in the
+    # separate CompoundProperty.charge field and must not be parsed as an
+    # element token here.
+    normalized = _FORMULA_CHARGE_SUFFIX.sub("", normalized)
+    if not normalized:
         raise ValueError("formula is missing or incomplete")
     position = 0
     elements: dict[str, float] = defaultdict(float)
