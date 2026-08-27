@@ -19,7 +19,7 @@ GLADE 以底盘细胞的基因组尺度代谢模型为起点，搜索目标化�
     ↓
 可选：分层扩展底盘可达代谢物（expand）
     ↓
-搜索候选合成路线（gap）
+搜索候选合成路线（默认使用 KEGG；需要预测反应时显式启用 RetroPath）
     ↓
 查看并验证候选路线（info / validate）
     ↓
@@ -110,6 +110,39 @@ MILVUS_DB_NAME=<可选数据库名>
 
 表达元件集合为 `expression_parts_v3`，质粒集合为 `plasmid_templates_v2`。系统不会在
 远端 Milvus 不可用时静默使用过期结果。
+
+### 2.3 使用 RetroPath 前启动本地服务
+
+只有执行带 `--retropath` 的路线搜索时才需要本地 RetroPath 服务。先确认 Docker
+Desktop 已启动，并检查规则文件已经放到项目指定位置：
+
+```powershell
+docker version
+Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
+```
+
+首次使用时构建并启动服务。首次构建需要下载较大的运行环境，可能耗时较长；以后镜像
+没有变化时只执行第二条启动命令即可：
+
+```powershell
+docker compose -f compose.retropath.yml build retropath
+docker compose -f compose.retropath.yml up -d retropath
+```
+
+确认服务已经就绪：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+返回结果中的 `ready` 必须为 `true`。GLADE 会自动准备输入并调用该服务，用户不需要
+手动提交 CSV 或调用 HTTP 接口。使用结束后可以停止服务：
+
+```powershell
+docker compose -f compose.retropath.yml down
+```
+
+不要使用 `down -v`，否则会同时删除服务保存的任务和结果。
 
 ## 3. 输入配置
 
@@ -211,9 +244,10 @@ chassis_expanded_reachable_depth_2.csv
 `frontier` 文件只记录该层新增结果；`expanded_reachable` 文件记录截至该深度的累计
 可达集合。
 
-扩展采用 carrier-aware 策略：普通主底物必须全部位于上一层累计集合；P450 还原酶、
-ferredoxin、thioredoxin 等已识别电子载体不阻断主产物，但载体自身不会进入 frontier
-或 RetroPath sink。CSV 和 manifest 会记录电子载体、风险、净变化、辅助角色以及
+扩展采用载体感知策略：普通主底物必须全部位于上一层累计集合；P450 还原酶、
+ferredoxin、thioredoxin 等已识别电子载体不阻断主产物，但载体自身不会作为新增的
+可达代谢物，也不会作为 RetroPath 的路线连接点。CSV 和 manifest 会记录电子载体、
+风险、净变化、辅助角色以及
 `auxiliary_requirements_json`。因此“扩展可达”表示补充相应 KEGG 反应和工程辅助系统后
 可以抵达，不表示底盘天然已经具备这些酶和电子再生能力。
 
@@ -235,7 +269,7 @@ python main.py info -i demo01.json --chassis -d 1
 
 ### 6.1 使用原始底盘集合
 
-深度 0 表示使用 `chassis` 直接得到的 A0 集合：
+深度 0 表示直接使用 `chassis` 得到的底盘可生成代谢物集合：
 
 ```powershell
 python main.py gap -i demo01.json -d 0
@@ -296,66 +330,81 @@ python main.py info -i demo01.json --solution 1 --step 2 -d 0
 选择路线时应重点关注：异源步骤数、是否可以推荐、电子载体平衡、是否需要额外电子
 再生系统、是否需要确认载体兼容性，以及具体反应方向。
 
-### 6.4 显式启用 RetroPath 预测搜索
+### 6.4 使用 RetroPath 搜索预测路线
 
-默认 `gap` 只运行原始 KEGG 搜索。只有用户显式传入 `--retropath` 时才运行
-RetroPath：
+当 KEGG 搜索没有合适路线，或者希望尝试基于化学结构的预测反应时，可以显式启用
+RetroPath。运行前先按 2.3 节确认本地服务已经就绪：
 
 ```powershell
 python main.py gap -i demo01.json --retropath -d 0
 ```
 
-深度 0 使用底盘直接可生成集合 A0 作为 RetroPath sink。使用深度 N 时，必须先完成
-对应的 `expand -d N`；RetroPath sink 为截至该深度的累计集合
-`AN = A0 ∪ F1 ∪ ... ∪ FN`：
+`-d 0` 表示预测路线必须连接到底盘直接可生成的代谢物。若想让路线连接到扩展后的
+可达代谢物，必须先生成同一深度的扩展结果。例如使用深度 5：
 
 ```powershell
 python main.py expand -i demo01.json -d 5
 python main.py gap -i demo01.json --retropath -d 5
 ```
 
-`--retropath` 不会自动先运行纯 KEGG 搜索，也不会在纯 KEGG 无解时自动触发。
-RetroPath 从目标结构逆向扩展；解析器只接受能够从目标闭合到可信 sink 的完整预测
-路径。对于包含多个必要前体的分支反应，每个末端分支都必须命中 sink，不能只连接
-其中一个分支。
+默认 `gap` 只运行 KEGG 搜索，不会自动调用 RetroPath；带 `--retropath` 的命令也只
+运行 RetroPath，不会自动先补跑 KEGG 搜索。RetroPath 从目标化合物逆向预测，只保留
+能够完整连接到底盘可达代谢物的路线。若某个反应需要多个前体，则所有必要前体都必须
+能够连接到底盘，缺少任一分支都不会作为可用路线。
 
-主要输出位于：
+搜索完成后，建议按下面的顺序查看结果：
+
+```powershell
+# 先看本次运行是否成功以及找到了多少条路线
+python main.py info -i demo01.json --retropath -d 0
+
+# 再看排名第 1 的 RetroPath 候选详情
+python main.py info -i demo01.json --retropath-candidate 1 -d 0
+
+# 候选详情会给出对应的路线编号，假设为 N
+python main.py info -i demo01.json --solution N -d 0
+```
+
+这里有两种编号，不能混用：
+
+- `--retropath-candidate 1` 中的 `1` 是 RetroPath 候选排名，只用于查看预测详情；
+- `--solution N` 中的 `N` 是 GLADE 路线编号，用于查看、验证和写入路线。
+
+候选详情中显示的 `正式Solution编号` 就是这里所说的 GLADE 路线编号。
+
+每条可用的 RetroPath 候选都会获得一个 GLADE 路线编号，并加入当前深度的路线列表。
+已有 KEGG 路线的编号保持不变，RetroPath 路线从当前最大编号之后继续编号。
+
+最常用的结果文件位于：
 
 ```text
 outputs/C00811/kegg_gap_C00811/depthN/retropath/
-├── input/
-├── raw/
 ├── pipeline_result.json
 ├── candidate_routes.csv
 ├── candidate_steps.csv
-├── rejected_routes.csv
-└── solution_materialization.json
+└── rejected_routes.csv
 ```
 
-- `input/`：提交给 RetroPath 的目标结构、累计 sink 和 KEGG—结构映射；
-- `raw/`：本地 RetroPath Docker 服务返回的原始 scope/results；
-- `pipeline_result.json`：服务状态、scope、sink 命中、候选数量和文件哈希；
-- `candidate_routes.csv`：完整命中 sink 的 Top-K 混合路线；
-- `candidate_steps.csv`：KEGG expansion prefix 与 RetroPath 预测步骤；
-- `rejected_routes.csv`：未闭合、结构冲突或证据不足等拒绝原因；
-- `solution_materialization.json`：RetroPath 候选到统一 solution 编号的绑定。
+- `pipeline_result.json`：本次服务运行状态、完整连接数量、候选数量和失败原因；
+- `candidate_routes.csv`：可以完整连接到底盘的候选路线摘要；
+- `candidate_steps.csv`：每条候选路线的逐步反应；
+- `rejected_routes.csv`：路线未连接完整、结构冲突或证据不足等拒绝原因。
 
-RetroPath 生成了 scope 不等于已经生成完整路线。如果预测网络没有连接到本次提交的
-sink，`candidate_count` 仍为 0，也不会向 `solutions.csv` 追加不完整路线。可以使用：
+“已经生成预测反应网络”不等于“已经找到完整路线”。如果预测网络没有连接到底盘
+可达代谢物，候选数量仍为 0，也不会把不完整路线加入 `solutions.csv`。此时执行：
 
 ```powershell
 python main.py info -i demo01.json --retropath -d 5
 ```
 
-查看服务是否成功、scope 是否存在、命中的 sink 数量、完整路径数量、候选数量和拒绝
-原因。当前版本不会把 scope 中尚未命中 sink 的 KEGG 中间化合物自动作为新连接点；
-这类运行应按“存在预测网络，但尚无完整可交付路线”解释。
+重点查看服务状态、完整连接数量、候选数量和拒绝原因。如果显示已经产生预测网络但
+候选为 0，应理解为“本次预测尚未得到一条能完整连接到底盘的路线”。
 
-## 7. GEM 通量验证
+## 7. GEM（底盘代谢模型）通量验证
 
-GEM 验证对纯 KEGG 和 RetroPath 路线都是可选的。它用于提供底盘中的通量可行性
-证据，不再决定路线能否写入 manifest。若希望评估某条纯 KEGG 路线，推荐使用独立的
-per-solution 验证。
+GEM 验证用于判断候选路线在当前底盘模型和培养基中是否具备通量可行性。它对 KEGG
+和 RetroPath 路线都是可选的：未验证或验证失败的路线仍可写入设计清单，但系统会保留
+验证状态和人工复核提示。
 
 验证路线 1：
 
@@ -378,11 +427,14 @@ python main.py validate -i demo01.json -m per -c strict -d 0
 参数含义：
 
 - `-m per`：每条路线单独加入 GEM 并验证，适合为单条路线生成独立证据；
-- `-m pooled`：将所选路线放在同一个模型中联合检查；
-- `-m both`：同时生成独立和联合结果；
+- `-m pooled`：将所选 KEGG 路线放在同一个模型中联合检查；
+- `-m both`：对所选 KEGG 路线同时生成独立和联合结果；
 - `-c strict`：严格处理通用辅因子，默认模式；
 - `-c relaxed`：放宽通用辅因子处理，可用于诊断辅因子造成的阻断；
 - `-d`：必须与所验证的 `gap` 深度一致。
+
+只要待验证列表中包含 RetroPath 路线，就必须使用 `-m per`。省略 `-s` 时，程序会自动
+识别当前深度下每条路线来自 KEGG 还是 RetroPath，并分别验证。
 
 主要输出：
 
@@ -392,60 +444,57 @@ outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
 └── gem_validation_route_fluxes.csv
 ```
 
-纯 KEGG 路线在未验证、验证通过或验证失败时都可以写入 manifest。未验证时记录
-`validation_status=not_run`；存在独立验证结果时保留原始 `PASS_*` 或 `FAIL_*`、通量、
-辅因子模式和问题说明。未通过只增加人工复核提示，不再阻断写入。RetroPath 预测路线
-采用下面 7.1 节相同的可选验证原则，并额外保留预测风险标记。
+验证结果会记录为“未运行”“通过”或“失败”，并保存通量、辅因子模式和问题说明。
+验证失败只增加人工复核提示，不会单独阻止路线写入。
 
-### 7.1 RetroPath 候选计量补全与可选 GEM 验证
+### 7.1 可选验证 RetroPath 路线
 
-执行 `gap --retropath` 后，P5 的全部 Top-K 已经直接追加为当前 depth 的 RetroPath
-solution；无需先运行 validate。原有 KEGG solution 编号保持不变，RetroPath solution
-从最大 KEGG 编号之后按候选排名连续编号。此时即可查看或直接写入：
+RetroPath 路线在搜索完成后就可以直接查看或写入，不需要先验证。假设候选详情显示其
+对应的路线编号为 `N`：
 
 ```powershell
 python main.py info -i demo01.json --solution N -d 0
 python main.py write -i demo01.json --solution N -d 0
 ```
 
-未运行 P8 时，路线状态为 `not_run/core_only/not_run`，manifest 会保留
-`review_required=true` 和“GEM 验证尚未运行”的警告。
+没有运行 GEM 验证时，系统会明确标记“尚未验证”和“需要人工复核”，但允许继续主酶、
+CDS 和表达设计流程。
 
-首次使用 P8 前安装与 RR02 同版本的 MNXref v3.0 子集：
-
-```powershell
-uv run python -m src.pathway_analyze.retropath_mnxref install
-```
-
-安装器下载并校验官方源文件，只保留 RR02 实际引用的反应、化合物和映射。检查安装：
+如果需要验证 RetroPath 路线，首次使用前先安装计量补全所需的 MNXref v3.0 数据：
 
 ```powershell
-uv run python -m src.pathway_analyze.retropath_mnxref status
+python -m src.pathway_analyze.retropath_mnxref install
 ```
 
-验证当前 depth 的全部 solution（自动分流 KEGG/RetroPath）：
+安装器会下载并校验官方源文件，只保留当前预测规则需要的反应、化合物和映射。检查
+安装状态：
+
+```powershell
+python -m src.pathway_analyze.retropath_mnxref status
+```
+
+验证当前深度的全部路线：
 
 ```powershell
 python main.py validate -i demo01.json -m per -d 0
 ```
 
-使用 relaxed 辅因子模式诊断全部 solution：
+使用宽松辅因子模式诊断全部路线：
 
 ```powershell
 python main.py validate -i demo01.json -m per -c relaxed -d 0
 ```
 
-只验证统一 solution 4 和 5：
+只验证路线 4 和 5：
 
 ```powershell
 python main.py validate -i demo01.json -s 4 5 -m per -d 0
 ```
 
-RetroPath solution 只支持独立验证，不能使用 `-m pooled` 或 `-m both`；辅因子模式支持
-`-c strict`（默认）和 `-c relaxed`。两种模式都只使用 RR02 明确指向的
-MNXR/KEGG/Rhea 来源模板补全计量，不会根据 EC 或元素差额自行猜测辅因子。
-`relaxed` 仅为路线实际涉及的通用载体建立可审计 sink，并在结果和 manifest 中记录
-`cofactor_relaxed=true` 与 `opened_generic_compound_ids`。
+RetroPath 路线只支持独立验证，不能使用 `-m pooled` 或 `-m both`。严格和宽松模式都
+只使用预测规则能够追溯到的数据库反应补全化学计量，不会根据 EC 编号或元素差额自行
+猜测辅因子。宽松模式仅放开路线实际涉及的通用载体，用于判断路线是否主要受辅因子
+约束；结果中会明确记录放开了哪些载体。
 
 主要输出：
 
@@ -459,28 +508,22 @@ outputs/C00811/kegg_gap_C00811/depth0/retropath/gem_validation/
 └── validation_manifest.json
 ```
 
-`PASS_STRICT_HYPOTHESIS_EXISTS` 表示至少一个来源支持的完整计量假设同时满足底盘生长、
-目标产出和候选全部步骤通量。P8 会把 `passed`/`failed` 状态、选中的计量假设、完整
-Reaction SMILES、精确映射和 GEM 证据覆盖到原有 solution；不会新增、删除、拆分或
-重新编号 solution。严格失败的路线仍可写入，但会附加显式失败警告并要求人工复核。
+结果可以这样理解：
 
-验证命令中的兼容字段 `formal_solution_ids` 表示本次严格通过的既有 solution ID；
-候选/solution 映射可通过以下命令查看：
+- 通过：至少存在一套有数据库来源的完整反应计量，能够同时满足底盘生长、目标产出和
+  路线中每一步都有通量；
+- 失败：当前证据和验证模式下没有找到可行计量与通量，路线仍可写入，但必须人工复核；
+- 未运行：没有验证证据，路线仍可写入，并保留“尚未验证”警告。
 
-```powershell
-python main.py info -i demo01.json --retropath-candidate 1 -d 0
-python main.py info -i demo01.json --solution N -d 0
-```
-
-统一物化由 `depthN/retropath/solution_materialization.json` 绑定 P5、RR02、
-候选到 solution 的映射和四个正式 CSV 的 SHA-256；P8 验证 manifest 作为可选覆盖
-证据继续绑定。文件被部分覆盖、上游变化或手动修改时，RetroPath solution 会拒绝
-读取。一次只验证部分候选时，只有被选择的 solution 更新为本次 P8 结果，其余
-RetroPath solution 保持或恢复为 `not_run`；其编号、路线和全部 KEGG 行均不变。
+验证只更新路线的计量和 GEM 证据，不会改变路线编号或步骤。一次只验证部分路线时，
+只有选中的路线获得本次验证结果。系统会校验候选文件和验证文件的一致性；如果文件被
+手动修改或上游搜索结果已经变化，应重新运行同一深度的 `gap --retropath`，不要手动
+拼接或覆盖 CSV。
 
 ### 7.2 为 RetroPath 路线生成主酶候选
 
-从 `gap --retropath` 输出中选择 solution，写入 manifest；P8 可先运行，也可跳过：
+先用路线编号 `N` 将选中的 RetroPath 路线写入设计清单。GEM 验证可以先运行，也可以
+跳过：
 
 ```powershell
 python main.py write -i demo01.json --solution N -d 0
@@ -495,15 +538,10 @@ python main.py info -i demo01.json --main-enzyme-sets
 python main.py write -i demo01.json --main-enzyme-set 1
 ```
 
-`main-enzyme` 从 manifest 自动识别步骤来源。KEGG prefix 继续使用原有
-EC/Rhea/KO/文献/Selenzyme 检索；RP2 suffix 使用来源 UniProt、EC/Rhea、完整
-Reaction SMILES、核心 Reaction SMILES 和 Rule SMARTS。命令不再接受
-`--retropath-candidate` 或 `--depth`；路线排名、组合和 depth 已由
-`write --solution N` 固定。
-
-未运行 P8 时，同一 RP2 step 的全部 RR02 规则作为替代检索证据进入 Selenzyme，
-不会被当成多个必需步骤；P8 通过后会优先增加完整计量 Reaction SMILES 和精确
-KEGG/Rhea 映射证据。结构相似命中始终保持 `manual_review`。
+`main-enzyme` 会从设计清单自动识别普通 KEGG 步骤和 RetroPath 预测步骤，不需要再传
+候选排名或搜索深度。普通步骤继续使用 KEGG、Rhea、KO、文献和 Selenzyme 证据；预测
+步骤会综合来源酶注释、反应映射和结构相似性检索。未运行 GEM 验证时也可以检索主酶；
+验证通过后，系统会优先使用补全后的完整反应和精确数据库映射。
 
 主要输出：
 
@@ -516,14 +554,10 @@ outputs/C00811/main_protein_selection/
 └── retropath_selenzyme_evidence.json
 ```
 
-检索优先使用正式 KEGG/Rhea 反应映射，其次使用 RR02 来源模板 EC/Rhea/UniProt，最后
-使用完整 Reaction SMILES、核心 Reaction SMILES 或 Rule SMARTS 查询 SelenzymeRF。
-只有完整计量和结构与来源反应完全相同，来源反应号才被视为精确映射。
-
-SelenzymeRF 结构相似结果始终是预测性证据：即使 reaction similarity 为 1，也标记为
-`manual_review`。这类候选可以进入完整主酶组合，但组合状态固定为 `review_required`；
-写入 manifest 后会留下 `predicted_route` 和 `reaction_fit` 待复核项，不会伪装成已验证
-酶活。根据当前产品设置，待复核状态只记录而不阻断后续设计。
+检索优先使用精确的 KEGG/Rhea 反应映射，其次使用预测规则附带的 EC、Rhea 和 UniProt
+来源信息，最后才使用反应结构查询 SelenzymeRF。结构相似结果始终只是预测性证据，
+即使相似度为 1 也需要人工复核。这类候选可以进入主酶组合并继续后续设计，但系统不会
+把它标记成已经通过实验验证的酶活。
 
 ## 8. 选择并写入路线
 
@@ -1021,14 +1055,13 @@ outputs/C00811/final_assembly/
 | 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
 
-RetroPath 候选视图读取 `depthN/retropath/` 下的证据；全部 Top-K 物化后即可成为
-统一 solution，P8 strict/relaxed 验证均为可选覆盖证据。视图会校验 P6/P8 版本、
-目标、depth 和文件 SHA-256；出现“候选文件校验失败”时应重新运行同一 depth 的
-`gap --retropath`，需要验证时再运行 `validate -s N`，不要手动修改 CSV。
+RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
+候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号
+只表示候选排名；验证和写入时要使用候选详情中显示的 GLADE 路线编号。
 
-失败的 RetroPath 运行也可以用 `info --retropath` 查看失败阶段和原因；只有成功且
-存在候选时才能使用 `info --retropath-candidate N`。该参数仅用于查看搜索候选，
-不再用于 `main-enzyme`。
+系统会检查目标、搜索深度和结果文件是否匹配。出现“候选文件校验失败”时，应重新运行
+同一深度的 `gap --retropath`；需要验证时再使用对应路线编号运行 `validate -s N`，不要
+手动修改结果 CSV。
 
 ## 17. 完整命令示例
 
@@ -1082,12 +1115,15 @@ KEGG 无解后改用 RetroPath 时，路线与主酶阶段为：
 ```powershell
 python main.py gap -i demo01.json --retropath -d 0
 python main.py info -i demo01.json --retropath -d 0
-# 可选：验证选中的统一 solution
-python main.py validate -i demo01.json -s 1 -m per -d 0
+
+# 查看候选排名 1，并记下其中显示的 GLADE 路线编号 N
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
-# 从上一条命令的“正式Solution编号”中选择 N
 python main.py info -i demo01.json --solution N -d 0
+
+# 可选：验证路线 N；不验证也可以直接写入
+python main.py validate -i demo01.json -s N -m per -c strict -d 0
 python main.py write -i demo01.json --solution N -d 0
+
 python main.py main-enzyme -i demo01.json
 python main.py main-enzyme-sets -i demo01.json
 python main.py info -i demo01.json --main-enzyme-sets
@@ -1098,11 +1134,16 @@ python main.py write -i demo01.json --main-enzyme-set 1
 
 ### 18.1 深度必须一致
 
-使用 `gap -d N` 搜索后，`info --gap`、`info --solution`、`validate` 和
-`write --solution` 都应使用相同的 `-d N`。使用 `gap --retropath -d N` 后，
-`validate -s N`、`info --retropath`、`info --retropath-candidate`、
-`info --solution` 和 `write --solution` 也必须使用同一个 depth。路线写入 manifest 后，
-`main-enzyme` 不再需要 depth 参数。
+假设搜索时使用 `-d 3`，后续查看、验证和写入这批路线时也都要使用 `-d 3`。这里的
+`-d` 是搜索深度，`-s` 是路线编号，两者不是同一个值。例如验证路线 7：
+
+```powershell
+python main.py validate -i demo01.json -s 7 -m per -d 3
+```
+
+`info --gap`、`info --retropath`、`info --retropath-candidate`、`info --solution` 和
+`write --solution` 同样要使用搜索时的深度。路线写入设计清单后，`main-enzyme` 不再需要
+深度参数。
 
 ### 18.2 上游变化会使下游结果失效
 
@@ -1148,19 +1189,45 @@ python main.py chassis -i demo01.json
 
 如果使用 `gap -d 1`，还必须先执行 `expand -d 1`。
 
-### 19.4 路线无法写入 manifest
+### 19.4 RetroPath 提示本地服务不可用
+
+先确认 Docker Desktop 正在运行，然后启动服务：
+
+```powershell
+docker compose -f compose.retropath.yml up -d retropath
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+如果容器无法启动，检查规则文件是否存在：
+
+```powershell
+Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
+docker compose -f compose.retropath.yml logs --tail 100 retropath
+```
+
+健康检查中的 `ready` 为 `true` 后，再重新运行 `gap --retropath`。
+
+### 19.5 验证 RetroPath 路线时提示缺少 MNXref
+
+安装并检查计量补全数据：
+
+```powershell
+python -m src.pathway_analyze.retropath_mnxref install
+python -m src.pathway_analyze.retropath_mnxref status
+```
+
+### 19.6 路线无法写入设计清单
 
 确认：
 
 - 路线在 `solutions.csv` 中标记为可以推荐；
-- 路线没有 blocking reaction；
+- 路线没有阻断反应；
 - `write --solution` 使用了相同深度。
 
-GEM 验证不是写入前置条件。未验证路线会以 `validation_status=not_run` 写入；验证失败
-也只会保留失败状态和人工复核警告，不会仅因没有 `PASS_` 状态而阻断写入。如果已经
-运行验证，还应确认验证产物与当前 solution、depth 和上游文件哈希一致。
+GEM 验证不是写入前置条件。未验证或验证失败只会保留状态和人工复核警告。如果已经
+运行验证，还应确认验证结果属于当前路线和当前搜索深度，并且没有手动修改上游文件。
 
-### 19.5 主酶候选为空或网络检索失败
+### 19.7 主酶候选为空或网络检索失败
 
 检查 KEGG、Rhea、UniProt 和 Selenzyme 服务是否可访问；如果启用了
 `--literature-search`，同时检查 `.env` 中的模型配置。
@@ -1170,17 +1237,17 @@ RetroPath 结构检索不可用时，已经获得的来源模板候选仍会保�
 `main-enzyme -i demo01.json`。`--literature-search` 仍用于现有 KEGG 步骤；预测步骤继续
 使用可审计的来源模板和结构证据。
 
-### 19.6 辅助蛋白研究失败
+### 19.8 辅助蛋白研究失败
 
 检查 `.env` 中的 `MODEL_PROVIDER`、`AGENT_LLM_MODEL`、`API_KEY` 和 `BASE_URL`，
 以及外部数据库网络连接。也可以使用手动上传方式添加已知辅助序列。
 
-### 19.7 表达元件或质粒推荐失败
+### 19.9 表达元件或质粒推荐失败
 
 检查 `MILVUS_HOST`、`MILVUS_PORT`、可选认证信息，以及远端 collection 的名称和
 schema 是否与当前程序匹配。
 
-### 19.8 `protein-to-cds` 返回退出码 2
+### 19.10 `protein-to-cds` 返回退出码 2
 
 查看 `outputs/C00811/protein_to_cds/run_summary.json` 和 manifest 的
 `cds_selection`。退出码 2 表示 `partial` 或 `failed`，成功项目和失败原因都会保留。
