@@ -11,10 +11,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v2"
-MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v2"
+MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v3"
+MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v3"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
-    "evidence_constrained_assignment.v2"
+    "evidence_constrained_assignment.v3_taxonomy_ranked"
 )
 AcceptedReactionFitStatus = Literal[
     "verified",
@@ -162,6 +162,13 @@ class MainEnzymeCandidate(BaseModel):
     accession: str = Field(min_length=1)
     protein_name: str = ""
     organism_name: str = ""
+    organism_id: int | None = Field(default=None, ge=1)
+    taxonomic_shared_taxon_id: int | None = Field(default=None, ge=1)
+    taxonomic_shared_name: str = ""
+    taxonomic_shared_rank: str = ""
+    taxonomic_fit_status: str = Field(default="unknown", min_length=1)
+    taxonomic_fit_score: float = Field(default=50.0, ge=0.0, le=100.0)
+    taxonomy_evidence_source: str = ""
     reviewed: bool
     length: int | None = Field(default=None, ge=1)
     candidate_rank: int = Field(ge=1)
@@ -223,6 +230,23 @@ class MainEnzymeCandidate(BaseModel):
             accession=accession,
             protein_name=_string(row.get("protein_name")),
             organism_name=_string(row.get("organism_name")),
+            organism_id=_optional_int(row.get("organism_id")),
+            taxonomic_shared_taxon_id=_optional_int(
+                row.get("taxonomic_shared_taxon_id")
+            ),
+            taxonomic_shared_name=_string(row.get("taxonomic_shared_name")),
+            taxonomic_shared_rank=_string(row.get("taxonomic_shared_rank")),
+            taxonomic_fit_status=(
+                _string(row.get("taxonomic_fit_status")) or "unknown"
+            ),
+            taxonomic_fit_score=_float(
+                row.get("taxonomic_fit_score")
+                if _string(row.get("taxonomic_fit_score"))
+                else 50.0
+            ),
+            taxonomy_evidence_source=_string(
+                row.get("taxonomy_evidence_source")
+            ),
             reviewed=_bool(row.get("reviewed")),
             length=_optional_int(row.get("length")),
             candidate_rank=int(float(_string(row.get("candidate_rank")) or 0)),
@@ -272,7 +296,7 @@ class MainEnzymeSelectionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_selection.v2"] = (
+    schema_version: Literal["main_enzyme_selection.v3"] = (
         MAIN_ENZYME_SELECTION_SCHEMA_VERSION
     )
     ok: bool
@@ -281,6 +305,23 @@ class MainEnzymeSelectionResult(BaseModel):
     expansion_depth: int = Field(ge=0)
     solution_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     chassis_key: str = Field(min_length=1)
+    host_taxon_id: int = Field(default=511145, ge=1)
+    taxonomy_status: Literal["resolved", "unknown"] = "resolved"
+    taxonomy_source: str = Field(default="builtin_snapshot", min_length=1)
+    taxonomy_scoring_policy_version: str = Field(
+        default="taxonomy_lca_rank.v1",
+        min_length=1,
+    )
+    taxonomy_fingerprint: str = Field(
+        default="0" * 64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    scoring_weights: dict[str, float] = Field(default_factory=lambda: {
+        "function": 0.40,
+        "evidence": 0.25,
+        "expression": 0.20,
+        "host": 0.15,
+    })
     parameters: MainEnzymeSelectionParameters
     shortlist_decision_fingerprint: str | None = Field(
         default=None,
@@ -294,6 +335,11 @@ class MainEnzymeSelectionResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MainEnzymeSelectionResult":
+        expected_weights = {"function", "evidence", "expression", "host"}
+        if set(self.scoring_weights) != expected_weights:
+            raise ValueError("scoring_weights must define function/evidence/expression/host")
+        if not isclose(sum(self.scoring_weights.values()), 1.0, abs_tol=1e-9):
+            raise ValueError("scoring_weights must sum to 1")
         if self.ok != (self.status == "complete"):
             raise ValueError("ok must agree with selection status")
         for step_index, candidates in self.candidates_by_step.items():
@@ -772,10 +818,12 @@ class MainEnzymeSetsResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_sets.v2"] = (
+    schema_version: Literal["main_enzyme_sets.v3"] = (
         MAIN_ENZYME_SETS_SCHEMA_VERSION
     )
-    algorithm_version: Literal["evidence_constrained_assignment.v2"] = (
+    algorithm_version: Literal[
+        "evidence_constrained_assignment.v3_taxonomy_ranked"
+    ] = (
         MAIN_ENZYME_SETS_ALGORITHM_VERSION
     )
     ok: bool

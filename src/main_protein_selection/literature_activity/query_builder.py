@@ -289,12 +289,16 @@ def literature_component_versions(
     from src.main_protein_selection.literature_activity.validator import (
         VALIDATOR_VERSION,
     )
+    from src.main_protein_selection.taxonomy_compatibility import (
+        TAXONOMY_SCORING_POLICY_VERSION,
+    )
 
     return {
         "retriever": RETRIEVER_VERSION,
         "extractor": EXTRACTOR_VERSION,
         "validator": VALIDATOR_VERSION,
         "identity_adapter": IDENTITY_ADAPTER_VERSION,
+        "taxonomy_scoring": TAXONOMY_SCORING_POLICY_VERSION,
         "model": str(model_identity or "unconfigured"),
     }
 

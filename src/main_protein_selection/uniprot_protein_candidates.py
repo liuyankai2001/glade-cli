@@ -16,11 +16,19 @@ from src.main_protein_selection.settings import (
     UNIPROT_PAGE_SIZE as CONFIGURED_UNIPROT_PAGE_SIZE,
     UNIPROT_SEARCH_URL as CONFIGURED_UNIPROT_SEARCH_URL,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    CHASSIS_TAXON_PRESETS,
+    SCORING_WEIGHTS,
+    ChassisTaxonomyProfile,
+    TaxonomyFit,
+    resolve_chassis_taxonomy,
+    score_taxonomic_fit,
+)
 # UniProt 服务地址和请求参数统一记录在 service_config.py。
 UNIPROT_SEARCH_URL = CONFIGURED_UNIPROT_SEARCH_URL
 UNIPROT_PAGE_SIZE = CONFIGURED_UNIPROT_PAGE_SIZE
 REQUEST_TIMEOUT = UNIPROT_HTTP_CONFIG.timeout_seconds
-UNIPROT_IDENTITY_RESOLVER_VERSION = "literature_name_uniprot_resolver.v1"
+UNIPROT_IDENTITY_RESOLVER_VERSION = "literature_name_uniprot_resolver.v2"
 # The long-form alias makes the artifact version easy to discover while the
 # shorter name remains convenient for callers in this module.
 LITERATURE_NAME_UNIPROT_RESOLVER_VERSION = UNIPROT_IDENTITY_RESOLVER_VERSION
@@ -37,6 +45,7 @@ UNIPROT_FIELDS = ",".join([
     "ec",
     "length",
     "lineage",
+    "lineage_ids",
     "sequence",
     "cc_catalytic_activity",
     "cc_cofactor",
@@ -64,39 +73,6 @@ UNIPROT_FIELDS = ",".join([
 ])
 
 
-CHASSIS_TAXON_PRESETS = {
-    "ecoli": {
-        "name": "Escherichia coli",
-        "species_taxon_id": 562,
-        "strain_taxon_id": None,
-        "domain": "Bacteria",
-        "preferred_lineage_terms": [
-            "Escherichia",
-            "Enterobacteriaceae",
-            "Enterobacterales",
-            "Gammaproteobacteria",
-            "Pseudomonadota",
-            "Bacteria",
-        ],
-    },
-    "ecoli_mg1655": {
-        "name": "Escherichia coli K-12 MG1655",
-        "species_taxon_id": 562,
-        "strain_taxon_id": 511145,
-        "domain": "Bacteria",
-        "preferred_lineage_terms": [
-            "Escherichia coli",
-            "Escherichia",
-            "Enterobacteriaceae",
-            "Enterobacterales",
-            "Gammaproteobacteria",
-            "Pseudomonadota",
-            "Bacteria",
-        ],
-    },
-}
-
-
 STEP_CANDIDATE_COLUMNS = [
     "solution_id",
     "step_index",
@@ -116,6 +92,13 @@ STEP_CANDIDATE_COLUMNS = [
     "organism_name",
     "organism_id",
     "taxonomic_lineage",
+    "taxonomic_lineage_ids",
+    "taxonomic_shared_taxon_id",
+    "taxonomic_shared_name",
+    "taxonomic_shared_rank",
+    "taxonomic_fit_status",
+    "taxonomic_fit_score",
+    "taxonomy_evidence_source",
     "reviewed",
     "length",
     "score",
@@ -188,6 +171,12 @@ PROTEIN_CANDIDATE_COLUMNS = [
     "protein_name",
     "organism_name",
     "organism_id",
+    "taxonomic_shared_taxon_id",
+    "taxonomic_shared_name",
+    "taxonomic_shared_rank",
+    "taxonomic_fit_status",
+    "taxonomic_fit_score",
+    "taxonomy_evidence_source",
     "reviewed",
     "length",
     "covered_step_indexes",
@@ -263,6 +252,13 @@ class ProteinCandidate:
     reasons: list[str]
     sequence: str = ""
     taxonomic_lineage: list[str] = field(default_factory=list)
+    taxonomic_lineage_ids: list[int] = field(default_factory=list)
+    taxonomic_shared_taxon_id: int | None = None
+    taxonomic_shared_name: str = ""
+    taxonomic_shared_rank: str = ""
+    taxonomic_fit_status: str = "unknown"
+    taxonomic_fit_score: float = 50.0
+    taxonomy_evidence_source: str = ""
     gene_names: list[str] = field(default_factory=list)
     catalytic_activities: list[str] = field(default_factory=list)
     catalytic_activity_records: list[dict[str, Any]] = field(default_factory=list)
@@ -344,6 +340,7 @@ class UniProtIdentityHit(_DataclassMapping):
     organism_name: str
     taxon_id: int | None
     lineage: list[str]
+    ranked_lineage: list[dict[str, Any]]
     reviewed: bool
     sequence: str
     sequence_length: int | None
@@ -704,6 +701,20 @@ def is_fragment(entry: dict[str, Any]) -> bool:
 
 def get_lineage(entry: dict[str, Any]) -> list[str]:
     return entry.get("organism", {}).get("lineage", [])
+
+
+def get_lineage_ids(entry: dict[str, Any]) -> list[int]:
+    values: list[int] = []
+    for item in entry.get("lineages", []):
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            taxon_id = int(item.get("taxonId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if taxon_id > 0:
+            values.append(taxon_id)
+    return list(dict.fromkeys(values))
 
 
 def extract_catalytic_activities(entry: dict[str, Any]) -> list[str]:
@@ -1117,42 +1128,40 @@ def _score_expression(entry: dict[str, Any]) -> tuple[float, list[str], list[str
     return _clamp(score), reasons, warnings
 
 
-def _score_host(entry: dict[str, Any], chassis_profile: dict[str, Any]) -> tuple[float, list[str]]:
-    reasons = []
-    organism = entry.get("organism", {})
-    organism_id = organism.get("taxonId")
-    lineage = get_lineage(entry)
-    strain_taxon_id = chassis_profile.get("strain_taxon_id")
-    species_taxon_id = chassis_profile.get("species_taxon_id")
-    if strain_taxon_id and organism_id == strain_taxon_id:
-        return 100.0, ["host: source strain matches chassis"]
-    if organism_id == species_taxon_id:
-        return 90.0, ["host: source species matches chassis"]
-    preferred_terms = chassis_profile.get("preferred_lineage_terms", [])
-    matched_terms = [term for term in preferred_terms if term in lineage]
-    if matched_terms:
-        best_index = min(preferred_terms.index(term) for term in matched_terms)
-        score = max(35.0, 80.0 - best_index * 8)
-        reasons.append(f"host: phylogenetically close to chassis via {matched_terms[0]}")
-        return score, reasons
-    return 20.0, ["host: source organism is distant from chassis"]
+def _score_host(
+    entry: dict[str, Any],
+    chassis_profile: ChassisTaxonomyProfile,
+) -> tuple[float, list[str], TaxonomyFit]:
+    fit = score_taxonomic_fit(entry, chassis_profile)
+    if fit.status == "unknown":
+        reason = "host taxonomy: unavailable; neutral taxonomy score applied"
+    elif fit.status in {"cross_domain", "root_only"}:
+        reason = "host taxonomy: source shares no ranked lineage with chassis"
+    elif fit.status == "exact_host_taxon":
+        reason = "host taxonomy: source taxon exactly matches chassis"
+    else:
+        reason = (
+            "host taxonomy: lowest common ancestor "
+            f"{fit.shared_name or 'unknown'} ({fit.shared_rank or 'unknown'})"
+        )
+    return fit.score, [reason], fit
 
 
 def score_candidate(
     entry: dict[str, Any],
     target_ec: str,
-    chassis_profile: dict[str, Any],
-) -> tuple[float, list[str], list[str], dict[str, float]]:
+    chassis_profile: ChassisTaxonomyProfile,
+) -> tuple[float, list[str], list[str], dict[str, float], TaxonomyFit]:
     target_ec = normalize_ec_number(target_ec)
     function_score, function_reasons, function_warnings = _score_function(entry, target_ec)
     evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
     expression_score, expression_reasons, expression_warnings = _score_expression(entry)
-    host_score, host_reasons = _score_host(entry, chassis_profile)
+    host_score, host_reasons, taxonomy_fit = _score_host(entry, chassis_profile)
     total = (
-        function_score * 0.45
-        + evidence_score * 0.25
-        + expression_score * 0.20
-        + host_score * 0.10
+        function_score * SCORING_WEIGHTS["function"]
+        + evidence_score * SCORING_WEIGHTS["evidence"]
+        + expression_score * SCORING_WEIGHTS["expression"]
+        + host_score * SCORING_WEIGHTS["host"]
     )
     return (
         round(total, 2),
@@ -1165,6 +1174,7 @@ def score_candidate(
             "host": round(host_score, 2),
             "total": round(total, 2),
         },
+        taxonomy_fit,
     )
 
 
@@ -1799,6 +1809,11 @@ def resolve_uniprot_identity(
             organism_name=str(organism.get("scientificName") or "") if isinstance(organism, dict) else "",
             taxon_id=entry_taxon_id,
             lineage=[str(value) for value in get_lineage(entry)],
+            ranked_lineage=[
+                dict(value)
+                for value in entry.get("lineages", [])
+                if isinstance(value, Mapping)
+            ],
             reviewed=_entry_is_reviewed(entry),
             sequence=get_sequence_value(entry),
             sequence_length=get_sequence_length(entry),
@@ -1943,8 +1958,15 @@ def _candidate_from_entry(
     reasons: list[str],
     warnings: list[str],
     score_breakdown: dict[str, float],
+    taxonomy_fit: TaxonomyFit | None = None,
 ) -> ProteinCandidate:
     organism = entry.get("organism", {})
+    taxonomy_fit = taxonomy_fit or TaxonomyFit(
+        status="unknown",
+        score=50.0,
+        candidate_taxon_id=organism.get("taxonId"),
+        evidence_source="not_scored",
+    )
     return ProteinCandidate(
         accession=entry.get("primaryAccession", ""),
         entry_name=entry.get("uniProtkbId", ""),
@@ -1952,6 +1974,13 @@ def _candidate_from_entry(
         organism_name=organism.get("scientificName", ""),
         organism_id=organism.get("taxonId"),
         taxonomic_lineage=[str(value) for value in get_lineage(entry)],
+        taxonomic_lineage_ids=get_lineage_ids(entry),
+        taxonomic_shared_taxon_id=taxonomy_fit.shared_taxon_id,
+        taxonomic_shared_name=taxonomy_fit.shared_name,
+        taxonomic_shared_rank=taxonomy_fit.shared_rank,
+        taxonomic_fit_status=taxonomy_fit.status,
+        taxonomic_fit_score=taxonomy_fit.score,
+        taxonomy_evidence_source=taxonomy_fit.evidence_source,
         reviewed=_entry_is_reviewed(entry),
         length=get_sequence_length(entry),
         ec_numbers=extract_ec_numbers(entry),
@@ -1998,9 +2027,14 @@ def candidate_from_reaction_entry(
     complex_match_basis: str = "",
     complex_evidence_type: str = "",
     component_stoichiometry: dict[str, float | None] | None = None,
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> ProteinCandidate | None:
     if chassis_key not in CHASSIS_TAXON_PRESETS:
         raise ValueError(f"Unknown chassis_key: {chassis_key}")
+    profile = taxonomy_profile or resolve_chassis_taxonomy(
+        chassis_key,
+        allow_network=False,
+    )
     passed, filter_reasons, filter_warnings = hard_filter_candidate_without_ec(
         entry,
         allow_transmembrane=allow_transmembrane,
@@ -2010,15 +2044,15 @@ def candidate_from_reaction_entry(
     entry_ecs = extract_ec_numbers(entry)
     scoring_ec = entry_ecs[0] if entry_ecs else ""
     if scoring_ec:
-        score, reasons, warnings, score_breakdown = score_candidate(
+        score, reasons, warnings, score_breakdown, taxonomy_fit = score_candidate(
             entry=entry,
             target_ec=scoring_ec,
-            chassis_profile=CHASSIS_TAXON_PRESETS[chassis_key],
+            chassis_profile=profile,
         )
     else:
         evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
         expression_score, expression_reasons, expression_warnings = _score_expression(entry)
-        host_score, host_reasons = _score_host(entry, CHASSIS_TAXON_PRESETS[chassis_key])
+        host_score, host_reasons, taxonomy_fit = _score_host(entry, profile)
         function_score = 100.0
         score_breakdown = {
             "function": function_score,
@@ -2026,10 +2060,10 @@ def candidate_from_reaction_entry(
             "expression": expression_score,
             "host": host_score,
             "total": round(
-                function_score * 0.45
-                + evidence_score * 0.25
-                + expression_score * 0.20
-                + host_score * 0.10,
+                function_score * SCORING_WEIGHTS["function"]
+                + evidence_score * SCORING_WEIGHTS["evidence"]
+                + expression_score * SCORING_WEIGHTS["expression"]
+                + host_score * SCORING_WEIGHTS["host"],
                 2,
             ),
         }
@@ -2046,6 +2080,7 @@ def candidate_from_reaction_entry(
         reasons=_unique(filter_reasons + reasons),
         warnings=_unique(filter_warnings + warnings),
         score_breakdown=score_breakdown,
+        taxonomy_fit=taxonomy_fit,
     )
     candidate.candidate_role = candidate_role
     candidate.component_type = component_type
@@ -2070,12 +2105,16 @@ def recommend_uniprot_proteins(
     max_results: int = 1000,
     allow_transmembrane: bool = False,
     session: requests.Session | None = None,
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> list[ProteinCandidate]:
     ec_number = normalize_ec_number(ec_number)
     if chassis_key not in CHASSIS_TAXON_PRESETS:
         raise ValueError(f"Unknown chassis_key: {chassis_key}")
-    chassis_profile = CHASSIS_TAXON_PRESETS[chassis_key]
     http = session or requests.Session()
+    chassis_profile = taxonomy_profile or resolve_chassis_taxonomy(
+        chassis_key,
+        session=http,
+    )
     reviewed_entries = search_uniprot_by_ec(
         ec_number=ec_number,
         reviewed_only=True,
@@ -2098,7 +2137,7 @@ def recommend_uniprot_proteins(
         )
         if not passed:
             continue
-        score, reasons, warnings, score_breakdown = score_candidate(
+        score, reasons, warnings, score_breakdown, taxonomy_fit = score_candidate(
             entry=entry,
             target_ec=ec_number,
             chassis_profile=chassis_profile,
@@ -2109,6 +2148,7 @@ def recommend_uniprot_proteins(
             reasons=_unique(filter_reasons + reasons),
             warnings=_unique(filter_warnings + warnings),
             score_breakdown=score_breakdown,
+            taxonomy_fit=taxonomy_fit,
         ))
     candidates.sort(key=lambda candidate: candidate.score, reverse=True)
     return candidates[:top_n]
@@ -2134,6 +2174,15 @@ def _step_candidate_row(
         "organism_name": candidate.organism_name,
         "organism_id": candidate.organism_id or "",
         "taxonomic_lineage": _join(candidate.taxonomic_lineage),
+        "taxonomic_lineage_ids": _join(
+            [str(value) for value in candidate.taxonomic_lineage_ids]
+        ),
+        "taxonomic_shared_taxon_id": candidate.taxonomic_shared_taxon_id or "",
+        "taxonomic_shared_name": candidate.taxonomic_shared_name,
+        "taxonomic_shared_rank": candidate.taxonomic_shared_rank,
+        "taxonomic_fit_status": candidate.taxonomic_fit_status,
+        "taxonomic_fit_score": candidate.taxonomic_fit_score,
+        "taxonomy_evidence_source": candidate.taxonomy_evidence_source,
         "reviewed": candidate.reviewed,
         "length": candidate.length or "",
         "score": candidate.score,

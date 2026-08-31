@@ -49,6 +49,10 @@ from src.main_protein_selection.literature_activity.validator import (
 from src.main_protein_selection.uniprot_protein_candidates import (
     resolve_uniprot_identity,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    ChassisTaxonomyProfile,
+    resolve_chassis_taxonomy,
+)
 
 
 MAX_EXTRACTION_PAPERS_PER_STEP = 6
@@ -248,6 +252,7 @@ async def _run_enabled(
     identity_resolver: Callable[..., Any],
     model: Any,
     env_path: str | Path | None,
+    taxonomy_profile: ChassisTaxonomyProfile,
 ) -> tuple[
     list[Any],
     list[LiteratureActivityEvidence],
@@ -354,6 +359,7 @@ async def _run_enabled(
         allow_transmembrane=allow_transmembrane,
         session=session,
         resolver=identity_resolver,
+        taxonomy_profile=taxonomy_profile,
     )
     failures.extend(identity_failures)
     candidates_by_step = {
@@ -390,6 +396,7 @@ def run_literature_activity_search(
     identity_resolver: Callable[..., Any] = resolve_uniprot_identity,
     model: Any = None,
     env_path: str | Path | None = None,
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> LiteratureActivitySearchResult:
     """Search unresolved steps and return literature-backed candidates.
 
@@ -443,6 +450,11 @@ def run_literature_activity_search(
         )
 
     normalized = normalize_requirements(requirements)
+    taxonomy_profile = taxonomy_profile or resolve_chassis_taxonomy(
+        chassis_key,
+        session=session,
+        cache_root=cache_dir,
+    )
     model_cache_identity = literature_model_identity(
         model=model,
         env_path=env_path,
@@ -512,6 +524,7 @@ def run_literature_activity_search(
             identity_resolver=identity_resolver,
             model=model,
             env_path=env_path,
+            taxonomy_profile=taxonomy_profile,
         )
     )
     successful_queries = sum(

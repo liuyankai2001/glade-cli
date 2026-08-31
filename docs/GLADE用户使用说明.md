@@ -615,11 +615,28 @@ outputs/C00811/main_protein_selection/
 ├── reaction_evidence.json
 ├── direction_evidence.json
 ├── ko_evidence.json
+├── taxonomy_evidence.json
 ├── selenzyme_evidence.json
 └── route_repair_requests.json
 ```
 
 `main-enzyme` 只生成候选与证据，不直接修改 manifest。
+
+候选蛋白综合评分使用以下固定权重：反应功能 40%、UniProt/实验依据 25%、
+表达风险 20%、来源分类学适配 15%。来源适配不再依赖写死的物种名称顺序：系统读取
+底盘和候选蛋白的 UniProt taxon lineage，按最近共同祖先（LCA）所在的 strain、
+species、genus、family、order、class、phylum、kingdom 或 domain 层级评分。
+`taxonomy_evidence.json` 保存底盘 taxon、完整 ranked lineage、评分表、权重及数据来源；
+逐步候选 CSV 还会记录每个候选的共同祖先、匹配层级和分类来源分。
+
+分类学信息缺失时使用中性分 50，并明确标记为 `unknown`；数据缺失不会被误判为
+远缘，也不会单独阻断主酶选择。分类亲缘性只是排序因素，反应、方向、底物/产物
+特异性以及辅助蛋白风险仍优先。当前代谢底盘仍固定为 *E. coli* MG1655/iML1515，
+本次改动只将分类学评分内核通用化，并未开放与 GEM 不一致的任意底盘参数。
+
+本版输出格式为 `main_enzyme_selection.v3` 和 `main_enzyme_sets.v3`。已有 v2 结果不会
+静默迁移；升级后需要依次重新运行 `main-enzyme`、`main-enzyme-sets`，并重新执行
+`write --main-enzyme-set N`。
 
 查看所有步骤的候选：
 

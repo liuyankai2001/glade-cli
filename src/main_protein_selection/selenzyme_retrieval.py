@@ -16,8 +16,11 @@ from src.main_protein_selection.settings import (
     SELENZYME_HTTP_CONFIG,
     get_selenzyme_rest_url,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    ChassisTaxonomyProfile,
+    chassis_host_taxon_id,
+)
 from src.main_protein_selection.uniprot_protein_candidates import (
-    CHASSIS_TAXON_PRESETS,
     ProteinCandidate,
     candidate_from_reaction_entry,
     hard_filter_candidate_without_ec,
@@ -211,13 +214,6 @@ def selenzyme_match_type(row: dict[str, Any]) -> str:
 
 def selenzyme_target_count(top_n: int) -> int:
     return min(max(50, max(1, int(top_n)) * 10), 200)
-
-
-def chassis_host_taxon_id(chassis_key: str) -> int:
-    if chassis_key not in CHASSIS_TAXON_PRESETS:
-        raise ValueError(f"Unknown chassis_key: {chassis_key}")
-    profile = CHASSIS_TAXON_PRESETS[chassis_key]
-    return int(profile.get("strain_taxon_id") or profile["species_taxon_id"])
 
 
 class SelenzymeClient:
@@ -456,6 +452,7 @@ def retrieve_selenzyme_candidates(
     allow_transmembrane: bool,
     session: requests.Session,
     entry_cache: dict[str, dict[str, Any] | None] | None = None,
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]], list[str], dict[str, str]]:
     """Resolve ranked Selenzyme accessions to filtered UniProt candidates."""
 
@@ -581,6 +578,7 @@ def retrieve_selenzyme_candidates(
                 if match_type == "exact"
                 else "function: SelenzymeRF similar-reaction candidate"
             ),
+            taxonomy_profile=taxonomy_profile,
         )
         if candidate is None:
             row["rejection_reasons"] = ["uniprot_sequence_safety_filter_failed"]

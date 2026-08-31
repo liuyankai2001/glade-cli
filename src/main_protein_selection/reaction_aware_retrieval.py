@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from src.main_protein_selection.taxonomy_compatibility import ChassisTaxonomyProfile
+
 from src.main_protein_selection.settings import (
     GLADE_CONTACT_EMAIL_ENV,
     RHEA_HTTP_CONFIG,
@@ -270,6 +272,7 @@ def retrieve_rhea_candidates_for_requirement(
     top_n: int | None = None,
     allow_transmembrane: bool,
     session: requests.Session,
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> tuple[list[ProteinCandidate], list[str], dict[str, str]]:
     rhea_ids = [
         str(value)
@@ -298,6 +301,7 @@ def retrieve_rhea_candidates_for_requirement(
             retrieval_query_id=";".join(query_ids),
             matched_rhea_ids=matched,
             allow_transmembrane=allow_transmembrane,
+            taxonomy_profile=taxonomy_profile,
         )
         if candidate is not None:
             candidates.append(candidate)

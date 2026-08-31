@@ -520,6 +520,14 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "accession": _text(row.get("accession")).upper(),
         "protein_name": _text(row.get("protein_name")),
         "organism_name": _text(row.get("organism_name")),
+        "organism_id": _int(row.get("organism_id")),
+        "taxonomic_shared_taxon_id": _int(
+            row.get("taxonomic_shared_taxon_id")
+        ),
+        "taxonomic_shared_name": _text(row.get("taxonomic_shared_name")),
+        "taxonomic_shared_rank": _text(row.get("taxonomic_shared_rank")),
+        "taxonomic_fit_status": _text(row.get("taxonomic_fit_status")),
+        "taxonomic_fit_score": _float(row.get("taxonomic_fit_score")),
         "reviewed": _bool(row.get("reviewed")),
         "score": _float(row.get("score") or row.get("protein_score")),
         "score_breakdown": _score_breakdown(row.get("score_breakdown")),
@@ -1472,6 +1480,12 @@ def _selection_projection(selection: MainEnzymeSelectionResult) -> dict[str, Any
         "expansion_depth": selection.expansion_depth,
         "solution_fingerprint": selection.solution_fingerprint,
         "chassis_key": selection.chassis_key,
+        "host_taxon_id": selection.host_taxon_id,
+        "taxonomy_scoring_policy_version": (
+            selection.taxonomy_scoring_policy_version
+        ),
+        "taxonomy_fingerprint": selection.taxonomy_fingerprint,
+        "scoring_weights": selection.scoring_weights,
         "parameters": selection.parameters.model_dump(mode="json"),
         "shortlist_decision_fingerprint": (
             selection.shortlist_decision_fingerprint
@@ -2013,7 +2027,7 @@ def build_main_enzyme_sets(
         raw_selection = json.loads(selection_path.read_text(encoding="utf-8"))
         if raw_selection.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
             raise ValueError(
-                "old auxiliary-role schema; rerun main-enzyme"
+                "old main-enzyme selection schema; rerun main-enzyme"
             )
         selection = MainEnzymeSelectionResult.model_validate(raw_selection)
     except Exception as exc:

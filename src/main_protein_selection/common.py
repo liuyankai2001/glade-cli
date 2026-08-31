@@ -39,6 +39,7 @@ REACTION_EVIDENCE_FILENAME = "reaction_evidence.json"
 DIRECTION_EVIDENCE_FILENAME = "direction_evidence.json"
 KO_EVIDENCE_FILENAME = "ko_evidence.json"
 SELENZYME_EVIDENCE_FILENAME = "selenzyme_evidence.json"
+TAXONOMY_EVIDENCE_FILENAME = "taxonomy_evidence.json"
 LITERATURE_ACTIVITY_EVIDENCE_FILENAME = "literature_activity_evidence.json"
 LITERATURE_ACTIVITY_EVIDENCE_CSV_FILENAME = "literature_activity_evidence.csv"
 ROUTE_REPAIR_REQUESTS_FILENAME = "route_repair_requests.json"
@@ -112,6 +113,7 @@ def evidence_paths(output_dir: str | Path) -> dict[str, Path]:
             root / LITERATURE_ACTIVITY_EVIDENCE_CSV_FILENAME
         ),
         "selenzyme_evidence_json": root / SELENZYME_EVIDENCE_FILENAME,
+        "taxonomy_evidence_json": root / TAXONOMY_EVIDENCE_FILENAME,
         "route_repair_requests_json": root / ROUTE_REPAIR_REQUESTS_FILENAME,
     }
 
@@ -411,6 +413,7 @@ _MERGED_LIST_FIELDS = (
     "cross_references",
     "subcellular_locations",
     "taxonomic_lineage",
+    "taxonomic_lineage_ids",
     "rhea_ids",
     "reasons",
     "warnings",
@@ -682,6 +685,16 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "protein_name": first.get("protein_name", ""),
             "organism_name": first.get("organism_name", ""),
             "organism_id": first.get("organism_id", ""),
+            "taxonomic_shared_taxon_id": first.get(
+                "taxonomic_shared_taxon_id", ""
+            ),
+            "taxonomic_shared_name": first.get("taxonomic_shared_name", ""),
+            "taxonomic_shared_rank": first.get("taxonomic_shared_rank", ""),
+            "taxonomic_fit_status": first.get("taxonomic_fit_status", "unknown"),
+            "taxonomic_fit_score": first.get("taxonomic_fit_score", 50.0),
+            "taxonomy_evidence_source": first.get(
+                "taxonomy_evidence_source", ""
+            ),
             "reviewed": first.get("reviewed", ""),
             "length": first.get("length", ""),
             "covered_step_indexes": _join([str(value) for value in step_indexes]),
@@ -754,6 +767,7 @@ __all__ = [
     "REACTION_EVIDENCE_FILENAME",
     "ROUTE_REPAIR_REQUESTS_FILENAME",
     "SELENZYME_EVIDENCE_FILENAME",
+    "TAXONOMY_EVIDENCE_FILENAME",
     "STEP_CANDIDATE_COLUMNS",
     "STEP_MAIN_CANDIDATE_AUDIT_FILENAME",
     "STEP_MAIN_CANDIDATES_FILENAME",

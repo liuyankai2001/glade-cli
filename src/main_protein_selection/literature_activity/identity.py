@@ -17,9 +17,14 @@ from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
     resolve_uniprot_identity,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    SCORING_WEIGHTS,
+    ChassisTaxonomyProfile,
+    score_taxonomic_fit,
+)
 
 
-IDENTITY_ADAPTER_VERSION = "literature_activity_identity.v1"
+IDENTITY_ADAPTER_VERSION = "literature_activity_identity.v2_taxonomy_ranked"
 _UNIPROT_ACCESSION = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]{5}|[A-Z0-9]{10})$",
     re.IGNORECASE,
@@ -85,10 +90,32 @@ def _publication_ids(evidence: LiteratureActivityEvidence) -> list[str]:
 def _candidate_from_hit(
     evidence: LiteratureActivityEvidence,
     hit: Any,
+    taxonomy_profile: ChassisTaxonomyProfile,
 ) -> ProteinCandidate:
     identity_score = float(_field(hit, "identity_score", 0.0) or 0.0)
     level_base = 82.0 if evidence.evidence_level == "A" else 74.0
-    score = round(min(100.0, level_base + identity_score * 0.16), 2)
+    function_score = 90.0 if evidence.evidence_level == "A" else 82.0
+    evidence_score = 90.0 if evidence.evidence_level == "A" else 75.0
+    pseudo_entry = {
+        "organism": {
+            "scientificName": str(_field(hit, "organism_name", "")),
+            "taxonId": _field(hit, "taxon_id"),
+            "lineage": [str(item) for item in _field(hit, "lineage", [])],
+        },
+        "lineages": [
+            dict(item)
+            for item in _field(hit, "ranked_lineage", [])
+            if isinstance(item, Mapping)
+        ],
+    }
+    taxonomy_fit = score_taxonomic_fit(pseudo_entry, taxonomy_profile)
+    score = round(
+        function_score * SCORING_WEIGHTS["function"]
+        + evidence_score * SCORING_WEIGHTS["evidence"]
+        + identity_score * SCORING_WEIGHTS["expression"]
+        + taxonomy_fit.score * SCORING_WEIGHTS["host"],
+        2,
+    )
     hit_publications = [str(item) for item in _field(hit, "publication_ids", [])]
     limitations = list(evidence.limitations)
     evidence_reason = (
@@ -121,6 +148,18 @@ def _candidate_from_hit(
             f"literature review status: {evidence.review_status}",
         ],
         sequence=str(_field(hit, "sequence", "")),
+        taxonomic_lineage=[str(item) for item in _field(hit, "lineage", [])],
+        taxonomic_lineage_ids=[
+            int(item.get("taxonId"))
+            for item in _field(hit, "ranked_lineage", [])
+            if isinstance(item, Mapping) and str(item.get("taxonId") or "").isdigit()
+        ],
+        taxonomic_shared_taxon_id=taxonomy_fit.shared_taxon_id,
+        taxonomic_shared_name=taxonomy_fit.shared_name,
+        taxonomic_shared_rank=taxonomy_fit.shared_rank,
+        taxonomic_fit_status=taxonomy_fit.status,
+        taxonomic_fit_score=taxonomy_fit.score,
+        taxonomy_evidence_source=taxonomy_fit.evidence_source,
         gene_names=[str(item) for item in _field(hit, "gene_names", [])],
         protein_existence="",
         sequence_version=_field(hit, "sequence_version"),
@@ -130,10 +169,10 @@ def _candidate_from_hit(
         cross_references=[str(item) for item in _field(hit, "cross_references", [])],
         warnings=warnings,
         score_breakdown={
-            "function": 90.0 if evidence.evidence_level == "A" else 82.0,
-            "evidence": 90.0 if evidence.evidence_level == "A" else 75.0,
+            "function": function_score,
+            "evidence": evidence_score,
             "expression": identity_score,
-            "host": 0.0,
+            "host": taxonomy_fit.score,
             "total": score,
         },
         retrieval_strategy="literature_experimental_activity",
@@ -204,6 +243,7 @@ async def resolve_evidence_identities(
     allow_transmembrane: bool,
     session: Any = None,
     resolver: Callable[..., Any] = resolve_uniprot_identity,
+    taxonomy_profile: ChassisTaxonomyProfile,
 ) -> tuple[
     list[LiteratureActivityEvidence],
     dict[int, list[ProteinCandidate]],
@@ -312,7 +352,7 @@ async def resolve_evidence_identities(
         })
         updated_records.append(resolved)
         candidates_by_step.setdefault(evidence.step_index, []).append(
-            _candidate_from_hit(resolved, selected)
+            _candidate_from_hit(resolved, selected, taxonomy_profile)
         )
 
     return (

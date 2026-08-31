@@ -70,6 +70,11 @@ from src.main_protein_selection.selenzyme_retrieval import (
     retrieve_selenzyme_candidates,
     selenzyme_target_count,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    SCORING_WEIGHTS,
+    TAXONOMY_SCORING_POLICY_VERSION,
+    resolve_chassis_taxonomy,
+)
 
 
 def _ko_requirements_for_retrieval(
@@ -293,6 +298,12 @@ def select_main_enzymes(
             for ec_number in requirement.get("ec_numbers", [])
         ))
         session = requests.Session()
+        taxonomy_profile = resolve_chassis_taxonomy(
+            chassis_key,
+            session=session,
+            cache_root=cache_path,
+            allow_network=fetch_proteins,
+        )
         query_errors: dict[str, str] = {}
         ko_query_errors: dict[str, str] = {}
         candidates_by_ec = {}
@@ -313,6 +324,7 @@ def select_main_enzymes(
                     max_results=max_results,
                     allow_transmembrane=allow_transmembrane,
                     session=session,
+                    taxonomy_profile=taxonomy_profile,
                 )
             except Exception as exc:
                 candidates_by_ec[ec_number] = []
@@ -380,6 +392,7 @@ def select_main_enzymes(
                     top_n=top_n,
                     allow_transmembrane=allow_transmembrane,
                     session=session,
+                    taxonomy_profile=taxonomy_profile,
                 )
                 candidates_by_step[step_index].extend(reaction_candidates)
                 reaction_query_ids.extend(query_ids)
@@ -429,6 +442,7 @@ def select_main_enzymes(
                                 allow_transmembrane=allow_transmembrane,
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
+                                taxonomy_profile=taxonomy_profile,
                             )
                         )
                         candidates_by_step[step_index].extend(reaction_candidates)
@@ -514,6 +528,7 @@ def select_main_enzymes(
                     max_results=min(max_results, 25),
                     allow_transmembrane=allow_transmembrane,
                     session=session,
+                    taxonomy_profile=taxonomy_profile,
                 )
                 literature_status = str(literature_result.status)
                 literature_query_errors.update(literature_result.query_errors)
@@ -668,6 +683,7 @@ def select_main_enzymes(
                                 allow_transmembrane=allow_transmembrane,
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
+                                taxonomy_profile=taxonomy_profile,
                             )
                         )
                         candidates_by_step[step_index].extend(reaction_candidates)
@@ -778,6 +794,7 @@ def select_main_enzymes(
                     retropath_rules_path=retropath_rules_path,
                     cache_dir=cache_path.parent,
                     chassis_key=chassis_key,
+                    taxonomy_profile=taxonomy_profile,
                 ),
                 top_n=top_n,
                 max_results=max_results,
@@ -874,6 +891,10 @@ def select_main_enzymes(
             STEP_CANDIDATE_COLUMNS,
         )
         write_csv(paths["main_enzyme_candidates_csv"], merged_rows, PROTEIN_CANDIDATE_COLUMNS)
+        write_json_atomic(
+            paths["taxonomy_evidence_json"],
+            taxonomy_profile.to_evidence(),
+        )
         write_json_atomic(paths["reaction_evidence_json"], {
             "schema_version": "reaction_evidence.v1",
             "selected_solution_id": solution_id,
@@ -968,6 +989,12 @@ def select_main_enzymes(
             ),
             "selected_solution_id": solution_id,
             "chassis_key": chassis_key,
+            "host_taxon_id": taxonomy_profile.taxon_id,
+            "taxonomy_status": taxonomy_profile.status,
+            "taxonomy_source": taxonomy_profile.source,
+            "taxonomy_scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
+            "taxonomy_fingerprint": taxonomy_profile.semantic_fingerprint(),
+            "scoring_weights": dict(SCORING_WEIGHTS),
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
             "heterologous_step_count": len(all_requirements),
@@ -1041,6 +1068,7 @@ def select_main_enzymes(
                 paths["literature_activity_evidence_csv"]
             ),
             "selenzyme_evidence_json": rel_or_abs(paths["selenzyme_evidence_json"]),
+            "taxonomy_evidence_json": rel_or_abs(paths["taxonomy_evidence_json"]),
             "route_repair_requests_json": rel_or_abs(paths["route_repair_requests_json"]),
             **(
                 {
@@ -1075,6 +1103,12 @@ def select_main_enzymes(
             expansion_depth=expansion_depth,
             solution_fingerprint=solution_fingerprint(solution_id, steps),
             chassis_key=chassis_key,
+            host_taxon_id=taxonomy_profile.taxon_id,
+            taxonomy_status=taxonomy_profile.status,
+            taxonomy_source=taxonomy_profile.source,
+            taxonomy_scoring_policy_version=TAXONOMY_SCORING_POLICY_VERSION,
+            taxonomy_fingerprint=taxonomy_profile.semantic_fingerprint(),
+            scoring_weights=dict(SCORING_WEIGHTS),
             parameters=MainEnzymeSelectionParameters(
                 top_n=top_n,
                 max_results=max_results,

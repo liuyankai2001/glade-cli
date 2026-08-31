@@ -170,7 +170,7 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
         raise ValueError(
-            "主酶组合使用旧版辅助角色格式，请重新运行 main-enzyme-sets"
+            "主酶组合使用旧版结果格式，请重新运行 main-enzyme-sets"
         )
     try:
         return MainEnzymeSetsResult.model_validate(payload)
@@ -186,7 +186,7 @@ def _read_selection(path: Path) -> MainEnzymeSelectionResult:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
         raise ValueError(
-            "主酶候选使用旧版辅助角色格式，请重新运行 main-enzyme"
+            "主酶候选使用旧版结果格式，请重新运行 main-enzyme"
         )
     try:
         return MainEnzymeSelectionResult.model_validate(payload)

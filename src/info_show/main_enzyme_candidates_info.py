@@ -269,7 +269,7 @@ def _read_selection(path: Path) -> MainEnzymeSelectionResult:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
         raise ValueError(
-            "主酶候选使用旧版辅助角色格式，请重新运行 main-enzyme"
+            "主酶候选使用旧版结果格式，请重新运行 main-enzyme"
         )
     try:
         return MainEnzymeSelectionResult.model_validate(payload)
@@ -361,6 +361,8 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
                     "UniProt": candidate.accession,
                     "蛋白名称": candidate.protein_name,
                     "来源物种": candidate.organism_name,
+                    "分类匹配层级": candidate.taxonomic_shared_rank,
+                    "分类来源分": candidate.taxonomic_fit_score,
                     "EC编号": candidate.ec_number,
                     "Reviewed": candidate.reviewed,
                     "蛋白评分": candidate.protein_score,
@@ -397,6 +399,9 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         "运行成功": True,
         "目标化合物": str(config.target_name),
         "路径编号": solution_id,
+        "底盘Taxon ID": selection.host_taxon_id,
+        "分类学数据来源": selection.taxonomy_source,
+        "分类学评分策略": selection.taxonomy_scoring_policy_version,
         "候选生成状态": selection.status,
     }
     if selected_step is not None:
@@ -584,6 +589,15 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
                 f"主酶候选 JSON 与 CSV 的 {field} 不一致，"
                 "请重新运行 main-enzyme"
             )
+    csv_taxonomy_score = _as_float(detail.get("taxonomic_fit_score"))
+    if (
+        csv_taxonomy_score is not None
+        and abs(csv_taxonomy_score - candidate.taxonomic_fit_score) > 1e-9
+    ):
+        raise ValueError(
+            "主酶候选 JSON 与 CSV 的分类来源分不一致，"
+            "请重新运行 main-enzyme"
+        )
     csv_sequence_sha256 = str(detail.get("sequence_sha256") or "").strip()
     if (
         candidate.sequence_sha256
@@ -639,6 +653,14 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
             "别名": _split_values(detail.get("aliases")),
             "来源物种": candidate.organism_name,
             "物种ID": _as_int(detail.get("organism_id")),
+            "最近共同祖先": detail.get("taxonomic_shared_name"),
+            "共同祖先Taxon ID": _as_int(
+                detail.get("taxonomic_shared_taxon_id")
+            ),
+            "共同分类层级": detail.get("taxonomic_shared_rank"),
+            "分类匹配状态": detail.get("taxonomic_fit_status"),
+            "分类来源分": _as_float(detail.get("taxonomic_fit_score")),
+            "分类证据来源": detail.get("taxonomy_evidence_source"),
             "Reviewed": candidate.reviewed,
             "蛋白存在证据": detail.get("protein_existence"),
         },

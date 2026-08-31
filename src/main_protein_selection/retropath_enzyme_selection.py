@@ -31,6 +31,10 @@ from src.main_protein_selection.selenzyme_retrieval import (
     retrieve_selenzyme_candidates,
     selenzyme_target_count,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    ChassisTaxonomyProfile,
+    resolve_chassis_taxonomy,
+)
 from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
     candidate_from_reaction_entry,
@@ -111,6 +115,14 @@ ENZYME_CANDIDATE_COLUMNS = (
     "direction_verdict",
     "direction_confidence",
     "protein_score",
+    "taxonomic_lineage",
+    "taxonomic_lineage_ids",
+    "taxonomic_shared_taxon_id",
+    "taxonomic_shared_name",
+    "taxonomic_shared_rank",
+    "taxonomic_fit_status",
+    "taxonomic_fit_score",
+    "taxonomy_evidence_source",
     "taxonomic_distance",
     "sequence_sha256",
     "sequence",
@@ -800,6 +812,16 @@ def _candidate_record(
         "direction_verdict": candidate.direction_verdict or "unknown",
         "direction_confidence": candidate.direction_confidence,
         "protein_score": candidate.score,
+        "taxonomic_fit_status": candidate.taxonomic_fit_status,
+        "taxonomic_fit_score": candidate.taxonomic_fit_score,
+        "taxonomic_shared_taxon_id": candidate.taxonomic_shared_taxon_id or "",
+        "taxonomic_shared_name": candidate.taxonomic_shared_name,
+        "taxonomic_shared_rank": candidate.taxonomic_shared_rank,
+        "taxonomy_evidence_source": candidate.taxonomy_evidence_source,
+        "taxonomic_lineage": ";".join(candidate.taxonomic_lineage),
+        "taxonomic_lineage_ids": ";".join(
+            str(value) for value in candidate.taxonomic_lineage_ids
+        ),
         "taxonomic_distance": (
             ""
             if candidate.selenzyme_taxonomic_distance is None
@@ -943,7 +965,7 @@ def _candidate_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
         -(_as_float(row.get("reaction_similarity")) or -1.0),
         0 if str(row.get("reviewed") or "").lower() == "true" else 1,
         -(_as_float(row.get("protein_score")) or 0.0),
-        _as_float(row.get("taxonomic_distance")) or float("inf"),
+        -(_as_float(row.get("taxonomic_fit_score")) or 0.0),
         str(row.get("accession") or ""),
     )
 
@@ -954,6 +976,7 @@ def _source_uniprot_candidates(
     chassis_key: str,
     allow_transmembrane: bool,
     session: requests.Session,
+    taxonomy_profile: ChassisTaxonomyProfile,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]]]:
     candidates: list[ProteinCandidate] = []
     evidence: list[dict[str, Any]] = []
@@ -991,6 +1014,7 @@ def _source_uniprot_candidates(
                         "function: UniProt accession attached to the RR02 "
                         "source template"
                     ),
+                    taxonomy_profile=taxonomy_profile,
                 )
                 if entry is not None
                 else None
@@ -1019,7 +1043,13 @@ def _search_requirement(
     selenzyme_client: SelenzymeClient | None,
     selenzyme_circuit_error: str,
     entry_cache: dict[str, dict[str, Any] | None],
+    taxonomy_profile: ChassisTaxonomyProfile | None = None,
 ) -> _SearchOutcome:
+    taxonomy_profile = taxonomy_profile or resolve_chassis_taxonomy(
+        chassis_key,
+        session=session,
+        allow_network=False,
+    )
     if not requirement.enzyme_required:
         return _SearchOutcome([], [], [{"status": "not_required"}])
     records: list[dict[str, Any]] = []
@@ -1038,6 +1068,7 @@ def _search_requirement(
         chassis_key=chassis_key,
         allow_transmembrane=allow_transmembrane,
         session=session,
+        taxonomy_profile=taxonomy_profile,
     )
     evidence.extend(source_evidence)
     source_unavailable |= any(
@@ -1058,6 +1089,7 @@ def _search_requirement(
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
                 session=session,
+                taxonomy_profile=taxonomy_profile,
             )
             records.extend(
                 _candidate_record(
@@ -1116,6 +1148,7 @@ def _search_requirement(
             top_n=max(top_n * 3, 20),
             allow_transmembrane=allow_transmembrane,
             session=session,
+            taxonomy_profile=taxonomy_profile,
         )
         records.extend(
             _candidate_record(
@@ -1199,6 +1232,7 @@ def _search_requirement(
                         allow_transmembrane=allow_transmembrane,
                         session=session,
                         entry_cache=entry_cache,
+                        taxonomy_profile=taxonomy_profile,
                     )
                 )
                 records.extend(
@@ -1472,6 +1506,16 @@ def _standard_candidate_row(
         "protein_name": row.get("protein_name", ""),
         "organism_name": row.get("organism_name", ""),
         "organism_id": row.get("organism_id", ""),
+        "taxonomic_lineage": row.get("taxonomic_lineage", ""),
+        "taxonomic_lineage_ids": row.get("taxonomic_lineage_ids", ""),
+        "taxonomic_shared_taxon_id": row.get(
+            "taxonomic_shared_taxon_id", ""
+        ),
+        "taxonomic_shared_name": row.get("taxonomic_shared_name", ""),
+        "taxonomic_shared_rank": row.get("taxonomic_shared_rank", ""),
+        "taxonomic_fit_status": row.get("taxonomic_fit_status", "unknown"),
+        "taxonomic_fit_score": row.get("taxonomic_fit_score", 50.0),
+        "taxonomy_evidence_source": row.get("taxonomy_evidence_source", ""),
         "reviewed": row.get("reviewed", "false"),
         "length": row.get("length", ""),
         "score": row.get("protein_score", 0.0),
@@ -1525,6 +1569,7 @@ def _standard_candidate_row(
         "selenzyme_sim_rf": row.get("sim_rf", ""),
         "selenzyme_sim_2018": row.get("sim_2018", ""),
         "selenzyme_matched_reaction_id": row.get("matched_reaction_id", ""),
+        "selenzyme_taxonomic_distance": row.get("taxonomic_distance", ""),
         "source_mnxr_id": search_requirement.source_mnxr_id,
         "retropath_rule_id": search_requirement.rule_id,
         "retropath_hypothesis_id": search_requirement.hypothesis_id,
@@ -1562,6 +1607,13 @@ def retrieve_manifest_retropath_candidates(
     }
     chassis_key = str(getattr(config, "chassis_key", "ecoli_mg1655") or "ecoli_mg1655")
     cache_root = Path(config.cache_dir).resolve() / "main_protein_selection"
+    taxonomy_profile = getattr(config, "taxonomy_profile", None)
+    if not isinstance(taxonomy_profile, ChassisTaxonomyProfile):
+        taxonomy_profile = resolve_chassis_taxonomy(
+            chassis_key,
+            session=session,
+            cache_root=cache_root,
+        )
     client_error = ""
     try:
         selenzyme_client: SelenzymeClient | None = SelenzymeClient(
@@ -1592,6 +1644,7 @@ def retrieve_manifest_retropath_candidates(
                 selenzyme_client=selenzyme_client,
                 selenzyme_circuit_error=client_error,
                 entry_cache=entry_cache,
+                taxonomy_profile=taxonomy_profile,
             )
         outcome = search_cache[key]
         source_unavailable |= outcome.source_unavailable
@@ -1759,6 +1812,11 @@ def select_retropath_enzymes(
     http = session or requests.Session()
     chassis_key = str(getattr(config, "chassis_key", "ecoli_mg1655") or "ecoli_mg1655")
     cache_root = Path(config.cache_dir).resolve() / "main_protein_selection"
+    taxonomy_profile = resolve_chassis_taxonomy(
+        chassis_key,
+        session=http,
+        cache_root=cache_root,
+    )
     client_error = ""
     if selenzyme_client is None:
         try:
@@ -1793,6 +1851,7 @@ def select_retropath_enzymes(
                 selenzyme_client=selenzyme_client,
                 selenzyme_circuit_error=client_error,
                 entry_cache=entry_cache,
+                taxonomy_profile=taxonomy_profile,
             )
             search_cache[key] = outcome
             if outcome.source_unavailable:
