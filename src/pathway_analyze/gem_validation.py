@@ -18,6 +18,11 @@ from cobra.util.solver import linear_reaction_coefficients
 
 from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
 from src.pathway_analyze.target_id import validate_target_compound_id
+from src.pathway_analyze.target_status import (
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    read_target_already_available_status,
+    target_already_available_message,
+)
 
 
 KEGG_REST_BASE_URL = "https://rest.kegg.jp"
@@ -61,6 +66,33 @@ def validation_depth_output_dir(base_gap_dir: str | Path, depth: int) -> Path:
     """返回指定 gap depth 对应的 GEM 验证输出目录。"""
 
     return gap_depth_output_dir(base_gap_dir, depth) / "gem_validation"
+
+
+def _target_already_available_validation_result(
+    config: Any,
+) -> dict[str, Any] | None:
+    target_name = getattr(config, "target_name", None)
+    gap_output_path = getattr(config, "gap_output_path", None)
+    if not target_name or gap_output_path is None:
+        return None
+    target_compound = validate_target_compound_id(target_name)
+    expansion_depth = int(getattr(config, "depth", 0))
+    gap_dir = gap_depth_output_dir(
+        Path(gap_output_path).expanduser().resolve(),
+        expansion_depth,
+    )
+    status = read_target_already_available_status(gap_dir, target_compound)
+    if status is None:
+        return None
+    return {
+        "ok": True,
+        "status": TARGET_ALREADY_AVAILABLE_STATUS,
+        "message": str(status.get("message") or "").strip()
+        or target_already_available_message(target_compound),
+        "target_compound": target_compound,
+        "expansion_depth": expansion_depth,
+        "pathway_validation_required": False,
+    }
 
 
 @dataclass(frozen=True)
@@ -1070,6 +1102,10 @@ def validate_gap_output(
 def gem_validate(config: Any) -> dict[str, Any]:
     """使用 ``RunConfig`` 验证 gap 候选路径的 GEM 通量可行性。"""
 
+    terminal_result = _target_already_available_validation_result(config)
+    if terminal_result is not None:
+        return terminal_result
+
     target_compound = validate_target_compound_id(config.target_name)
     model_path = Path(config.model_path).expanduser().resolve()
     medium_path = Path(config.medium_path).expanduser().resolve()
@@ -1280,6 +1316,11 @@ def _unified_solution_selection(
 
 def run_validation(config: Any) -> dict[str, Any]:
     """Validate unified solution IDs and dispatch by recorded route source."""
+
+    terminal_result = _target_already_available_validation_result(config)
+    if terminal_result is not None:
+        print(json.dumps(terminal_result, ensure_ascii=False, indent=2))
+        return terminal_result
 
     selected, kegg_ids, retropath_ids, candidate_ranks = (
         _unified_solution_selection(config)

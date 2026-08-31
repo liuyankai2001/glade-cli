@@ -7,6 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.pathway_analyze.target_status import (
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    target_already_available_message,
+)
+
 
 CHASSIS_INFO_SCHEMA_VERSION = "chassis_info.v1"
 
@@ -129,12 +134,26 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
             f"({reported_rows} != {len(compounds)})"
         )
 
+    target_already_available = bool(target_matches)
+    status = (
+        TARGET_ALREADY_AVAILABLE_STATUS if target_already_available else "complete"
+    )
+    message = (
+        target_already_available_message(target_compound_id)
+        if target_already_available
+        else (
+            f"目标化合物 {target_compound_id} 未在当前底盘可生成集合中，"
+            "可继续进行合成路径搜索。"
+        )
+    )
     return {
         "schema_version": CHASSIS_INFO_SCHEMA_VERSION,
         "ok": True,
-        "status": "complete",
+        "status": status,
+        "message": message,
         "target_compound_id": target_compound_id,
-        "target_producible_by_chassis": bool(target_matches),
+        "target_producible_by_chassis": target_already_available,
+        "pathway_search_required": not target_already_available,
         "target_matches": target_matches,
         "model_path": str(Path(config.model_path).expanduser().resolve()),
         "medium_path": str(Path(config.medium_path).expanduser().resolve()),
@@ -183,10 +202,17 @@ def format_chassis_info_zh(result: dict[str, Any]) -> dict[str, Any]:
     compounds = result["kegg_compounds"]
     return {
         "运行成功": result["ok"],
+        "运行状态": (
+            "目标化合物已在底盘细胞中"
+            if result["target_producible_by_chassis"]
+            else "底盘分析完成"
+        ),
+        "提示": result["message"],
         "目标化合物ID": result["target_compound_id"],
         "目标化合物可由底盘直接生成": result[
             "target_producible_by_chassis"
         ],
+        "需要新增合成路径": result["pathway_search_required"],
         "底盘模型": Path(result["model_path"]).name,
         "培养基": Path(result["medium_path"]).name,
         "基线生长通量": growth["baseline_growth"],

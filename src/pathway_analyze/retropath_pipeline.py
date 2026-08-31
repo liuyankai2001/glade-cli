@@ -252,6 +252,12 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             "retropath_requested": True,
             "search_engine": "retropath",
             "status": "retropath_target_already_reachable",
+            "message": (
+                f"目标化合物 {target_compound} 已在底盘细胞可生成集合中，"
+                "无需新增合成路径，也未提交 RetroPath 任务。"
+            ),
+            "target_already_available_in_chassis": True,
+            "pathway_search_required": False,
             "stage": "input",
             "detail": (
                 "the exact target structure is already present in the "
@@ -271,10 +277,8 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             "service_status": "not_submitted",
             "return_code": None,
             "cache_hit": False,
-            "complete_path_count": 0,
             "sink_match_count": 1,
             "scope_present": False,
-            "candidate_count": 0,
             "rejection_count": input_bundle.rejected_compound_count,
             "input_summary": {
                 "reachable_compound_count": input_bundle.reachable_compound_count,

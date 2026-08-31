@@ -31,6 +31,12 @@ import cobra
 import pandas as pd
 
 from src.pathway_analyze.target_id import validate_target_compound_id
+from src.pathway_analyze.target_status import (
+    NO_PATHWAY_FOUND_STATUS,
+    ROUTES_FOUND_STATUS,
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    target_already_available_message,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +387,9 @@ class SearchExecutionResult:
     module_chain_context: "ModuleChainContext"
     rejected_solutions: Tuple[Solution, ...] = tuple()
     reaction_resolution_mode: str = "strict"
+    status: str = ROUTES_FOUND_STATUS
+    message: str = ""
+    target_already_available_in_chassis: bool = False
 
 
 @dataclass(frozen=True)
@@ -3055,7 +3064,11 @@ def search_gap_solutions_once(
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
     )
-    base_reachable = set(base_reachable_compounds or reachable_compounds)
+    base_reachable = set(
+        reachable_compounds
+        if base_reachable_compounds is None
+        else base_reachable_compounds
+    )
     target_entry_pathways = set(client.get_compound_record(target_compound).pathway_ids)
 
     # 只有 A0 中的目标才是真正零步可达；扩展层目标必须恢复 A0→目标反应树。
@@ -3367,6 +3380,29 @@ def run_search_gap_analysis(
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
     )
+    base_reachable = set(
+        reachable_compounds
+        if base_reachable_compounds is None
+        else base_reachable_compounds
+    )
+    if target_compound in base_reachable:
+        return SearchExecutionResult(
+            solutions=tuple(),
+            rejected_solutions=tuple(),
+            search_mode_used="not_required_target_in_chassis",
+            did_fallback=False,
+            electron_avoidance_mode=electron_avoidance_mode,
+            electron_avoidance_fallback=False,
+            electron_fallback_parameters={},
+            target_compound_module_ids=tuple(),
+            matched_target_module_ids=tuple(),
+            direct_producing_reaction_ids=tuple(),
+            module_chain_context=ModuleChainContext(tuple(), tuple(), tuple()),
+            reaction_resolution_mode=reaction_resolution_mode,
+            status=TARGET_ALREADY_AVAILABLE_STATUS,
+            message=target_already_available_message(target_compound),
+            target_already_available_in_chassis=True,
+        )
     (
         target_compound_module_ids,
         matched_target_module_ids,
@@ -3501,6 +3537,12 @@ def run_search_gap_analysis(
         direct_producing_reaction_ids=direct_producing_reaction_ids,
         module_chain_context=module_chain_context,
         reaction_resolution_mode=reaction_resolution_mode,
+        status=(ROUTES_FOUND_STATUS if round_result.solutions else NO_PATHWAY_FOUND_STATUS),
+        message=(
+            f"已找到 {len(round_result.solutions)} 条候选合成路径。"
+            if round_result.solutions
+            else "未找到连接到底盘可达集合的候选合成路径。"
+        ),
     )
 
 
@@ -3944,6 +3986,14 @@ def write_outputs(
             "electron_inference_version": ELECTRON_INFERENCE_VERSION,
             "reaction_resolution_version": REACTION_RESOLUTION_VERSION,
             "reaction_resolution_mode": result.reaction_resolution_mode,
+            "status": result.status,
+            "message": result.message,
+            "target_already_available_in_chassis": (
+                result.target_already_available_in_chassis
+            ),
+            "pathway_search_required": (
+                not result.target_already_available_in_chassis
+            ),
             "rejected_reaction_route_count": len(
                 build_rejected_solution_rows(result)
             ),
@@ -4141,9 +4191,17 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         output_dir=gap_dir,
         run_args=run_args,
     )
-    return {
+    response = {
         "ok": True,
+        "status": result.status,
+        "message": result.message,
         "target_compound": target_compound,
+        "target_already_available_in_chassis": (
+            result.target_already_available_in_chassis
+        ),
+        "pathway_search_required": (
+            not result.target_already_available_in_chassis
+        ),
         "expansion_depth": expansion_depth,
         "base_reachable_file": str(base_reachable_path.resolve()),
         "reachable_file": str(reachable_path.resolve()),
@@ -4155,7 +4213,6 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         "rejected_reaction_routes_file": str(
             (output_dir / "rejected_reaction_routes.csv").resolve()
         ),
-        "solution_count": len(result.solutions),
         "search_mode_used": result.search_mode_used,
         "did_fallback": result.did_fallback,
         "electron_avoidance_mode": result.electron_avoidance_mode,
@@ -4163,6 +4220,9 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         "reaction_resolution_mode": result.reaction_resolution_mode,
         "rejected_reaction_route_count": len(result.rejected_solutions),
     }
+    if not result.target_already_available_in_chassis:
+        response["solution_count"] = len(result.solutions)
+    return response
 
 
 def run_gap(config: Any) -> dict[str, Any]:

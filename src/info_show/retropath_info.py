@@ -45,6 +45,9 @@ from src.pathway_analyze.target_id import validate_target_compound_id
 
 STATUS_NAMES = {
     "retropath_candidates_found": "已找到 RetroPath 候选路线",
+    "retropath_target_already_reachable": (
+        "目标化合物已在底盘细胞中，无需运行 RetroPath"
+    ),
     "retropath_no_scope": "未找到命中可信 sink 的完整候选路线",
     "retropath_source_in_sink": "目标化合物已属于所选 sink",
     "retropath_input_invalid": "RetroPath 输入无效",
@@ -388,6 +391,7 @@ def _load_context(config: Any) -> _RetroPathViewContext:
         raise ValueError(f"RetroPath 运行结果包含未知状态：{status!r}")
     successful_statuses = {
         "retropath_candidates_found",
+        "retropath_target_already_reachable",
         "retropath_no_scope",
         "retropath_source_in_sink",
     }
@@ -399,6 +403,13 @@ def _load_context(config: Any) -> _RetroPathViewContext:
     if pipeline.get("sink_source") != expected_sink_source:
         raise ValueError("RetroPath 运行结果的 sink_source 与 depth 不一致")
     if pipeline["ok"] is False:
+        return _RetroPathViewContext(
+            target_compound=target_compound,
+            depth=depth,
+            output_dir=output_dir,
+            pipeline=pipeline,
+        )
+    if status == "retropath_target_already_reachable":
         return _RetroPathViewContext(
             target_compound=target_compound,
             depth=depth,
@@ -1054,6 +1065,16 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
             "失败详情": detail,
             "候选路线数": 0,
             "警告": [detail] if detail else [],
+        }
+    if status == "retropath_target_already_reachable":
+        message = str(pipeline.get("message") or "").strip()
+        return {
+            **common,
+            "提示": message or STATUS_NAMES[status],
+            "需要新增合成路径": False,
+            "RetroPath任务状态": "未提交（无需搜索）",
+            "目标匹配ID": list(pipeline.get("target_reachable_aliases") or []),
+            "警告": [],
         }
 
     input_summary = _required_mapping(pipeline.get("input_summary"), "input_summary")

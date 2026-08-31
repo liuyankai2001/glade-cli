@@ -11,6 +11,11 @@ from typing import Any
 import cobra
 from cobra.util.solver import fix_objective_as_constraint
 
+from src.pathway_analyze.target_status import (
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    target_already_available_message,
+)
+
 
 DEFAULT_GROWTH_FRACTION = 0.1
 DEFAULT_FLUX_THRESHOLD = 1e-8
@@ -231,6 +236,22 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         compartments,
         progress_interval,
     )
+    target_compound = str(getattr(config, "target_name", "") or "").strip().upper()
+    target_already_available = any(
+        str(row.get("kegg_id") or "").strip().upper() == target_compound
+        for row in kegg_rows
+    )
+    status = (
+        TARGET_ALREADY_AVAILABLE_STATUS if target_already_available else "complete"
+    )
+    message = (
+        target_already_available_message(target_compound)
+        if target_already_available
+        else (
+            f"底盘分析完成；目标化合物 {target_compound} 未在当前可生成集合中，"
+            "可继续进行合成路径搜索。"
+        )
+    )
     _write_csv(
         producible_csv,
         ["source", "met_id", "met_name", "compartment", "kegg_id"],
@@ -283,6 +304,12 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
             "item": "screening_elapsed_seconds",
             "value": round(stats["screening_elapsed_seconds"], 3),
         },
+        {"item": "target_compound", "value": target_compound},
+        {"item": "status", "value": status},
+        {
+            "item": "target_already_available_in_chassis",
+            "value": target_already_available,
+        },
     ]
     _write_csv(summary_csv, ["item", "value"], summary_rows)
 
@@ -311,9 +338,15 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         )
     print(f"[INFO] producible compounds written to: {producible_csv}")
     print(f"[INFO] chassis summary written to: {summary_csv}")
+    print(f"[INFO] {message}")
 
     return {
         "ok": True,
+        "status": status,
+        "message": message,
+        "target_compound": target_compound,
+        "target_already_available_in_chassis": target_already_available,
+        "pathway_search_required": not target_already_available,
         "baseline_growth": baseline_growth,
         "growth_fraction": growth_fraction,
         "flux_threshold": flux_threshold,

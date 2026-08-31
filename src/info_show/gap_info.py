@@ -11,6 +11,12 @@ from src.pathway_analyze.kegg_gap_analyze import (
     ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
+from src.pathway_analyze.target_status import (
+    NO_PATHWAY_FOUND_STATUS,
+    ROUTES_FOUND_STATUS,
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    target_already_available_message,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -97,6 +103,23 @@ def get_gap_info(config: Any) -> dict[str, Any]:
         raise ValueError("depth 必须大于等于 0")
     gap_dir = gap_depth_output_dir(config.gap_output_path, depth).resolve()
     run_config = _read_json(gap_dir / "run_config.json")
+    target_id = str(getattr(config, "target_name", "") or "").strip().upper()
+    status = str(run_config.get("status") or "").strip()
+    if status == TARGET_ALREADY_AVAILABLE_STATUS:
+        message = str(run_config.get("message") or "").strip()
+        return {
+            "运行成功": True,
+            "运行状态": "目标化合物已在底盘细胞中",
+            "原始状态代码": status,
+            "提示": message or target_already_available_message(target_id),
+            "目标化合物ID": target_id,
+            "Gap深度": depth,
+            "需要新增合成路径": False,
+            "可达化合物数": _as_int(
+                run_config.get("reachable_compound_count")
+            ),
+            "警告": [],
+        }
     solutions = _read_csv(gap_dir / "solutions.csv")
     rejected = _read_csv(gap_dir / "rejected_reaction_routes.csv")
     required_electron_columns = {
@@ -118,7 +141,6 @@ def get_gap_info(config: Any) -> dict[str, Any]:
             f"gap -i <输入文件> -d {depth}"
         )
 
-    target_id = str(getattr(config, "target_name", "") or "").strip().upper()
     warnings: list[str] = []
     recorded_depth = _as_int(run_config.get("expansion_depth"), depth)
     if recorded_depth != depth:
@@ -157,8 +179,15 @@ def get_gap_info(config: Any) -> dict[str, Any]:
 
     return {
         "运行成功": True,
+        "运行状态": {
+            ROUTES_FOUND_STATUS: "已找到候选合成路径",
+            NO_PATHWAY_FOUND_STATUS: "未找到候选合成路径",
+        }.get(status, status or "搜索完成"),
+        "原始状态代码": status,
+        "提示": str(run_config.get("message") or "").strip(),
         "目标化合物ID": target_id,
         "Gap深度": depth,
+        "需要新增合成路径": True,
         "可达化合物数": _as_int(run_config.get("reachable_compound_count")),
         "候选路线数": len(solutions),
         "可推荐路线数": sum(

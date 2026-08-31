@@ -286,6 +286,12 @@ python main.py gap -i demo01.json -d 1
 搜索从目标 KEGG 化合物逆向展开，综合底盘内源反应方向、KEGG module、异源酶数量、
 辅因子负担、电子载体风险和循环剪枝生成候选路线。
 
+如果目标化合物已经属于底盘可生成集合，命令会正常结束并返回状态
+`target_already_available_in_chassis`，明确提示“目标化合物已在底盘细胞中，无需新增
+合成路径”。该状态不会被表示为零步候选路线，也不会与
+`no_pathway_found`（确实没有找到候选路径）混用；后续 `info`、`validate` 和
+`write --solution` 会返回相同提示，不再因为步骤表为空而报错。
+
 深度 0 的主要输出为：
 
 ```text

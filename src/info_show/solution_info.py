@@ -9,6 +9,11 @@ from src.pathway_analyze.kegg_gap_analyze import (
     ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
+from src.pathway_analyze.target_status import (
+    TARGET_ALREADY_AVAILABLE_STATUS,
+    read_target_already_available_status,
+    target_already_available_message,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
@@ -267,23 +272,37 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     """读取路线概要，指定 ``config.step`` 时返回单步详情。"""
 
     target_compound = validate_target_compound_id(config.target_name)
+    expansion_depth = int(getattr(config, "depth", 0))
+    if expansion_depth < 0:
+        raise ValueError("depth 必须大于等于 0")
+    gap_dir = gap_depth_output_dir(
+        Path(config.gap_output_path).expanduser().resolve(),
+        expansion_depth,
+    )
+    target_status = read_target_already_available_status(
+        gap_dir, target_compound
+    )
+    if target_status is not None:
+        return {
+            "运行成功": True,
+            "运行状态": "目标化合物已在底盘细胞中",
+            "原始状态代码": TARGET_ALREADY_AVAILABLE_STATUS,
+            "提示": str(target_status.get("message") or "").strip()
+            or target_already_available_message(target_compound),
+            "目标化合物": target_compound,
+            "Gap深度": expansion_depth,
+            "需要新增合成路径": False,
+        }
     raw_solution = getattr(config, "solution", None)
     if raw_solution is None:
         raise ValueError("未指定 solution，请使用 info --solution N")
     selected_solution_id = int(raw_solution)
     if selected_solution_id < 1:
         raise ValueError("solution 必须是正整数")
-    expansion_depth = int(getattr(config, "depth", 0))
-    if expansion_depth < 0:
-        raise ValueError("depth 必须大于等于 0")
     raw_step_index = getattr(config, "step", None)
     selected_step_index = int(raw_step_index) if raw_step_index is not None else None
     if selected_step_index is not None and selected_step_index < 1:
         raise ValueError("step 必须是正整数")
-    gap_dir = gap_depth_output_dir(
-        Path(config.gap_output_path).expanduser().resolve(),
-        expansion_depth,
-    )
     summaries_path = gap_dir / "solutions.csv"
     steps_path = gap_dir / "all_solution_steps.csv"
 
