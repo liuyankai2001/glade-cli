@@ -15,9 +15,9 @@ UNIPROT_TAXONOMY_URL = "https://rest.uniprot.org/taxonomy"
 
 SCORING_WEIGHTS = {
     "function": 0.40,
-    "evidence": 0.25,
+    "evidence": 0.15,
     "expression": 0.20,
-    "host": 0.15,
+    "host": 0.25,
 }
 
 UNKNOWN_TAXONOMY_SCORE = 50.0

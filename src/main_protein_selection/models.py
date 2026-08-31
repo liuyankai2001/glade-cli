@@ -318,9 +318,9 @@ class MainEnzymeSelectionResult(BaseModel):
     )
     scoring_weights: dict[str, float] = Field(default_factory=lambda: {
         "function": 0.40,
-        "evidence": 0.25,
+        "evidence": 0.15,
         "expression": 0.20,
-        "host": 0.15,
+        "host": 0.25,
     })
     parameters: MainEnzymeSelectionParameters
     shortlist_decision_fingerprint: str | None = Field(

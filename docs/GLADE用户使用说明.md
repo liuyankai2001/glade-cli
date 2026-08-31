@@ -622,8 +622,8 @@ outputs/C00811/main_protein_selection/
 
 `main-enzyme` 只生成候选与证据，不直接修改 manifest。
 
-候选蛋白综合评分使用以下固定权重：反应功能 40%、UniProt/实验依据 25%、
-表达风险 20%、来源分类学适配 15%。来源适配不再依赖写死的物种名称顺序：系统读取
+候选蛋白综合评分使用以下固定权重：反应功能 40%、来源分类学适配 25%、
+表达风险 20%、UniProt/实验依据 15%。来源适配不再依赖写死的物种名称顺序：系统读取
 底盘和候选蛋白的 UniProt taxon lineage，按最近共同祖先（LCA）所在的 strain、
 species、genus、family、order、class、phylum、kingdom 或 domain 层级评分。
 `taxonomy_evidence.json` 保存底盘 taxon、完整 ranked lineage、评分表、权重及数据来源；
