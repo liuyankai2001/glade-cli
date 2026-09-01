@@ -345,6 +345,15 @@ RetroPath。运行前先按 2.3 节确认本地服务已经就绪：
 python main.py gap -i demo01.json --retropath -d 0
 ```
 
+RetroPath 默认最多逆向预测 **3 步**。可用 `--step N` 将本次预测限制为 1–10 步，
+例如预测最多 5 步：
+
+```powershell
+python main.py gap -i demo01.json --retropath --step 5 -d 0
+```
+
+`--step` 仅影响 RetroPath 的预测步数，不影响 `-d/--depth` 选择的底盘代谢物扩展深度。
+
 `-d 0` 表示预测路线必须连接到底盘直接可生成的代谢物。若想让路线连接到扩展后的
 可达代谢物，必须先生成同一深度的扩展结果。例如使用深度 5：
 

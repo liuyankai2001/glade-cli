@@ -10,5 +10,14 @@ def register(subparsers):
         default=None,
         help='显式启用 RetroPath 预测搜索；默认仍使用原始 KEGG 搜索',
     )
+    p.add_argument(
+        '--step',
+        dest='retropath_max_steps',
+        type=int,
+        choices=range(1, 11),
+        default=None,
+        metavar='N',
+        help='RetroPath 最大逆合成步数（1–10；默认 3；仅与 --retropath 一起使用）',
+    )
     p.set_defaults(func=run_gap_command)
     return p
