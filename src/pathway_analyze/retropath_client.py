@@ -7,6 +7,7 @@ import ipaddress
 import json
 import math
 import re
+import shutil
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -1426,6 +1427,17 @@ class RetroPathHttpClient:
                 sink_sha256=sink_sha256,
                 result_artifacts=service_results["artifacts"],
             )
+            try:
+                if raw_dir.is_symlink() or raw_dir.is_file():
+                    raw_dir.unlink()
+                elif raw_dir.is_dir():
+                    shutil.rmtree(raw_dir)
+            except OSError as exc:
+                raise RetroPathClientError(
+                    "artifact_download_failed",
+                    f"cannot clear stale local RetroPath artifacts: {exc}",
+                    job_id=job.job_id,
+                ) from exc
             raw_dir.mkdir(parents=True, exist_ok=True)
             service_results_path = raw_dir / SERVICE_RESULTS_FILE_NAME
             service_results_text = json.dumps(
