@@ -400,6 +400,8 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         "ok": True,
         "status": status,
         "message": message,
+        "model_path": str(model_path),
+        "medium_path": str(medium_path),
         "target_compound": target_compound,
         "target_already_available_in_chassis": target_already_available,
         "pathway_search_required": not target_already_available,
