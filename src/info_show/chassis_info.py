@@ -9,11 +9,14 @@ from typing import Any
 
 from src.pathway_analyze.target_status import (
     TARGET_ALREADY_AVAILABLE_STATUS,
-    target_already_available_message,
 )
 
 
-CHASSIS_INFO_SCHEMA_VERSION = "chassis_info.v1"
+CHASSIS_INFO_SCHEMA_VERSION = "chassis_info.v2"
+
+TARGET_SUPPLY_CONFIRMED = "direct_supply_confirmed"
+TARGET_SUPPLY_NOT_DETECTED = "no_direct_supply_detected"
+TARGET_SUPPLY_INDETERMINATE = "indeterminate"
 
 
 def _convert_value(value: Any) -> Any:
@@ -91,6 +94,56 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _read_target_evidence(value: Any) -> list[dict[str, Any]]:
+    """Read the target-specific FBA evidence persisted in the summary CSV."""
+
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _target_supply_message(
+    target_compound_id: str,
+    target_supply_status: str,
+    mapped_metabolites: int | None,
+    tested_metabolites: int | None,
+    optimization_failed: int | None,
+) -> str:
+    """Describe only the completed chassis-analysis conclusion."""
+
+    if target_supply_status == TARGET_SUPPLY_CONFIRMED:
+        return (
+            f"在本次 GEM、培养基和生长约束下，检测到目标化合物 "
+            f"{target_compound_id} 的直接供给通量。"
+        )
+    if target_supply_status == TARGET_SUPPLY_INDETERMINATE:
+        if mapped_metabolites == 0:
+            return (
+                f"目标化合物 {target_compound_id} 未映射到 GEM 代谢物，"
+                "本次分析无法判断其是否可直接供给。"
+            )
+        if tested_metabolites == 0:
+            return (
+                f"目标化合物 {target_compound_id} 的映射代谢物未纳入本次检测范围，"
+                "本次分析无法判断其是否可直接供给。"
+            )
+        if optimization_failed:
+            return (
+                f"目标化合物 {target_compound_id} 的关联代谢物优化失败，"
+                "本次分析无法判断其是否可直接供给。"
+            )
+    return (
+        f"在本次 GEM、培养基和生长约束下，未检测到目标化合物 "
+        f"{target_compound_id} 的直接供给通量。"
+    )
+
+
 def get_chassis_info(config: Any) -> dict[str, Any]:
     """Return a concise, auditable view of existing chassis results."""
 
@@ -135,16 +188,43 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
         )
 
     target_already_available = bool(target_matches)
+    target_supply_status = str(summary.get("target_supply_status") or "").strip()
+    if target_supply_status not in {
+        TARGET_SUPPLY_CONFIRMED,
+        TARGET_SUPPLY_NOT_DETECTED,
+        TARGET_SUPPLY_INDETERMINATE,
+    }:
+        # Results written before chassis output v2 cannot distinguish an
+        # unmapped target from a screened-but-unsupplied one.
+        target_supply_status = (
+            TARGET_SUPPLY_CONFIRMED
+            if target_already_available
+            else TARGET_SUPPLY_NOT_DETECTED
+        )
+    target_mapped_metabolites = _int_or_none(
+        summary.get("target_mapped_metabolites")
+    )
+    target_tested_metabolites = _int_or_none(
+        summary.get("target_tested_metabolites")
+    )
+    target_out_of_scope_metabolites = _int_or_none(
+        summary.get("target_out_of_scope_metabolites")
+    )
+    target_optimization_failed = _int_or_none(
+        summary.get("target_optimization_failed")
+    )
+    target_supply_evidence = _read_target_evidence(
+        summary.get("target_supply_evidence_json")
+    )
     status = (
         TARGET_ALREADY_AVAILABLE_STATUS if target_already_available else "complete"
     )
-    message = (
-        target_already_available_message(target_compound_id)
-        if target_already_available
-        else (
-            f"目标化合物 {target_compound_id} 未在当前底盘可生成集合中，"
-            "可继续进行合成路径搜索。"
-        )
+    message = _target_supply_message(
+        target_compound_id,
+        target_supply_status,
+        target_mapped_metabolites,
+        target_tested_metabolites,
+        target_optimization_failed,
     )
     return {
         "schema_version": CHASSIS_INFO_SCHEMA_VERSION,
@@ -155,6 +235,14 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
         "target_producible_by_chassis": target_already_available,
         "pathway_search_required": not target_already_available,
         "target_matches": target_matches,
+        "target_supply": {
+            "status": target_supply_status,
+            "mapped_metabolites": target_mapped_metabolites,
+            "tested_metabolites": target_tested_metabolites,
+            "out_of_scope_metabolites": target_out_of_scope_metabolites,
+            "optimization_failed": target_optimization_failed,
+            "evidence": target_supply_evidence,
+        },
         "model_path": str(Path(config.model_path).expanduser().resolve()),
         "medium_path": str(Path(config.medium_path).expanduser().resolve()),
         "growth": {
@@ -200,19 +288,23 @@ def format_chassis_info_zh(result: dict[str, Any]) -> dict[str, Any]:
     growth = result["growth"]
     screening = result["screening"]
     compounds = result["kegg_compounds"]
+    target_supply = result["target_supply"]
+    target_status_labels = {
+        TARGET_SUPPLY_CONFIRMED: "检测到直接供给",
+        TARGET_SUPPLY_NOT_DETECTED: "未检测到直接供给",
+        TARGET_SUPPLY_INDETERMINATE: "结果不确定",
+    }
     return {
         "运行成功": result["ok"],
-        "运行状态": (
-            "目标化合物已在底盘细胞中"
-            if result["target_producible_by_chassis"]
-            else "底盘分析完成"
-        ),
+        "运行状态": "底盘分析完成",
         "提示": result["message"],
         "目标化合物ID": result["target_compound_id"],
-        "目标化合物可由底盘直接生成": result[
-            "target_producible_by_chassis"
-        ],
-        "需要新增合成路径": result["pathway_search_required"],
+        "目标供给状态": target_status_labels.get(
+            target_supply["status"], target_supply["status"]
+        ),
+        "目标映射GEM代谢物数": target_supply["mapped_metabolites"],
+        "目标纳入检测的代谢物数": target_supply["tested_metabolites"],
+        "目标供给证据": target_supply["evidence"],
         "底盘模型": Path(result["model_path"]).name,
         "培养基": Path(result["medium_path"]).name,
         "基线生长通量": growth["baseline_growth"],

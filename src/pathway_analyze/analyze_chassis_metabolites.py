@@ -13,7 +13,6 @@ from cobra.util.solver import fix_objective_as_constraint
 
 from src.pathway_analyze.target_status import (
     TARGET_ALREADY_AVAILABLE_STATUS,
-    target_already_available_message,
 )
 
 
@@ -21,6 +20,10 @@ DEFAULT_GROWTH_FRACTION = 0.1
 DEFAULT_FLUX_THRESHOLD = 1e-8
 DEFAULT_TEST_COMPARTMENTS = ("c",)
 DEFAULT_PROGRESS_INTERVAL = 250
+
+TARGET_SUPPLY_CONFIRMED = "direct_supply_confirmed"
+TARGET_SUPPLY_NOT_DETECTED = "no_direct_supply_detected"
+TARGET_SUPPLY_INDETERMINATE = "indeterminate"
 
 
 def _test_compartments(config: Any) -> set[str] | None:
@@ -56,12 +59,22 @@ def _kegg_ids(metabolite: cobra.Metabolite) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+def _has_kegg_id(metabolite: cobra.Metabolite, kegg_id: str) -> bool:
+    """Return whether a metabolite has one specific KEGG annotation."""
+
+    normalized = str(kegg_id or "").strip().upper()
+    return bool(normalized) and any(
+        value.strip().upper() == normalized for value in _kegg_ids(metabolite)
+    )
+
+
 def _analyze_producibility(
     model: cobra.Model,
     growth_fraction: float,
     flux_threshold: float,
     compartments: set[str] | None,
     progress_interval: int = DEFAULT_PROGRESS_INTERVAL,
+    target_compound: str = "",
 ) -> tuple[list[dict[str, str]], float, dict[str, Any]]:
     """在维持最低生长率时，逐个检测胞内代谢物的最大 demand flux。"""
 
@@ -87,12 +100,25 @@ def _analyze_producibility(
         if metabolite.compartment not in external
         and (compartments is None or metabolite.compartment in compartments)
     ]
+    target_mapped_metabolites = [
+        metabolite
+        for metabolite in model.metabolites
+        if _has_kegg_id(metabolite, target_compound)
+    ]
+    target_tested_metabolite_ids = {
+        metabolite.id
+        for metabolite in metabolites
+        if _has_kegg_id(metabolite, target_compound)
+    }
     kegg_rows: list[dict[str, str]] = []
+    target_supply_evidence: list[dict[str, Any]] = []
     producible_count = 0
     producible_with_kegg_count = 0
     producible_without_kegg_count = 0
     optimization_failed_count = 0
     below_threshold_count = 0
+    target_optimization_failed_count = 0
+    target_below_threshold_count = 0
     loop_started = time.perf_counter()
     total_metabolites = len(metabolites)
 
@@ -118,7 +144,9 @@ def _analyze_producibility(
             flux = model.slim_optimize()
 
         flux_is_valid = flux is not None and math.isfinite(float(flux))
-        if flux_is_valid and float(flux) > flux_threshold:
+        flux_value = float(flux) if flux_is_valid else None
+        is_target_metabolite = metabolite.id in target_tested_metabolite_ids
+        if flux_is_valid and flux_value > flux_threshold:
             producible_count += 1
             kegg_ids = _kegg_ids(metabolite)
             if kegg_ids:
@@ -135,10 +163,23 @@ def _analyze_producibility(
                         "kegg_id": kegg_id,
                     }
                 )
+            if is_target_metabolite:
+                target_supply_evidence.append(
+                    {
+                        "met_id": metabolite.id,
+                        "met_name": metabolite.name,
+                        "compartment": metabolite.compartment,
+                        "max_demand_flux": flux_value,
+                    }
+                )
         elif not flux_is_valid:
             optimization_failed_count += 1
+            if is_target_metabolite:
+                target_optimization_failed_count += 1
         else:
             below_threshold_count += 1
+            if is_target_metabolite:
+                target_below_threshold_count += 1
 
         if index % progress_interval == 0 or index == total_metabolites:
             elapsed = time.perf_counter() - loop_started
@@ -155,7 +196,18 @@ def _analyze_producibility(
             )
 
     kegg_rows.sort(key=lambda row: (row["kegg_id"], row["met_id"]))
+    target_supply_evidence.sort(key=lambda row: (row["met_id"], row["compartment"]))
     unique_kegg_count = len({row["kegg_id"] for row in kegg_rows})
+    target_tested_count = len(target_tested_metabolite_ids)
+    target_out_of_scope_count = len(target_mapped_metabolites) - target_tested_count
+    if target_supply_evidence:
+        target_supply_status = TARGET_SUPPLY_CONFIRMED
+    elif not target_mapped_metabolites or not target_tested_count:
+        target_supply_status = TARGET_SUPPLY_INDETERMINATE
+    elif target_optimization_failed_count:
+        target_supply_status = TARGET_SUPPLY_INDETERMINATE
+    else:
+        target_supply_status = TARGET_SUPPLY_NOT_DETECTED
     stats: dict[str, Any] = {
         "required_growth": required_growth,
         "external_compartments": sorted(external),
@@ -168,6 +220,13 @@ def _analyze_producibility(
         "kegg_mapping_rows": len(kegg_rows),
         "unique_kegg_compounds": unique_kegg_count,
         "screening_elapsed_seconds": time.perf_counter() - loop_started,
+        "target_supply_status": target_supply_status,
+        "target_supply_evidence": target_supply_evidence,
+        "target_mapped_metabolites": len(target_mapped_metabolites),
+        "target_tested_metabolites": target_tested_count,
+        "target_out_of_scope_metabolites": target_out_of_scope_count,
+        "target_below_threshold": target_below_threshold_count,
+        "target_optimization_failed": target_optimization_failed_count,
     }
     return kegg_rows, baseline_growth, stats
 
@@ -229,29 +288,27 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         f"exchanges={len(model.exchanges)}"
     )
     print(f"[INFO] active medium reactions: {len(medium)}")
+    target_compound = str(getattr(config, "target_name", "") or "").strip().upper()
     kegg_rows, baseline_growth, stats = _analyze_producibility(
         model,
         growth_fraction,
         flux_threshold,
         compartments,
         progress_interval,
+        target_compound,
     )
-    target_compound = str(getattr(config, "target_name", "") or "").strip().upper()
-    target_already_available = any(
-        str(row.get("kegg_id") or "").strip().upper() == target_compound
-        for row in kegg_rows
+    target_already_available = (
+        stats["target_supply_status"] == TARGET_SUPPLY_CONFIRMED
     )
     status = (
         TARGET_ALREADY_AVAILABLE_STATUS if target_already_available else "complete"
     )
-    message = (
-        target_already_available_message(target_compound)
-        if target_already_available
-        else (
-            f"底盘分析完成；目标化合物 {target_compound} 未在当前可生成集合中，"
-            "可继续进行合成路径搜索。"
-        )
-    )
+    if stats["target_supply_status"] == TARGET_SUPPLY_CONFIRMED:
+        message = f"底盘分析完成；检测到目标化合物 {target_compound} 的直接供给通量。"
+    elif stats["target_supply_status"] == TARGET_SUPPLY_NOT_DETECTED:
+        message = f"底盘分析完成；未检测到目标化合物 {target_compound} 的直接供给通量。"
+    else:
+        message = f"底盘分析完成；目标化合物 {target_compound} 的供给结果不确定。"
     _write_csv(
         producible_csv,
         ["source", "met_id", "met_name", "compartment", "kegg_id"],
@@ -305,6 +362,31 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
             "value": round(stats["screening_elapsed_seconds"], 3),
         },
         {"item": "target_compound", "value": target_compound},
+        {"item": "target_supply_status", "value": stats["target_supply_status"]},
+        {
+            "item": "target_mapped_metabolites",
+            "value": stats["target_mapped_metabolites"],
+        },
+        {
+            "item": "target_tested_metabolites",
+            "value": stats["target_tested_metabolites"],
+        },
+        {
+            "item": "target_out_of_scope_metabolites",
+            "value": stats["target_out_of_scope_metabolites"],
+        },
+        {
+            "item": "target_below_threshold",
+            "value": stats["target_below_threshold"],
+        },
+        {
+            "item": "target_optimization_failed",
+            "value": stats["target_optimization_failed"],
+        },
+        {
+            "item": "target_supply_evidence_json",
+            "value": json.dumps(stats["target_supply_evidence"], ensure_ascii=False),
+        },
         {"item": "status", "value": status},
         {
             "item": "target_already_available_in_chassis",
@@ -314,32 +396,6 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
     _write_csv(summary_csv, ["item", "value"], summary_rows)
 
     total_elapsed = time.perf_counter() - analysis_started
-    print(
-        "[INFO] chassis analysis completed: "
-        f"tested={stats['tested_metabolites']}, "
-        f"producible={stats['producible_metabolites']}, "
-        f"with_kegg={stats['producible_with_kegg']}, "
-        f"without_kegg={stats['producible_without_kegg']}, "
-        f"below_threshold={stats['below_flux_threshold']}, "
-        f"optimization_failed={stats['optimization_failed']}, "
-        f"kegg_rows={stats['kegg_mapping_rows']}, "
-        f"unique_kegg={stats['unique_kegg_compounds']}, "
-        f"elapsed={total_elapsed:.1f}s"
-    )
-    if stats["optimization_failed"]:
-        print(
-            "[WARNING] metabolite optimization failed for "
-            f"{stats['optimization_failed']} candidate(s); inspect the model solver status"
-        )
-    if stats["producible_without_kegg"]:
-        print(
-            "[WARNING] producible metabolites without KEGG annotation: "
-            f"{stats['producible_without_kegg']} (not written as KEGG compounds)"
-        )
-    print(f"[INFO] producible compounds written to: {producible_csv}")
-    print(f"[INFO] chassis summary written to: {summary_csv}")
-    print(f"[INFO] {message}")
-
     return {
         "ok": True,
         "status": status,
@@ -347,6 +403,13 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
         "target_compound": target_compound,
         "target_already_available_in_chassis": target_already_available,
         "pathway_search_required": not target_already_available,
+        "target_supply_status": stats["target_supply_status"],
+        "target_supply_evidence": stats["target_supply_evidence"],
+        "target_mapped_metabolites": stats["target_mapped_metabolites"],
+        "target_tested_metabolites": stats["target_tested_metabolites"],
+        "target_out_of_scope_metabolites": stats["target_out_of_scope_metabolites"],
+        "target_below_threshold": stats["target_below_threshold"],
+        "target_optimization_failed": stats["target_optimization_failed"],
         "baseline_growth": baseline_growth,
         "growth_fraction": growth_fraction,
         "flux_threshold": flux_threshold,
@@ -369,9 +432,103 @@ def analyze_chassis_metabolites(config: Any) -> dict[str, Any]:
     }
 
 
+def _format_number(value: Any) -> str:
+    """Format numeric values compactly for the human-facing CLI summary."""
+
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, int):
+        return str(value)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(numeric):
+        return str(value)
+    return f"{numeric:.6g}"
+
+
+def _target_supply_description(result: dict[str, Any]) -> str:
+    """Explain the target conclusion without directing the user to another step."""
+
+    status = result["target_supply_status"]
+    if status == TARGET_SUPPLY_CONFIRMED:
+        return "在本次约束下检测到超过通量阈值的目标供给通量。"
+    if result["target_mapped_metabolites"] == 0:
+        return "目标未映射到 GEM 代谢物，无法据此判断是否可直接供给。"
+    if result["target_tested_metabolites"] == 0:
+        return "目标映射代谢物未纳入本次检测范围，无法据此判断是否可直接供给。"
+    if result["target_optimization_failed"]:
+        return "目标关联代谢物的优化失败，无法据此判断是否可直接供给。"
+    return "已检测目标对应的 GEM 代谢物，但未发现超过通量阈值的供给通量。"
+
+
+def format_chassis_result_zh(result: dict[str, Any]) -> str:
+    """Render the completed chassis analysis as a concise Chinese CLI report."""
+
+    status_labels = {
+        TARGET_SUPPLY_CONFIRMED: "检测到直接供给",
+        TARGET_SUPPLY_NOT_DETECTED: "未检测到直接供给",
+        TARGET_SUPPLY_INDETERMINATE: "结果不确定",
+    }
+    compartments = result["test_compartments"]
+    scope = ", ".join(compartments) if compartments else "全部非胞外区室"
+    lines = [
+        "",
+        "底盘供给分析完成",
+        "",
+        "目标供给结论",
+        f"  目标：{result['target_compound']}",
+        f"  状态：{status_labels.get(result['target_supply_status'], result['target_supply_status'])}",
+        f"  含义：{_target_supply_description(result)}",
+    ]
+    evidence = result["target_supply_evidence"]
+    if evidence:
+        lines.append("  供给证据：")
+        for item in evidence:
+            lines.extend(
+                [
+                    f"    - GEM 代谢物：{item['met_id']}",
+                    f"      名称：{item['met_name'] or '-'}",
+                    f"      区室：{item['compartment']}",
+                    f"      最大 demand flux：{_format_number(item['max_demand_flux'])}",
+                ]
+            )
+
+    lines.extend(
+        [
+            "",
+            "分析条件",
+            f"  底盘模型：{Path(result['model_path']).name}",
+            f"  培养基：{Path(result['medium_path']).name}",
+            f"  生长约束：维持基线生长的 {float(result['growth_fraction']):.1%}",
+            f"  基线生长：{_format_number(result['baseline_growth'])}",
+            f"  最低维持生长：{_format_number(result['required_growth'])}",
+            f"  检测区室：{scope}",
+            f"  通量阈值：{_format_number(result['flux_threshold'])}",
+            "",
+            "分析结果",
+            f"  检测代谢物：{_format_number(result['tested_metabolites'])}",
+            f"  可供给代谢物：{_format_number(result['producible_metabolites'])}",
+            "  可供给 KEGG 化合物（去重）："
+            f"{_format_number(result['unique_producible_kegg_compounds'])}",
+            f"  优化失败：{_format_number(result['optimization_failed'])}",
+            "  可供给但缺少 KEGG 注释："
+            f"{_format_number(result['producible_without_kegg'])}",
+            "",
+            "结果文件",
+            f"  供给化合物表：{result['reachable_kegg_file']}",
+            f"  分析摘要：{result['summary_file']}",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def run_chassis(config: Any) -> dict[str, Any]:
     """运行入口；JSON 读取和 RunConfig 构造由 ``main.py`` 负责。"""
 
     result = analyze_chassis_metabolites(config)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(format_chassis_result_zh(result))
     return result
