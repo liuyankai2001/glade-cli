@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
@@ -28,6 +28,7 @@ from src.main_protein_selection.taxonomy_compatibility import (
 UNIPROT_SEARCH_URL = CONFIGURED_UNIPROT_SEARCH_URL
 UNIPROT_PAGE_SIZE = CONFIGURED_UNIPROT_PAGE_SIZE
 REQUEST_TIMEOUT = UNIPROT_HTTP_CONFIG.timeout_seconds
+UNIPROT_ACCESSION_BATCH_SIZE = 50
 UNIPROT_IDENTITY_RESOLVER_VERSION = "literature_name_uniprot_resolver.v2"
 # The long-form alias makes the artifact version easy to discover while the
 # shorter name remains convenient for callers in this module.
@@ -71,6 +72,38 @@ UNIPROT_FIELDS = ",".join([
     "fragment",
     "cc_sequence_caution",
 ])
+
+
+@dataclass(frozen=True, slots=True)
+class UniProtAccessionBatchRecord:
+    """One auditable UniProt accession-batch request."""
+
+    query_id: str
+    requested_accessions: tuple[str, ...]
+    returned_accessions: tuple[str, ...] = ()
+    missing_accessions: tuple[str, ...] = ()
+    error: str = ""
+    recovered_by_split: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UniProtAccessionBatchResolution:
+    """Result of populating a shared accession-to-entry cache."""
+
+    records: tuple[UniProtAccessionBatchRecord, ...]
+    accession_errors: dict[str, str]
+
+    @property
+    def query_ids(self) -> list[str]:
+        return [record.query_id for record in self.records]
+
+    @property
+    def query_errors(self) -> dict[str, str]:
+        return {
+            record.query_id: record.error
+            for record in self.records
+            if record.error and not record.recovered_by_split
+        }
 
 
 STEP_CANDIDATE_COLUMNS = [
@@ -541,6 +574,112 @@ def search_uniprot_by_query(
         next_url = next_link if next_link and len(results) < max_results else None
         next_params = None
     return results
+
+
+def _normalized_accessions(accessions: Sequence[str]) -> list[str]:
+    return list(dict.fromkeys(
+        str(accession or "").strip().upper()
+        for accession in accessions
+        if str(accession or "").strip()
+    ))
+
+
+def _accession_batch_query_id(prefix: str, accessions: Sequence[str]) -> str:
+    query_hash = hashlib.sha256(
+        ";".join(accessions).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{str(prefix or 'uniprot_accession_batch').strip()}_{query_hash}"
+
+
+def _http_error_status(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    try:
+        return int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_uniprot_accession_batches(
+    accessions: Sequence[str],
+    *,
+    session: requests.Session,
+    entry_cache: MutableMapping[str, dict[str, Any] | None],
+    query_id_prefix: str = "uniprot_accession_batch",
+    batch_size: int = UNIPROT_ACCESSION_BATCH_SIZE,
+) -> UniProtAccessionBatchResolution:
+    """Populate ``entry_cache`` through deterministic accession OR queries.
+
+    Successful no-hits are negative-cached as ``None``. Request failures do
+    not mutate the affected cache entries, so a later retrieval stage may
+    retry them. Bad-request and URI-too-long responses are bisected to keep
+    one malformed accession from hiding the remaining valid entries.
+    """
+
+    normalized = _normalized_accessions(accessions)
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    missing = [accession for accession in normalized if accession not in entry_cache]
+    records: list[UniProtAccessionBatchRecord] = []
+    accession_errors: dict[str, str] = {}
+
+    def resolve_batch(batch: list[str]) -> None:
+        if not batch:
+            return
+        query_id = _accession_batch_query_id(query_id_prefix, batch)
+        query = " OR ".join(f"accession:{accession}" for accession in batch)
+        try:
+            entries = search_uniprot_by_query(
+                query,
+                reviewed_only=False,
+                max_results=len(batch),
+                session=session,
+            )
+        except Exception as exc:
+            error = str(exc)
+            recovered_by_split = (
+                _http_error_status(exc) in {400, 414} and len(batch) > 1
+            )
+            records.append(UniProtAccessionBatchRecord(
+                query_id=query_id,
+                requested_accessions=tuple(batch),
+                error=error,
+                recovered_by_split=recovered_by_split,
+            ))
+            if recovered_by_split:
+                midpoint = len(batch) // 2
+                resolve_batch(batch[:midpoint])
+                resolve_batch(batch[midpoint:])
+                return
+            for accession in batch:
+                accession_errors[accession] = error
+            return
+
+        requested = set(batch)
+        returned: list[str] = []
+        for entry in entries:
+            accession = str(entry.get("primaryAccession") or "").strip().upper()
+            if accession not in requested or accession in returned:
+                continue
+            entry_cache[accession] = entry
+            returned.append(accession)
+        returned_set = set(returned)
+        absent = [accession for accession in batch if accession not in returned_set]
+        for accession in absent:
+            entry_cache[accession] = None
+        records.append(UniProtAccessionBatchRecord(
+            query_id=query_id,
+            requested_accessions=tuple(batch),
+            returned_accessions=tuple(returned),
+            missing_accessions=tuple(absent),
+        ))
+
+    for index in range(0, len(missing), batch_size):
+        resolve_batch(missing[index : index + batch_size])
+    return UniProtAccessionBatchResolution(
+        records=tuple(records),
+        accession_errors=accession_errors,
+    )
 
 
 def extract_ec_numbers(entry: dict[str, Any]) -> list[str]:

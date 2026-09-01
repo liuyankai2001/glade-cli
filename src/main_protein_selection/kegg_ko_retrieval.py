@@ -16,13 +16,13 @@ from src.main_protein_selection.taxonomy_compatibility import ChassisTaxonomyPro
 from src.main_protein_selection.settings import KEGG_HTTP_CONFIG, KEGG_REST_BASE_URL
 from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
+    UNIPROT_ACCESSION_BATCH_SIZE,
     candidate_from_reaction_entry,
-    search_uniprot_by_query,
+    resolve_uniprot_accession_batches,
 )
 
 
 KO_TO_UNIPROT_BATCH_SIZE = 10
-UNIPROT_ACCESSION_BATCH_SIZE = 50
 
 
 class KeggKOSourceUnavailable(RuntimeError):
@@ -224,32 +224,15 @@ def retrieve_ko_candidates(
     accessions = list(genes_by_accession)[: max(0, int(max_results))]
     query_ids: list[str] = []
     errors: dict[str, str] = {}
-    missing_accessions = [
-        accession for accession in accessions if accession not in entry_cache
-    ]
-    for batch in _chunks(missing_accessions, UNIPROT_ACCESSION_BATCH_SIZE):
-        query_hash = hashlib.sha256(";".join(batch).encode("utf-8")).hexdigest()[:12]
-        query_id = f"uniprot_kegg_ko_{ko_id}_{query_hash}"
-        query_ids.append(query_id)
-        query = " OR ".join(f"accession:{accession}" for accession in batch)
-        try:
-            entries = search_uniprot_by_query(
-                query,
-                reviewed_only=False,
-                max_results=len(batch),
-                session=session,
-            )
-            returned_accessions: set[str] = set()
-            for entry in entries:
-                accession = str(entry.get("primaryAccession") or "").strip().upper()
-                if accession:
-                    entry_cache[accession] = entry
-                    returned_accessions.add(accession)
-            for accession in batch:
-                if accession not in returned_accessions:
-                    entry_cache[accession] = None
-        except Exception as exc:
-            errors[query_id] = str(exc)
+    resolution = resolve_uniprot_accession_batches(
+        accessions,
+        session=session,
+        entry_cache=entry_cache,
+        query_id_prefix=f"uniprot_kegg_ko_{ko_id}",
+        batch_size=UNIPROT_ACCESSION_BATCH_SIZE,
+    )
+    query_ids.extend(resolution.query_ids)
+    errors.update(resolution.query_errors)
 
     candidates: list[ProteinCandidate] = []
     audit_rows: list[dict[str, Any]] = []

@@ -39,7 +39,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
     candidate_from_reaction_entry,
     recommend_uniprot_proteins,
-    search_uniprot_by_query,
+    resolve_uniprot_accession_batches,
 )
 from src.pathway_analyze.retropath_gem_validation import (
     HYPOTHESIS_COLUMNS,
@@ -970,6 +970,26 @@ def _candidate_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _prefetch_source_uniprot_entries(
+    requirements: Sequence[RetropathEnzymeRequirement],
+    *,
+    session: requests.Session,
+    entry_cache: dict[str, dict[str, Any] | None],
+) -> dict[str, str]:
+    accessions = [
+        accession
+        for requirement in requirements
+        for accession in requirement.source_uniprot_ids
+    ]
+    resolution = resolve_uniprot_accession_batches(
+        accessions,
+        session=session,
+        entry_cache=entry_cache,
+        query_id_prefix="uniprot_rr02_source",
+    )
+    return resolution.accession_errors
+
+
 def _source_uniprot_candidates(
     requirement: RetropathEnzymeRequirement,
     *,
@@ -977,31 +997,35 @@ def _source_uniprot_candidates(
     allow_transmembrane: bool,
     session: requests.Session,
     taxonomy_profile: ChassisTaxonomyProfile,
+    entry_cache: dict[str, dict[str, Any] | None],
+    accession_errors: Mapping[str, str] | None = None,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]]]:
     candidates: list[ProteinCandidate] = []
     evidence: list[dict[str, Any]] = []
+    lookup_errors = dict(accession_errors or {})
+    if accession_errors is None:
+        resolution = resolve_uniprot_accession_batches(
+            requirement.source_uniprot_ids,
+            session=session,
+            entry_cache=entry_cache,
+            query_id_prefix="uniprot_rr02_source",
+        )
+        lookup_errors.update(resolution.accession_errors)
     for accession in requirement.source_uniprot_ids:
-        query_id = f"uniprot_source_accession_{accession.upper()}"
+        normalized = accession.upper()
+        query_id = f"uniprot_source_accession_{normalized}"
         record: dict[str, Any] = {
             "query_id": query_id,
             "query_type": "rr02_source_uniprot",
-            "query_value": accession.upper(),
+            "query_value": normalized,
         }
+        if normalized in lookup_errors and normalized not in entry_cache:
+            record["status"] = "source_unavailable"
+            record["error"] = lookup_errors[normalized]
+            evidence.append(record)
+            continue
         try:
-            entries = search_uniprot_by_query(
-                f"accession:{accession}",
-                max_results=1,
-                session=session,
-            )
-            entry = next(
-                (
-                    item
-                    for item in entries
-                    if str(item.get("primaryAccession") or "").upper()
-                    == accession.upper()
-                ),
-                None,
-            )
+            entry = entry_cache.get(normalized)
             candidate = (
                 candidate_from_reaction_entry(
                     entry,
@@ -1044,6 +1068,7 @@ def _search_requirement(
     selenzyme_circuit_error: str,
     entry_cache: dict[str, dict[str, Any] | None],
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    source_accession_errors: Mapping[str, str] | None = None,
 ) -> _SearchOutcome:
     taxonomy_profile = taxonomy_profile or resolve_chassis_taxonomy(
         chassis_key,
@@ -1069,6 +1094,8 @@ def _search_requirement(
         allow_transmembrane=allow_transmembrane,
         session=session,
         taxonomy_profile=taxonomy_profile,
+        entry_cache=entry_cache,
+        accession_errors=source_accession_errors,
     )
     evidence.extend(source_evidence)
     source_unavailable |= any(
@@ -1625,6 +1652,11 @@ def retrieve_manifest_retropath_candidates(
         selenzyme_client = None
     rhea_client = RheaClient(session=session, cache_root=cache_root / "rhea")
     entry_cache: dict[str, dict[str, Any] | None] = {}
+    source_accession_errors = _prefetch_source_uniprot_entries(
+        search_requirements,
+        session=session,
+        entry_cache=entry_cache,
+    )
     search_cache: dict[str, _SearchOutcome] = {}
     selected: list[dict[str, Any]] = []
     audit: list[dict[str, Any]] = []
@@ -1645,6 +1677,7 @@ def retrieve_manifest_retropath_candidates(
                 selenzyme_circuit_error=client_error,
                 entry_cache=entry_cache,
                 taxonomy_profile=taxonomy_profile,
+                source_accession_errors=source_accession_errors,
             )
         outcome = search_cache[key]
         source_unavailable |= outcome.source_unavailable
@@ -1829,6 +1862,11 @@ def select_retropath_enzymes(
             selenzyme_client = None
     rhea_client = RheaClient(session=http, cache_root=cache_root / "rhea")
     entry_cache: dict[str, dict[str, Any] | None] = {}
+    source_accession_errors = _prefetch_source_uniprot_entries(
+        requirements,
+        session=http,
+        entry_cache=entry_cache,
+    )
     search_cache: dict[str, _SearchOutcome] = {}
     selected_rows: list[dict[str, Any]] = []
     audit_rows: list[dict[str, Any]] = []
@@ -1852,6 +1890,7 @@ def select_retropath_enzymes(
                 selenzyme_circuit_error=client_error,
                 entry_cache=entry_cache,
                 taxonomy_profile=taxonomy_profile,
+                source_accession_errors=source_accession_errors,
             )
             search_cache[key] = outcome
             if outcome.source_unavailable:

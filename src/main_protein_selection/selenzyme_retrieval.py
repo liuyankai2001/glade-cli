@@ -22,9 +22,10 @@ from src.main_protein_selection.taxonomy_compatibility import (
 )
 from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
+    UNIPROT_ACCESSION_BATCH_SIZE,
     candidate_from_reaction_entry,
     hard_filter_candidate_without_ec,
-    search_uniprot_by_query,
+    resolve_uniprot_accession_batches,
 )
 
 EXACT_SIMILARITY_TOLERANCE = 1e-6
@@ -486,6 +487,48 @@ def retrieve_selenzyme_candidates(
             int(row.get("rank") or 10**9),
         )
     )
+    lookup_accessions: list[str] = []
+    preview_seen: set[str] = set()
+    for source_row in source_rows:
+        accession = str(source_row.get("accession") or "").strip().upper()
+        if selenzyme_match_type(source_row) == "invalid":
+            continue
+        if is_ec_query and queried_ec not in _ec_numbers(source_row.get("ec_number")):
+            continue
+        if not accession or accession in preview_seen:
+            continue
+        preview_seen.add(accession)
+        lookup_accessions.append(accession)
+    lookup_window_size = min(
+        UNIPROT_ACCESSION_BATCH_SIZE,
+        max(10, max(1, int(top_n)) * 2),
+    )
+    lookup_windows = [
+        lookup_accessions[index : index + lookup_window_size]
+        for index in range(0, len(lookup_accessions), lookup_window_size)
+    ]
+    lookup_window_by_accession = {
+        accession: index
+        for index, window in enumerate(lookup_windows)
+        for accession in window
+    }
+    resolved_lookup_windows: set[int] = set()
+    accession_lookup_errors: dict[str, str] = {}
+
+    def ensure_lookup_window(accession: str) -> None:
+        window_index = lookup_window_by_accession.get(accession)
+        if window_index is None or window_index in resolved_lookup_windows:
+            return
+        resolution = resolve_uniprot_accession_batches(
+            lookup_windows[window_index],
+            session=session,
+            entry_cache=entry_cache,
+            query_id_prefix="uniprot_selenzyme",
+            batch_size=UNIPROT_ACCESSION_BATCH_SIZE,
+        )
+        accession_lookup_errors.update(resolution.accession_errors)
+        resolved_lookup_windows.add(window_index)
+
     for source_row in source_rows:
         row = dict(source_row)
         accession = str(row.get("accession") or "").strip().upper()
@@ -516,24 +559,9 @@ def retrieve_selenzyme_candidates(
         uniprot_query_id = f"uniprot_accession_{accession}"
         query_ids.append(uniprot_query_id)
         if accession not in entry_cache:
-            try:
-                entries = search_uniprot_by_query(
-                    f"accession:{accession}",
-                    max_results=1,
-                    session=session,
-                )
-                entry_cache[accession] = next(
-                    (
-                        entry
-                        for entry in entries
-                        if str(entry.get("primaryAccession") or "").strip().upper()
-                        == accession
-                    ),
-                    None,
-                )
-            except Exception as exc:
-                entry_cache[accession] = None
-                errors[uniprot_query_id] = str(exc)
+            ensure_lookup_window(accession)
+            if accession in accession_lookup_errors:
+                errors[uniprot_query_id] = accession_lookup_errors[accession]
         entry = entry_cache.get(accession)
         if not entry:
             row["rejection_reasons"] = ["uniprot_entry_not_found"]
