@@ -111,8 +111,6 @@ def _read_target_evidence(value: Any) -> list[dict[str, Any]]:
 def _target_supply_message(
     target_compound_id: str,
     target_supply_status: str,
-    mapped_metabolites: int | None,
-    tested_metabolites: int | None,
     optimization_failed: int | None,
 ) -> str:
     """Describe only the completed chassis-analysis conclusion."""
@@ -123,16 +121,6 @@ def _target_supply_message(
             f"{target_compound_id} 的直接供给通量。"
         )
     if target_supply_status == TARGET_SUPPLY_INDETERMINATE:
-        if mapped_metabolites == 0:
-            return (
-                f"目标化合物 {target_compound_id} 未映射到 GEM 代谢物，"
-                "本次分析无法判断其是否可直接供给。"
-            )
-        if tested_metabolites == 0:
-            return (
-                f"目标化合物 {target_compound_id} 的映射代谢物未纳入本次检测范围，"
-                "本次分析无法判断其是否可直接供给。"
-            )
         if optimization_failed:
             return (
                 f"目标化合物 {target_compound_id} 的关联代谢物优化失败，"
@@ -189,18 +177,6 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
 
     target_already_available = bool(target_matches)
     target_supply_status = str(summary.get("target_supply_status") or "").strip()
-    if target_supply_status not in {
-        TARGET_SUPPLY_CONFIRMED,
-        TARGET_SUPPLY_NOT_DETECTED,
-        TARGET_SUPPLY_INDETERMINATE,
-    }:
-        # Results written before chassis output v2 cannot distinguish an
-        # unmapped target from a screened-but-unsupplied one.
-        target_supply_status = (
-            TARGET_SUPPLY_CONFIRMED
-            if target_already_available
-            else TARGET_SUPPLY_NOT_DETECTED
-        )
     target_mapped_metabolites = _int_or_none(
         summary.get("target_mapped_metabolites")
     )
@@ -213,6 +189,27 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
     target_optimization_failed = _int_or_none(
         summary.get("target_optimization_failed")
     )
+    # Chassis output v2 initially used ``indeterminate`` when the target had
+    # no GEM mapping or fell outside the configured screening compartments.
+    # Both cases now have the same workflow meaning as any other negative
+    # screen: no direct supply was detected and pathway search is required.
+    if (
+        target_supply_status == TARGET_SUPPLY_INDETERMINATE
+        and not target_optimization_failed
+    ):
+        target_supply_status = TARGET_SUPPLY_NOT_DETECTED
+    if target_supply_status not in {
+        TARGET_SUPPLY_CONFIRMED,
+        TARGET_SUPPLY_NOT_DETECTED,
+        TARGET_SUPPLY_INDETERMINATE,
+    }:
+        # Results written before chassis output v2 cannot distinguish an
+        # unmapped target from a screened-but-unsupplied one.
+        target_supply_status = (
+            TARGET_SUPPLY_CONFIRMED
+            if target_already_available
+            else TARGET_SUPPLY_NOT_DETECTED
+        )
     target_supply_evidence = _read_target_evidence(
         summary.get("target_supply_evidence_json")
     )
@@ -222,8 +219,6 @@ def get_chassis_info(config: Any) -> dict[str, Any]:
     message = _target_supply_message(
         target_compound_id,
         target_supply_status,
-        target_mapped_metabolites,
-        target_tested_metabolites,
         target_optimization_failed,
     )
     return {

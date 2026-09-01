@@ -202,8 +202,6 @@ def _analyze_producibility(
     target_out_of_scope_count = len(target_mapped_metabolites) - target_tested_count
     if target_supply_evidence:
         target_supply_status = TARGET_SUPPLY_CONFIRMED
-    elif not target_mapped_metabolites or not target_tested_count:
-        target_supply_status = TARGET_SUPPLY_INDETERMINATE
     elif target_optimization_failed_count:
         target_supply_status = TARGET_SUPPLY_INDETERMINATE
     else:
@@ -458,13 +456,9 @@ def _target_supply_description(result: dict[str, Any]) -> str:
     status = result["target_supply_status"]
     if status == TARGET_SUPPLY_CONFIRMED:
         return "在本次约束下检测到超过通量阈值的目标供给通量。"
-    if result["target_mapped_metabolites"] == 0:
-        return "目标未映射到 GEM 代谢物，无法据此判断是否可直接供给。"
-    if result["target_tested_metabolites"] == 0:
-        return "目标映射代谢物未纳入本次检测范围，无法据此判断是否可直接供给。"
     if result["target_optimization_failed"]:
         return "目标关联代谢物的优化失败，无法据此判断是否可直接供给。"
-    return "已检测目标对应的 GEM 代谢物，但未发现超过通量阈值的供给通量。"
+    return "在本次 GEM、培养基和生长约束下，未检测到目标的直接供给通量。"
 
 
 def format_chassis_result_zh(result: dict[str, Any]) -> str:
