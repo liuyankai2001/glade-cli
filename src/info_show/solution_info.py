@@ -81,6 +81,25 @@ FIELD_VALUE_NAMES = {
     },
 }
 
+VALIDATION_VALUE_NAMES = {
+    "not_run": "未验证",
+    "raw": "原始预测",
+    "core_only": "仅核心反应，计量未补全",
+    "complete": "已完成",
+    "not_applicable": "不适用",
+    "passed": "通过",
+    "failed": "未通过",
+    "strict": "严格模式",
+    "relaxed": "宽松模式",
+}
+
+VALIDATION_RISK_NAMES = {
+    "GEM validation has not been run": "尚未运行 GEM 验证",
+    "this predicted route requires manual review before experimental use.": (
+        "实验使用前必须人工复核"
+    ),
+}
+
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
@@ -127,7 +146,78 @@ def _to_int(value: Any, field_name: str) -> int:
 
 
 def _split_values(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
     return [item.strip() for item in str(value or "").split(";") if item.strip()]
+
+
+def _validation_name(value: Any) -> str:
+    text = str(value or "").strip()
+    return VALIDATION_VALUE_NAMES.get(text, text or "未知")
+
+
+def _friendly_compound(
+    value: Any,
+    aliases: dict[str, str] | None = None,
+) -> str:
+    text = str(value or "").strip()
+    if aliases and text in aliases:
+        return aliases[text]
+    if text.startswith("RP2CPD:"):
+        identifier = text.split(":", 1)[1].split("-", 1)[0]
+        return f"预测化合物 {identifier[:8]}"
+    return text or "未知化合物"
+
+
+def _friendly_compounds(
+    values: Any,
+    aliases: dict[str, str] | None = None,
+) -> list[str]:
+    if isinstance(values, list):
+        items = values
+    else:
+        items = _split_values(values)
+    return [_friendly_compound(item, aliases) for item in items]
+
+
+def _retropath_anchor_aliases(
+    gap_dir: Path,
+    summary: dict[str, Any],
+) -> dict[str, str]:
+    candidate_rank = _to_int(
+        summary.get("retropath_candidate_rank") or 0,
+        "retropath_candidate_rank",
+    )
+    if candidate_rank < 1:
+        return {}
+    route_path = gap_dir / "retropath" / "candidate_routes.csv"
+    if not route_path.is_file():
+        return {}
+    try:
+        with route_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeError, csv.Error):
+        return {}
+    route = next(
+        (
+            row
+            for row in rows
+            if _to_int(row.get("candidate_rank") or 0, "candidate_rank")
+            == candidate_rank
+        ),
+        None,
+    )
+    if route is None:
+        return {}
+    sink_ids = _split_values(route.get("sink_kegg_ids"))
+    sink_keys = _split_values(route.get("sink_inchikeys"))
+    anchor_ids = _split_values(summary.get("reachable_anchor_compounds"))
+    anchor_labels = _split_values(summary.get("reachable_anchor_labels"))
+    labels_by_id = dict(zip(anchor_ids, anchor_labels))
+    return {
+        f"RP2CPD:{inchikey}": labels_by_id.get(kegg_id, kegg_id)
+        for kegg_id, inchikey in zip(sink_ids, sink_keys)
+    }
 
 
 def _risk_name(value: Any) -> str:
@@ -178,20 +268,150 @@ def _select_solution_summary(
 def _step_overview(
     row: dict[str, Any],
     display_step_index: int,
+    compound_aliases: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     status = row.get("status")
     result = {
         "步骤编号": display_step_index,
         "反应ID": row.get("reaction_id"),
         "反应类型": FIELD_VALUE_NAMES["status"].get(status, status),
+        "步骤来源": (
+            "RetroPath预测"
+            if str(row.get("step_source") or "").strip() == "retropath"
+            else "KEGG"
+        ),
+        "输入": _friendly_compounds(
+            row.get("precursor_compound_labels")
+            or row.get("precursor_compound_ids"),
+            compound_aliases,
+        ),
+        "输出": _friendly_compound(
+            row.get("produced_compound_name")
+            or row.get("produced_compound_id"),
+            compound_aliases,
+        ),
+        "反应名称": (
+            "RetroPath预测反应"
+            if str(row.get("reaction_name") or "").strip()
+            == "RetroPath core prediction"
+            else row.get("reaction_name")
+        ),
+        "酶EC编号": _split_values(
+            row.get("enzyme_ecs") or row.get("source_ec_numbers")
+        ),
     }
     if str(row.get("step_source") or "").strip() == "retropath":
         result.update({
-            "RetroPath验证状态": row.get("validation_status"),
-            "计量补全状态": row.get("stoichiometry_status"),
-            "GEM验证状态": row.get("gem_status"),
+            "RetroPath验证状态": _validation_name(row.get("validation_status")),
+            "计量补全状态": _validation_name(row.get("stoichiometry_status")),
+            "GEM验证状态": _validation_name(row.get("gem_status")),
         })
     return result
+
+
+def _format_solution_info(result: dict[str, Any]) -> str:
+    if result.get("需要新增合成路径") is False:
+        return "\n".join(
+            (
+                "目标化合物已在底盘可达范围内",
+                "",
+                f"目标化合物：{result.get('目标化合物', '未知')}",
+                str(result.get("提示") or "无需新增合成路线。"),
+            )
+        )
+
+    solution_id = result.get("路径编号", "未知")
+    target = result.get("目标化合物", "未知")
+    depth = result.get("Gap深度", 0)
+    source = result.get("路线来源", "未知")
+
+    if "步骤详情" in result:
+        detail = result["步骤详情"]
+        step_index = result.get("步骤编号", "未知")
+        inputs = _friendly_compounds(
+            detail.get("前体化合物") or detail.get("前体化合物ID")
+        )
+        output = _friendly_compound(
+            detail.get("生成化合物名称") or detail.get("生成化合物ID")
+        )
+        lines = [
+            f"路线 {solution_id} · Step {step_index}",
+            "",
+            f"目标化合物：{target}",
+            f"路线来源：{source}",
+            f"输入：{' + '.join(inputs)}",
+            f"输出：{output}",
+        ]
+        reaction_name = str(detail.get("反应名称") or "").strip()
+        if reaction_name == "RetroPath core prediction":
+            reaction_name = "RetroPath预测反应"
+        if reaction_name:
+            lines.append(f"反应：{reaction_name}")
+        ecs = _split_values(
+            detail.get("酶EC编号") or detail.get("来源模板EC")
+        )
+        if ecs:
+            lines.append(f"酶 EC：{'、'.join(ecs)}")
+        lines.extend(
+            (
+                "",
+                "查看完整原始字段：",
+                f"outputs/{target}/kegg_gap_{target}/depth{depth}/"
+                "all_solution_steps.csv",
+            )
+        )
+        return "\n".join(lines)
+
+    total_steps = result.get("步骤数量", 0)
+    heterologous_steps = result.get("异源步骤数", 0)
+    starts = _friendly_compounds(result.get("可达起始化合物", []))
+    lines = [
+        f"路线 {solution_id}：{target}",
+        "",
+        f"路线来源：{source}",
+        f"路线规模：共 {total_steps} 步，其中异源反应 {heterologous_steps} 步",
+        f"起始代谢物：{'、'.join(starts)}",
+        f"最大电子风险：{result.get('最大电子风险', '未知')}",
+        f"电子系统：{result.get('电子系统结论', '未知')}",
+    ]
+    if source == "RetroPath预测":
+        lines.append(
+            "验证状态："
+            f"{_validation_name(result.get('RetroPath验证状态'))}；"
+            f"计量：{_validation_name(result.get('计量补全状态'))}；"
+            f"GEM：{_validation_name(result.get('GEM验证状态'))}"
+        )
+    risks = [
+        VALIDATION_RISK_NAMES.get(str(item).strip(), str(item).strip())
+        for item in result.get("验证风险", [])
+        if str(item).strip()
+    ]
+    if risks:
+        lines.append(f"验证提醒：{'；'.join(risks)}")
+
+    lines.extend(("", "反应步骤："))
+    for step in result.get("反应步骤", []):
+        step_index = step.get("步骤编号", "未知")
+        step_source = step.get("步骤来源") or step.get("反应类型") or "反应"
+        reaction_name = str(step.get("反应名称") or "").strip()
+        title = f"Step {step_index} · {reaction_name or step_source}"
+        lines.append(title)
+        inputs = _friendly_compounds(step.get("输入", []))
+        lines.append(f"  输入：{' + '.join(inputs)}")
+        lines.append(f"  输出：{_friendly_compound(step.get('输出'))}")
+        ecs = _split_values(step.get("酶EC编号"))
+        if ecs:
+            lines.append(f"  酶 EC：{'、'.join(ecs)}")
+
+    lines.extend(
+        (
+            "",
+            "查看指定步骤：",
+            "python main.py info -i <输入文件名> "
+            f"--solution {solution_id} --step N -d {depth}",
+        )
+    )
+    return "\n".join(lines)
 
 
 def _order_steps_forward(
@@ -387,6 +607,11 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     if not rows:
         raise ValueError(f"路线 {selected_solution_id} 没有反应步骤")
     forward_rows = _order_steps_forward(rows, target_compound)
+    compound_aliases = (
+        _retropath_anchor_aliases(gap_dir, summary)
+        if solution_source == "retropath"
+        else {}
+    )
 
     common = {
         "运行成功": True,
@@ -416,6 +641,16 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         selected_row = forward_rows[selected_step_index - 1]
         step_detail = _translate_row(selected_row)
         step_detail["步骤编号"] = selected_step_index
+        step_detail["前体化合物"] = _friendly_compounds(
+            selected_row.get("precursor_compound_labels")
+            or selected_row.get("precursor_compound_ids"),
+            compound_aliases,
+        )
+        step_detail["生成化合物名称"] = _friendly_compound(
+            selected_row.get("produced_compound_name")
+            or selected_row.get("produced_compound_id"),
+            compound_aliases,
+        )
         return {
             **common,
             "步骤编号": selected_step_index,
@@ -451,7 +686,7 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         "RetroPath候选排名": summary.get("retropath_candidate_rank"),
         "RetroPath组合ID": summary.get("retropath_combination_id"),
         "反应步骤": [
-            _step_overview(row, step_index)
+            _step_overview(row, step_index, compound_aliases)
             for step_index, row in enumerate(forward_rows, start=1)
         ],
     }
@@ -461,7 +696,7 @@ def run_solution_info(config: Any) -> dict[str, Any]:
     """CLI entry point for ``info --solution``."""
 
     result = get_solution_info(config)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(_format_solution_info(result))
     return result
 
 
