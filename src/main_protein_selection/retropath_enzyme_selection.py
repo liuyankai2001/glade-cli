@@ -31,6 +31,7 @@ from src.main_protein_selection.selenzyme_retrieval import (
     retrieve_selenzyme_candidates,
     selenzyme_target_count,
 )
+from src.main_protein_selection.sequence_quality import analyze_protein_sequence
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
     resolve_chassis_taxonomy,
@@ -878,6 +879,11 @@ def _candidate_conflicts(
     requirement: RetropathEnzymeRequirement,
     candidate: Mapping[str, Any],
 ) -> str:
+    sequence_quality = analyze_protein_sequence(candidate.get("sequence"))
+    if not sequence_quality.normalized_sequence:
+        return "missing_amino_acid_sequence"
+    if sequence_quality.unsupported_positions:
+        return sequence_quality.rejection_reason()
     if str(candidate.get("direction_verdict") or "").lower() in {
         "contradicted",
         "unsupported",

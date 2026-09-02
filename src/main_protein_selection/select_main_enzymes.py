@@ -70,6 +70,9 @@ from src.main_protein_selection.selenzyme_retrieval import (
     retrieve_selenzyme_candidates,
     selenzyme_target_count,
 )
+from src.main_protein_selection.sequence_quality import (
+    analyze_protein_sequence,
+)
 from src.main_protein_selection.taxonomy_compatibility import (
     SCORING_WEIGHTS,
     TAXONOMY_SCORING_POLICY_VERSION,
@@ -89,6 +92,15 @@ def _ko_requirements_for_retrieval(
         if requirement.get("ko_ids")
         and int(requirement.get("step_index") or 0) not in verified_step_indexes
     ]
+
+
+def _candidate_is_selectable(row: dict[str, Any]) -> bool:
+    """Require reaction evidence and a sequence accepted by CDS design."""
+
+    return (
+        candidate_is_reaction_verified(row)
+        and analyze_protein_sequence(row.get("sequence")).is_constructable
+    )
 
 
 def _selenzyme_query_specs(requirement: dict[str, Any]) -> list[dict[str, str]]:
@@ -162,7 +174,7 @@ def _route_repair_requests_v2(
     covered_steps = {
         int(row.get("step_index") or 0)
         for row in candidate_rows
-        if candidate_is_reaction_verified(row)
+        if _candidate_is_selectable(row)
     }
     requests: list[dict] = []
     for requirement in requirements:
@@ -195,9 +207,18 @@ def _route_repair_requests_v2(
             )
             for row in step_rows
         )
+        reaction_supported_rows = [
+            row for row in step_rows if candidate_is_reaction_verified(row)
+        ]
+        sequence_blocked = bool(reaction_supported_rows) and all(
+            not analyze_protein_sequence(row.get("sequence")).is_constructable
+            for row in reaction_supported_rows
+        )
         reason_code = (
             "protein_evidence_source_unavailable"
             if source_unavailable
+            else "no_constructable_protein_sequence"
+            if sequence_blocked
             else "protein_direction_unsupported"
             if direction_conflict
             else "no_exact_reaction_candidate"
@@ -211,9 +232,17 @@ def _route_repair_requests_v2(
             "suggested_action": (
                 "retry after the protein evidence source recovers"
                 if source_unavailable
+                else "retrieve a complete standard-amino-acid protein sequence"
+                if sequence_blocked
                 else "reject this solution and evaluate the next flux-pass route"
             ),
-            "status": "source_blocked" if source_unavailable else "route_reselection_required",
+            "status": (
+                "source_blocked"
+                if source_unavailable
+                else "protein_reselection_required"
+                if sequence_blocked
+                else "route_reselection_required"
+            ),
             "requires_gem_revalidation": False,
         })
     unique: list[dict] = []
@@ -406,7 +435,7 @@ def select_main_enzymes(
             verified_before_fallback = {
                 int(row.get("step_index") or 0)
                 for row in preliminary_rows
-                if candidate_is_reaction_verified(row)
+                if _candidate_is_selectable(row)
             }
             ko_requirements = _ko_requirements_for_retrieval(
                 requirements, verified_before_fallback
@@ -509,7 +538,7 @@ def select_main_enzymes(
             verified_after_ko = {
                 int(row.get("step_index") or 0)
                 for row in rows_after_ko
-                if candidate_is_reaction_verified(row)
+                if _candidate_is_selectable(row)
             }
             literature_requirements = [
                 requirement
@@ -569,7 +598,7 @@ def select_main_enzymes(
             verified_after_literature = {
                 int(row.get("step_index") or 0)
                 for row in rows_after_literature
-                if candidate_is_reaction_verified(row)
+                if _candidate_is_selectable(row)
             }
             fallback_requirements = [
                 requirement
@@ -824,7 +853,7 @@ def select_main_enzymes(
             ),
         )
         verified_step_rows = [
-            row for row in step_rows if candidate_is_reaction_verified(row)
+            row for row in step_rows if _candidate_is_selectable(row)
         ]
         selected_step_rows = sorted([
             row

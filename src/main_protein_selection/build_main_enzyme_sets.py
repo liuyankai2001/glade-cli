@@ -39,6 +39,7 @@ from .models import (
     MainEnzymeSetsResult,
 )
 from .provenance import file_sha256, solution_fingerprint, stable_json_hash
+from .sequence_quality import analyze_protein_sequence
 
 
 MAIN_ENZYME_SETS_FILENAME = "main_enzyme_sets.json"
@@ -651,6 +652,10 @@ def _build_protein_pool(
             invalid.append(f"direction {direction}")
         if not sequence:
             invalid.append("missing sequence")
+        else:
+            sequence_quality = analyze_protein_sequence(sequence)
+            if sequence_quality.unsupported_positions:
+                invalid.append(sequence_quality.rejection_reason())
         if not _SHA256_RE.fullmatch(sequence_sha256):
             invalid.append("invalid sequence SHA256")
         elif sequence:

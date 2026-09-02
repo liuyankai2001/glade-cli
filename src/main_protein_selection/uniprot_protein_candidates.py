@@ -11,6 +11,9 @@ from typing import Any, Literal
 
 import requests
 
+from src.main_protein_selection.sequence_quality import (
+    unsupported_amino_acid_reason,
+)
 from src.main_protein_selection.settings import (
     UNIPROT_HTTP_CONFIG,
     UNIPROT_PAGE_SIZE as CONFIGURED_UNIPROT_PAGE_SIZE,
@@ -1134,8 +1137,12 @@ def hard_filter_candidate(
     if target_ec not in ec_numbers:
         return False, [f"filtered: EC is not an exact match; candidate_ecs={ec_numbers or ['none']}"], warnings
     reasons.append("EC exact match")
-    if not get_sequence_value(entry):
+    sequence = get_sequence_value(entry)
+    if not sequence:
         return False, ["filtered: missing amino acid sequence"], warnings
+    sequence_rejection = unsupported_amino_acid_reason(sequence)
+    if sequence_rejection:
+        return False, [f"filtered: {sequence_rejection}"], warnings
     if is_fragment(entry):
         return False, ["filtered: sequence is a fragment"], warnings
     if has_sequence_caution(entry):
@@ -1157,8 +1164,12 @@ def hard_filter_candidate_without_ec(
 ) -> tuple[bool, list[str], list[str]]:
     """Apply sequence/expression safety filters when reaction evidence replaces EC."""
     warnings: list[str] = []
-    if not get_sequence_value(entry):
+    sequence = get_sequence_value(entry)
+    if not sequence:
         return False, ["filtered: missing amino acid sequence"], warnings
+    sequence_rejection = unsupported_amino_acid_reason(sequence)
+    if sequence_rejection:
+        return False, [f"filtered: {sequence_rejection}"], warnings
     if is_fragment(entry):
         return False, ["filtered: sequence is a fragment"], warnings
     if has_sequence_caution(entry):

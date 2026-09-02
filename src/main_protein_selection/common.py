@@ -14,6 +14,7 @@ from src.main_protein_selection.biochemical_realizability import (
 from src.main_protein_selection.reaction_direction_verifier import (
     direction_decision_for_candidate,
 )
+from src.main_protein_selection.sequence_quality import analyze_protein_sequence
 from src.main_protein_selection.auxiliary_roles import (
     annotate_candidate_auxiliary_roles,
     merge_auxiliary_requirements,
@@ -363,6 +364,22 @@ def candidate_rows_for_requirements(
         step_index = _int(row.get("step_index"))
         evaluation_ranks[step_index] = evaluation_ranks.get(step_index, 0) + 1
         row["evaluation_rank"] = evaluation_ranks[step_index]
+        sequence_quality = analyze_protein_sequence(row.get("sequence"))
+        sequence_rejection = (
+            "missing_amino_acid_sequence"
+            if not sequence_quality.normalized_sequence
+            else sequence_quality.rejection_reason()
+            if sequence_quality.unsupported_positions
+            else ""
+        )
+        if sequence_rejection:
+            row["candidate_rank"] = ""
+            row["selection_status"] = "rejected"
+            row["reasons"] = _join(_unique([
+                *_split_list_field(row.get("reasons")),
+                sequence_rejection,
+            ]))
+            continue
         status = str(row.get("reaction_fit_status") or "")
         if status in {"verified", "verified_with_risk"}:
             next_rank = candidate_ranks.get(step_index, 0) + 1
