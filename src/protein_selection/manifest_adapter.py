@@ -7,10 +7,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from src.main_protein_selection.provenance import (
-    solution_fingerprint,
-    stable_json_hash,
-)
 from src.protein_selection.state import (
     AssignedReactionStep,
     MainEnzymeResearchUnit,
@@ -25,7 +21,6 @@ from src.write_manifest.store import (
 )
 
 
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ALLOWED_SELECTION_STATUSES = {
     "user_selected",
     "user_selected_pending_review",
@@ -112,55 +107,6 @@ def _route_step_index(
     return result
 
 
-def _validate_route_lock(
-    solution: Mapping[str, Any],
-    selection: Mapping[str, Any],
-    route_steps: list[Mapping[str, Any]],
-) -> str:
-    solution_id = _integer(
-        solution.get("solution_id"),
-        "solution.solution_id",
-        minimum=1,
-    )
-    expansion_depth = _integer(
-        solution.get("expansion_depth", 0),
-        "solution.expansion_depth",
-    )
-    if _integer(
-        selection.get("selected_solution_id"),
-        "main_enzyme_selection.selected_solution_id",
-        minimum=1,
-    ) != solution_id:
-        raise ValueError(
-            "主酶组合对应的路径与 manifest 当前路线不一致，"
-            "请重新运行主酶选择并写入组合"
-        )
-    if _integer(
-        selection.get("expansion_depth", 0),
-        "main_enzyme_selection.expansion_depth",
-    ) != expansion_depth:
-        raise ValueError(
-            "主酶组合对应的扩展深度与 manifest 当前路线不一致，"
-            "请重新运行主酶选择并写入组合"
-        )
-
-    current_fingerprint = solution_fingerprint(
-        solution_id,
-        [dict(step) for step in route_steps],
-    )
-    source = _mapping(
-        selection.get("source"),
-        "main_enzyme_selection.source",
-    )
-    stored_fingerprint = _string(source.get("solution_fingerprint"))
-    if stored_fingerprint != current_fingerprint:
-        raise ValueError(
-            "manifest 路线已在主酶组合写入后发生变化，请依次重新运行 "
-            "main-enzyme、main-enzyme-sets 和 write --main-enzyme-set N"
-        )
-    return current_fingerprint
-
-
 def _normalized_assignments(
     selection: Mapping[str, Any],
     route_by_index: Mapping[int, Mapping[str, Any]],
@@ -236,44 +182,6 @@ def _validate_coverage(
             "主酶组合的 required、covered 和 assigned Step 不一致"
         )
     return required
-
-
-def _validate_set_fingerprint(
-    selection: Mapping[str, Any],
-    accessions: list[str],
-    assignments: list[dict[str, Any]],
-) -> None:
-    source = _mapping(
-        selection.get("source"),
-        "main_enzyme_selection.source",
-    )
-    candidate_pool_fingerprint = _string(
-        source.get("candidate_pool_fingerprint")
-    ).lower()
-    if not _SHA256_PATTERN.fullmatch(candidate_pool_fingerprint):
-        raise ValueError("主酶组合缺少有效的 candidate_pool_fingerprint")
-    expected = stable_json_hash(
-        {
-            "candidate_pool_fingerprint": candidate_pool_fingerprint,
-            "accessions": sorted(accessions),
-            "assignments": [
-                {
-                    "step_index": assignment["step_index"],
-                    "accession": assignment["accession"],
-                    "candidate_rank": assignment["candidate_rank"],
-                }
-                for assignment in assignments
-            ],
-        }
-    )
-    recorded = _string(
-        selection.get("selected_set_fingerprint")
-    ).lower()
-    if recorded != expected:
-        raise ValueError(
-            "主酶组合指纹校验失败，manifest 可能已损坏或过期；"
-            "请重新运行 main-enzyme-sets 并写入组合"
-        )
 
 
 def _assigned_reaction_step(
@@ -370,7 +278,6 @@ def build_main_enzyme_research_units(
 
     route_steps = _mapping_list(solution.get("steps"), "solution.steps")
     route_by_index = _route_step_index(route_steps)
-    _validate_route_lock(solution, selection, route_steps)
     assignments = _normalized_assignments(selection, route_by_index)
     _validate_coverage(selection, assignments)
 
@@ -415,12 +322,6 @@ def build_main_enzyme_research_units(
         if unused:
             details.append(f"存在未分配蛋白：{','.join(unused)}")
         raise ValueError("主酶组合成员与步骤分配不一致；" + "；".join(details))
-
-    _validate_set_fingerprint(
-        selection,
-        list(proteins),
-        assignments,
-    )
 
     units: list[MainEnzymeResearchUnit] = []
     for accession, protein in proteins.items():

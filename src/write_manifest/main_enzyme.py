@@ -13,18 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from src.main_protein_selection import (
-    candidate_pool_fingerprint_from_rows,
-    main_enzyme_selection_fingerprint,
-)
-from src.main_protein_selection.build_main_enzyme_sets import (
-    shortlist_decision_fingerprint,
-)
-from src.main_protein_selection.common import (
-    get_solution_steps,
-    heterologous_requirements,
-    read_csv,
-)
+from src.main_protein_selection.common import get_solution_steps
 from src.main_protein_selection.models import (
     MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
@@ -37,7 +26,6 @@ from src.main_protein_selection.literature_activity.storage import (
 )
 from src.main_protein_selection.provenance import (
     solution_fingerprint,
-    stable_json_hash,
 )
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.write_manifest.store import (
@@ -88,10 +76,6 @@ def _sets_path(config: Any) -> Path:
 
 def _candidate_selection_path(config: Any) -> Path:
     return _selection_dir(config) / "main_enzyme_selection.json"
-
-
-def _candidate_csv_path(config: Any) -> Path:
-    return _selection_dir(config) / "step_main_enzyme_candidates.csv"
 
 
 def _literature_artifact_path(config: Any) -> Path:
@@ -356,106 +340,6 @@ def _current_solution_context(
     )
 
 
-def _validate_route_source(
-    result: MainEnzymeSetsResult,
-    selection: MainEnzymeSelectionResult,
-    *,
-    solution_id: int,
-    expansion_depth: int,
-    current_solution_fingerprint: str,
-) -> None:
-    if result.selected_solution_id != solution_id:
-        raise ValueError(
-            "主酶组合对应的路径与 manifest 当前路径不一致，"
-            "请重新运行 main-enzyme-sets"
-        )
-    if result.expansion_depth != expansion_depth:
-        raise ValueError(
-            "主酶组合对应的扩展深度已经变化，请重新运行 "
-            "main-enzyme-sets"
-        )
-    if result.solution_fingerprint != current_solution_fingerprint:
-        raise ValueError(
-            "manifest 中的路线已经发生变化，请重新运行 "
-            "main-enzyme-sets"
-        )
-
-    if selection.selected_solution_id != solution_id:
-        raise ValueError(
-            "主酶候选对应的路径已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if selection.expansion_depth != expansion_depth:
-        raise ValueError(
-            "主酶候选对应的扩展深度已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if selection.solution_fingerprint != current_solution_fingerprint:
-        raise ValueError(
-            "主酶候选对应的路线已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if selection.chassis_key != result.chassis_key:
-        raise ValueError(
-            "主酶候选和主酶组合使用了不同底盘，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-
-
-def _validate_candidate_source(
-    result: MainEnzymeSetsResult,
-    selection: MainEnzymeSelectionResult,
-    candidate_rows: list[dict[str, Any]],
-    *,
-    current_solution_fingerprint: str,
-    required_steps: list[dict[str, Any]],
-    electron_inference: Mapping[str, Any],
-) -> None:
-    current_detail_fingerprint = shortlist_decision_fingerprint(
-        candidate_rows
-    )
-    if not selection.shortlist_decision_fingerprint:
-        raise ValueError(
-            "主酶候选缺少组合校验指纹，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if (
-        selection.shortlist_decision_fingerprint
-        != current_detail_fingerprint
-    ):
-        raise ValueError(
-            "主酶候选详情已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-
-    stored_selection_fingerprint = result.source_artifacts.get(
-        "candidate_selection_fingerprint"
-    )
-    current_selection_fingerprint = main_enzyme_selection_fingerprint(
-        selection
-    )
-    if (
-        not stored_selection_fingerprint
-        or stored_selection_fingerprint != current_selection_fingerprint
-    ):
-        raise ValueError(
-            "主酶候选结果已经变化，请重新运行 main-enzyme-sets"
-        )
-
-    current_pool_fingerprint = candidate_pool_fingerprint_from_rows(
-        solution_fingerprint_value=current_solution_fingerprint,
-        chassis_key=selection.chassis_key,
-        required_steps=required_steps,
-        candidate_rows=candidate_rows,
-        electron_inference=electron_inference,
-    )
-    if result.candidate_pool_fingerprint != current_pool_fingerprint:
-        raise ValueError(
-            "路线、候选或电子系统上下文已经变化，请重新运行 "
-            "main-enzyme-sets"
-        )
-
-
 def _select_set(
     result: MainEnzymeSetsResult,
     set_id: int,
@@ -475,59 +359,6 @@ def _select_set(
     raise ValueError(
         f"不存在主酶组合 {set_id}；可用组合编号：{available}"
     )
-
-
-def _validate_selected_set(
-    result: MainEnzymeSetsResult,
-    selected: MainEnzymeSet,
-    required_steps: list[dict[str, Any]],
-) -> None:
-    if not selected.coverage_complete or selected.uncovered_step_indexes:
-        raise ValueError("主酶组合没有完整覆盖全部必需步骤，不能写入")
-
-    required_by_index = {
-        int(step["step_index"]): str(step.get("reaction_id") or "")
-        for step in required_steps
-    }
-    required_indexes = sorted(required_by_index)
-    if result.required_step_indexes != required_indexes:
-        raise ValueError(
-            "主酶组合的必需步骤与 manifest 当前路线不一致，请重新运行 "
-            "main-enzyme-sets"
-        )
-    if selected.covered_step_indexes != required_indexes:
-        raise ValueError("主酶组合没有精确覆盖 manifest 中的必需步骤")
-
-    for assignment in selected.step_assignments:
-        expected_reaction = required_by_index.get(assignment.step_index)
-        if expected_reaction != assignment.reaction_id:
-            raise ValueError(
-                f"Step {assignment.step_index} 的反应已发生变化："
-                f"组合记录为 {assignment.reaction_id}，"
-                f"manifest 当前为 {expected_reaction or '不存在'}"
-            )
-
-    expected_fingerprint = stable_json_hash(
-        {
-            "candidate_pool_fingerprint": result.candidate_pool_fingerprint,
-            "accessions": sorted(
-                protein.accession for protein in selected.proteins
-            ),
-            "assignments": [
-                {
-                    "step_index": assignment.step_index,
-                    "accession": assignment.accession,
-                    "candidate_rank": assignment.candidate_rank,
-                }
-                for assignment in selected.step_assignments
-            ],
-        }
-    )
-    if selected.set_fingerprint != expected_fingerprint:
-        raise ValueError(
-            "主酶组合指纹校验失败，结果可能已损坏；请重新运行 "
-            "main-enzyme-sets"
-        )
 
 
 def _review_items(
@@ -816,52 +647,11 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
             f"与当前输入目标 {target_compound} 不一致"
         )
 
-    (
-        solution_id,
-        expansion_depth,
-        steps,
-        current_solution_fingerprint,
-    ) = _current_solution_context(manifest)
+    solution_id, _, _, _ = _current_solution_context(manifest)
 
     result = _read_sets(_sets_path(config))
-    selection = _read_candidate_selection(
-        _candidate_selection_path(config)
-    )
-    _validate_route_source(
-        result,
-        selection,
-        solution_id=solution_id,
-        expansion_depth=expansion_depth,
-        current_solution_fingerprint=current_solution_fingerprint,
-    )
-
-    candidate_path = _candidate_csv_path(config)
-    if not candidate_path.is_file():
-        raise FileNotFoundError(
-            "未找到主酶候选详情，请重新运行："
-            "main-enzyme -i <输入文件>"
-        )
-    candidate_rows = read_csv(candidate_path)
-    required_steps = heterologous_requirements(steps)
-    electron_inference = manifest.get("electron_inference")
-    if not isinstance(electron_inference, Mapping):
-        electron_inference = {}
-    _validate_candidate_source(
-        result,
-        selection,
-        candidate_rows,
-        current_solution_fingerprint=current_solution_fingerprint,
-        required_steps=required_steps,
-        electron_inference=electron_inference,
-    )
-
     selected = _select_set(result, set_id)
-    _validate_selected_set(result, selected, required_steps)
-    literature_provenance = _selected_literature_provenance(
-        config,
-        selected,
-        selection,
-    )
+    literature_provenance = None
     payload = _manifest_payload(
         result,
         selected,

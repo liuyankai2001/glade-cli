@@ -7,27 +7,15 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.main_protein_selection import (
-    candidate_pool_fingerprint_from_rows,
-    main_enzyme_selection_fingerprint,
-)
-from src.main_protein_selection.build_main_enzyme_sets import (
-    shortlist_decision_fingerprint,
-)
 from src.main_protein_selection.common import (
     get_solution_steps,
-    heterologous_requirements,
-    read_csv,
     read_manifest,
 )
 from src.main_protein_selection.models import (
-    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
-    MainEnzymeSelectionResult,
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
-from src.main_protein_selection.provenance import solution_fingerprint
 from src.info_show.main_enzyme_candidates_info import (
     CONFIDENCE_NAMES,
     DIRECTION_NAMES,
@@ -146,22 +134,6 @@ def _sets_path(config: Any) -> Path:
     )
 
 
-def _selection_path(config: Any) -> Path:
-    return (
-        Path(config.project_output_path).expanduser().resolve()
-        / "main_protein_selection"
-        / "main_enzyme_selection.json"
-    )
-
-
-def _candidate_csv_path(config: Any) -> Path:
-    return (
-        Path(config.project_output_path).expanduser().resolve()
-        / "main_protein_selection"
-        / "step_main_enzyme_candidates.csv"
-    )
-
-
 def _read_sets(path: Path) -> MainEnzymeSetsResult:
     if not path.is_file():
         raise FileNotFoundError(
@@ -176,22 +148,6 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
         return MainEnzymeSetsResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
-
-
-def _read_selection(path: Path) -> MainEnzymeSelectionResult:
-    if not path.is_file():
-        raise FileNotFoundError(
-            "未找到主酶候选，请重新运行：main-enzyme -i <输入文件>"
-        )
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
-        raise ValueError(
-            "主酶候选使用旧版结果格式，请重新运行 main-enzyme"
-        )
-    try:
-        return MainEnzymeSelectionResult.model_validate(payload)
-    except ValueError as exc:
-        raise ValueError(f"主酶候选结果格式无效：{path}") from exc
 
 
 def _translate_message(value: str) -> str:
@@ -270,99 +226,6 @@ def _load_current_context(
     result = _read_sets(_sets_path(config))
     manifest = read_manifest(config.manifest_output_path)
     solution_id, steps = get_solution_steps(manifest)
-    current_solution_fingerprint = solution_fingerprint(solution_id, steps)
-    solution = manifest.get("solution")
-    expansion_depth = int(
-        solution.get("expansion_depth") or 0
-        if isinstance(solution, Mapping)
-        else 0
-    )
-
-    if result.selected_solution_id != solution_id:
-        raise ValueError(
-            "主酶组合对应的路径与 manifest 当前路径不一致，"
-            "请重新运行 main-enzyme-sets"
-        )
-    if result.expansion_depth != expansion_depth:
-        raise ValueError(
-            "主酶组合对应的扩展深度已经变化，请重新运行 main-enzyme-sets"
-        )
-    if result.solution_fingerprint != current_solution_fingerprint:
-        raise ValueError(
-            "manifest 中的路线已经发生变化，请重新运行 main-enzyme-sets"
-        )
-
-    # Failed runs have no selectable sets.  Their blocking reasons are still
-    # useful to the user and do not require the unavailable source artifacts.
-    if not result.sets:
-        return result, solution_id, steps
-
-    selection = _read_selection(_selection_path(config))
-    if selection.selected_solution_id != solution_id:
-        raise ValueError(
-            "主酶候选对应的路径已经变化，请重新运行 main-enzyme"
-        )
-    if selection.solution_fingerprint != current_solution_fingerprint:
-        raise ValueError(
-            "主酶候选对应的路线已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if selection.chassis_key != result.chassis_key:
-        raise ValueError(
-            "主酶候选的底盘配置已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-
-    candidate_csv_path = _candidate_csv_path(config)
-    if not candidate_csv_path.is_file():
-        raise FileNotFoundError(
-            "未找到主酶候选详情，请重新运行：main-enzyme -i <输入文件>"
-        )
-    candidate_rows = read_csv(candidate_csv_path)
-    current_detail_fingerprint = shortlist_decision_fingerprint(candidate_rows)
-    if not selection.shortlist_decision_fingerprint:
-        raise ValueError(
-            "主酶候选缺少组合校验指纹，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-    if (
-        selection.shortlist_decision_fingerprint
-        != current_detail_fingerprint
-    ):
-        raise ValueError(
-            "主酶候选详情已经变化，请依次重新运行 "
-            "main-enzyme 和 main-enzyme-sets"
-        )
-
-    stored_selection_fingerprint = result.source_artifacts.get(
-        "candidate_selection_fingerprint"
-    )
-    current_selection_fingerprint = main_enzyme_selection_fingerprint(
-        selection
-    )
-    if (
-        not stored_selection_fingerprint
-        or stored_selection_fingerprint != current_selection_fingerprint
-    ):
-        raise ValueError(
-            "主酶候选结果已经变化，请重新运行 main-enzyme-sets"
-        )
-
-    electron_inference = manifest.get("electron_inference")
-    if not isinstance(electron_inference, Mapping):
-        electron_inference = {}
-    current_pool_fingerprint = candidate_pool_fingerprint_from_rows(
-        solution_fingerprint_value=current_solution_fingerprint,
-        chassis_key=selection.chassis_key,
-        required_steps=heterologous_requirements(steps),
-        candidate_rows=candidate_rows,
-        electron_inference=electron_inference,
-    )
-    if result.candidate_pool_fingerprint != current_pool_fingerprint:
-        raise ValueError(
-            "路线、候选或电子系统上下文已经变化，请重新运行 "
-            "main-enzyme-sets"
-        )
     return result, solution_id, steps
 
 

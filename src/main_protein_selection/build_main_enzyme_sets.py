@@ -18,7 +18,6 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from math import isclose
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -1630,171 +1629,6 @@ def _validate_literature_evidence_binding(
     return artifact_path, computed_fingerprint
 
 
-def _validate_selection_csv(
-    selection: MainEnzymeSelectionResult,
-    rows: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    selected_rows = [
-        row
-        for row in rows
-        if _text(row.get("selection_status")).lower() == "selected"
-    ]
-    by_key: dict[tuple[int, int, str], dict[str, str]] = {}
-    for row in selected_rows:
-        if _int(row.get("solution_id")) != selection.selected_solution_id:
-            raise ValueError(
-                "candidate CSV solution_id does not match canonical selection"
-            )
-        role = _text(row.get("candidate_role") or row.get("role")).lower()
-        if role not in {"main", "catalytic_main"}:
-            raise ValueError(
-                "candidate CSV contains a selected non-main protein row"
-            )
-        key = (
-            _int(row.get("step_index")),
-            _int(row.get("candidate_rank")),
-            _text(row.get("accession")).upper(),
-        )
-        if key in by_key:
-            raise ValueError(f"duplicate candidate CSV row: {key}")
-        by_key[key] = row
-
-    expected_keys: set[tuple[int, int, str]] = set()
-    for step_index, candidates in selection.candidates_by_step.items():
-        for candidate in candidates:
-            key = (step_index, candidate.candidate_rank, candidate.accession)
-            expected_keys.add(key)
-            row = by_key.get(key)
-            if row is None:
-                raise ValueError(f"candidate CSV is missing {key}")
-            if _text(row.get("reaction_id")).upper() != candidate.reaction_id:
-                raise ValueError(f"candidate CSV reaction mismatch for {key}")
-            scalar_checks = (
-                (
-                    _text(row.get("ec_number")),
-                    candidate.ec_number or "",
-                    "EC number",
-                ),
-                (
-                    _text(row.get("protein_name")),
-                    candidate.protein_name,
-                    "protein name",
-                ),
-                (
-                    _text(row.get("organism_name")),
-                    candidate.organism_name,
-                    "organism name",
-                ),
-                (
-                    _text(row.get("reaction_fit_status")).lower(),
-                    candidate.reaction_fit_status,
-                    "reaction fit status",
-                ),
-                (
-                    _text(row.get("direction_verdict")).lower(),
-                    candidate.direction_verdict.lower(),
-                    "direction verdict",
-                ),
-                (
-                    _text(row.get("direction_confidence")).lower(),
-                    candidate.direction_confidence.lower(),
-                    "direction confidence",
-                ),
-                (
-                    _text(row.get("reaction_confidence")),
-                    candidate.reaction_confidence,
-                    "reaction confidence",
-                ),
-            )
-            for actual, expected, label in scalar_checks:
-                if actual != expected:
-                    raise ValueError(
-                        f"candidate CSV {label} mismatch for {key}"
-                    )
-            if _bool(row.get("reviewed")) != candidate.reviewed:
-                raise ValueError(f"candidate CSV reviewed mismatch for {key}")
-            if candidate.length is None:
-                if _text(row.get("length")):
-                    raise ValueError(f"candidate CSV length mismatch for {key}")
-            elif _int(row.get("length")) != candidate.length:
-                raise ValueError(f"candidate CSV length mismatch for {key}")
-            if not isclose(
-                _float(row.get("score")),
-                candidate.protein_score,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise ValueError(f"candidate CSV score mismatch for {key}")
-            if not isclose(
-                _float(row.get("reaction_fit_score")),
-                candidate.reaction_fit_score,
-                rel_tol=1e-9,
-                abs_tol=1e-9,
-            ):
-                raise ValueError(
-                    f"candidate CSV reaction fit score mismatch for {key}"
-                )
-            list_checks = (
-                (
-                    _split_values(row.get("retrieval_strategy")),
-                    sorted(candidate.retrieval_strategies),
-                    "retrieval strategies",
-                ),
-                (
-                    _split_values(row.get("retrieval_query_id")),
-                    sorted(candidate.retrieval_query_ids),
-                    "retrieval query IDs",
-                ),
-                (
-                    _split_values(row.get("publication_ids")),
-                    sorted(candidate.publication_ids),
-                    "publication IDs",
-                ),
-                (
-                    _split_values(row.get("matched_rhea_ids")),
-                    sorted(candidate.matched_rhea_ids),
-                    "matched Rhea IDs",
-                ),
-                (
-                    _split_values(row.get("matched_ko_ids")),
-                    sorted(candidate.matched_ko_ids),
-                    "matched KO IDs",
-                ),
-                (
-                    _split_values(row.get("warnings")),
-                    sorted(candidate.warnings),
-                    "warnings",
-                ),
-                (
-                    _split_values(row.get("reasons")),
-                    sorted(candidate.reasons),
-                    "reasons",
-                ),
-            )
-            for actual, expected, label in list_checks:
-                if actual != expected:
-                    raise ValueError(
-                        f"candidate CSV {label} mismatch for {key}"
-                    )
-            if candidate.sequence_version is None:
-                if _text(row.get("sequence_version")):
-                    raise ValueError(
-                        f"candidate CSV sequence version mismatch for {key}"
-                    )
-            elif _int(row.get("sequence_version")) != candidate.sequence_version:
-                raise ValueError(
-                    f"candidate CSV sequence version mismatch for {key}"
-                )
-            if _text(row.get("sequence_sha256")).lower() != candidate.sequence_sha256:
-                raise ValueError(f"candidate CSV sequence mismatch for {key}")
-            if _text(row.get("sequence")) != candidate.sequence:
-                raise ValueError(f"candidate CSV sequence payload mismatch for {key}")
-    if set(by_key) != expected_keys:
-        extras = sorted(set(by_key) - expected_keys)
-        raise ValueError(f"candidate CSV has rows outside canonical selection: {extras}")
-    return [by_key[key] for key in sorted(by_key)]
-
-
 def _failure_result(
     *,
     status: str,
@@ -2113,61 +1947,13 @@ def build_main_enzyme_sets(
         return result
 
     rows = read_csv(candidate_csv_path)
-    try:
-        shortlist_rows = _validate_selection_csv(selection, rows)
-    except ValueError as exc:
-        result = _failure_result(
-            status="stale_input",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
-            chassis_key=selection.chassis_key,
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason=f"Candidate JSON/CSV mismatch: {exc}; rerun main-enzyme",
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = _write_set_outputs(output_dir, result)
-        return result
+    shortlist_rows = [
+        row
+        for row in rows
+        if _text(row.get("selection_status")).lower() == "selected"
+    ]
 
     detail_fingerprint = shortlist_decision_fingerprint(shortlist_rows)
-    if not selection.shortlist_decision_fingerprint:
-        result = _failure_result(
-            status="stale_input",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
-            chassis_key=selection.chassis_key,
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason=(
-                "Candidate selection predates shortlist decision binding; "
-                "rerun main-enzyme"
-            ),
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = _write_set_outputs(output_dir, result)
-        return result
-    if selection.shortlist_decision_fingerprint != detail_fingerprint:
-        result = _failure_result(
-            status="stale_input",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
-            chassis_key=selection.chassis_key,
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason=(
-                "Candidate detail fingerprint does not match selection JSON; "
-                "rerun main-enzyme"
-            ),
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = _write_set_outputs(output_dir, result)
-        return result
 
     source_artifacts["candidate_selection_fingerprint"] = (
         main_enzyme_selection_fingerprint(selection)
