@@ -23,7 +23,8 @@ docker官方下载地址：https://www.docker.com/products/docker-desktop/
 - PowerShell 7 和 Git；
 - Python 3.12，不能使用 Python 3.13；
 - RetroPath 需要 Docker Desktop，并使用 Linux 容器；
-- RetroPath 容器上限为 7 GiB，建议主机至少有 12–16 GiB 内存；
+- RetroPath 容器默认上限为 7 GiB，可通过项目根目录 `.env` 调整；建议主机至少有
+  12–16 GiB 内存；
 - 基础功能需访问 Python 软件源、KEGG、Rhea 和 UniProt；其他组件还可能访问
   Docker Registry、Conda Forge、KNIME、Zenodo、MetaNetX 和 Hugging Face。
 
@@ -146,6 +147,23 @@ $actual = (Get-FileHash $rulesFile -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "规则文件哈希不匹配: $actual" }
 ```
 
+RetroPath 内存限制可以写入项目根目录已有的 `.env`。模板见 `.env.example`：
+
+```dotenv
+# Docker 容器硬上限
+RETROPATH_CONTAINER_MEMORY_LIMIT=7g
+
+# RetroPath 任务软上限，单位为字节（这里是 6 GiB）
+RETROPATH_MEMORY_LIMIT_BYTES=6442450944
+```
+
+软上限必须低于容器硬上限，并且容器硬上限不能超过 Docker/WSL 实际可用内存。修改后
+需要重建容器才能生效。可以先检查 Docker 总内存：
+
+```powershell
+docker info --format '{{.MemTotal}}'
+```
+
 启动 Docker Desktop 后构建并启动服务：
 
 ```powershell
@@ -154,6 +172,15 @@ docker compose -f compose.retropath.yml build retropath
 docker compose -f compose.retropath.yml up -d retropath
 Invoke-RestMethod http://127.0.0.1:8765/health | ConvertTo-Json -Depth 5
 ```
+
+修改 `.env` 中的内存配置后执行：
+
+```powershell
+docker compose -f compose.retropath.yml up -d --force-recreate retropath
+```
+
+健康检查中的 `memory_limit_bytes` 应等于 `.env` 中配置的软上限。Docker Desktop 使用
+WSL 2 时，WSL 总内存仍由用户目录中的 `.wslconfig` 单独控制。
 
 健康检查的 `ready` 必须为 `true`。服务仅绑定 `127.0.0.1:8765`，不要暴露到公网。
 
