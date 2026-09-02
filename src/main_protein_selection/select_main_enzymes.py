@@ -1187,6 +1187,64 @@ def select_main_enzymes(
         raise
 
 
+def _main_enzyme_cli_summary(
+    result: dict[str, Any],
+    config: Any,
+) -> dict[str, Any]:
+    """Project the internal selection result into a compact user summary."""
+
+    total_steps = int(result.get("heterologous_step_count") or 0)
+    uncovered_steps = sorted({
+        int(value)
+        for value in result.get("uncovered_step_indexes", [])
+        if int(value) > 0
+    })
+    review_steps = sorted({
+        int(value)
+        for value in result.get("direction_risk_step_indexes", [])
+        if int(value) > 0
+    })
+    covered_steps = max(0, total_steps - len(uncovered_steps))
+    source_unavailable = str(result.get("status") or "") == "source_unavailable"
+    requires_review = bool(review_steps) or (
+        total_steps > 0
+        and int(result.get("verified_step_candidate_count") or 0) == 0
+    )
+
+    if source_unavailable:
+        status_text = "候选来源不可用，结果不完整"
+        conclusion = "请恢复候选数据源后重新运行"
+    elif uncovered_steps:
+        status_text = "部分步骤没有可用候选"
+        conclusion = "请先处理未覆盖步骤"
+    elif requires_review:
+        status_text = "已覆盖全部步骤，但候选需要人工复核"
+        conclusion = "可以继续生成主酶组合"
+    else:
+        status_text = "已覆盖全部步骤"
+        conclusion = "可以继续生成主酶组合"
+
+    return {
+        "运行成功": bool(result.get("ok")),
+        "目标化合物": str(getattr(config, "target_name", "") or ""),
+        "路径编号": int(result.get("selected_solution_id") or 0),
+        "候选生成状态": status_text,
+        "步骤覆盖": f"{covered_steps}/{total_steps}",
+        "正式候选数量": int(result.get("step_candidate_count") or 0),
+        "每步候选上限": int(getattr(config, "top_n", 5) or 5),
+        "未覆盖步骤": uncovered_steps,
+        "需要人工复核的步骤": review_steps,
+        "序列检查": "已排除含未知或非标准氨基酸的候选",
+        "结论": conclusion,
+        "下一步": "python main.py main-enzyme-sets -i <同一输入文件>",
+        "查看详情": (
+            "python main.py info -i <同一输入文件> "
+            "--main-enzyme-candidates"
+        ),
+        "完整结果文件": str(result.get("main_enzyme_selection_json") or ""),
+    }
+
+
 def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     """Run main-enzyme selection using this project's ``RunConfig`` paths."""
 
@@ -1207,7 +1265,11 @@ def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
         cache_dir=Path(config.cache_dir) / "main_protein_selection",
         **selection_options,
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(
+        _main_enzyme_cli_summary(result, config),
+        ensure_ascii=False,
+        indent=2,
+    ))
     return result
 
 
