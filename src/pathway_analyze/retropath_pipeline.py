@@ -8,6 +8,7 @@ solutions or design manifests.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import tempfile
@@ -165,6 +166,176 @@ def _job_parameters(config: Any) -> RetroPathJobParameters:
     )
 
 
+def _summary_integer(payload: Mapping[str, Any], key: str) -> int:
+    value = payload.get(key, 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _top_candidate_preview(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return None
+    candidate_artifact = artifacts.get("candidate_routes")
+    if not isinstance(candidate_artifact, Mapping):
+        return None
+    raw_path = str(candidate_artifact.get("path") or "").strip()
+    if not raw_path:
+        return None
+    try:
+        with Path(raw_path).open(encoding="utf-8-sig", newline="") as handle:
+            rows = [dict(row) for row in csv.DictReader(handle)]
+    except (OSError, UnicodeError, csv.Error):
+        return None
+    ranked: list[tuple[int, dict[str, str]]] = []
+    for row in rows:
+        try:
+            rank = int(str(row.get("candidate_rank") or "").strip())
+        except ValueError:
+            continue
+        if rank > 0:
+            ranked.append((rank, row))
+    return min(ranked, key=lambda item: item[0])[1] if ranked else None
+
+
+def _preview_integer(preview: Mapping[str, str], key: str) -> int | None:
+    try:
+        value = int(str(preview.get(key) or "").strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _format_retropath_summary(payload: Mapping[str, Any]) -> str:
+    target = str(payload.get("target_compound") or "未知").strip()
+    depth = _summary_integer(payload, "expansion_depth")
+    chassis = "原始底盘 A0" if depth == 0 else f"累计扩展底盘 A{depth}"
+    status = str(payload.get("status") or "unknown").strip()
+    candidate_count = _summary_integer(payload, "candidate_count")
+    complete_count = _summary_integer(payload, "complete_path_count")
+    sink_count = _summary_integer(payload, "sink_match_count")
+    rejection_count = _summary_integer(payload, "rejection_count")
+    lines: list[str] = []
+
+    if payload.get("ok") is False:
+        lines.append("RetroPath 运行失败")
+        detail = str(payload.get("detail") or "未提供失败原因").strip()
+        lines.extend(("", f"目标化合物：{target}", f"失败原因：{detail}"))
+    elif status == "retropath_candidates_found":
+        lines.append(
+            f"RetroPath 搜索完成：找到 {candidate_count} 条候选合成路线"
+        )
+        lines.extend(
+            (
+                "",
+                f"目标化合物：{target}",
+                f"底盘范围：{chassis}",
+                f"完整逆向路径：{complete_count} 条",
+                f"候选路线：{candidate_count} 条",
+            )
+        )
+        preview = _top_candidate_preview(payload)
+        if preview is not None:
+            rank = _preview_integer(preview, "candidate_rank") or 1
+            total_steps = _preview_integer(preview, "total_steps")
+            kegg_steps = _preview_integer(preview, "kegg_prefix_steps")
+            retropath_steps = _preview_integer(preview, "retropath_steps")
+            if None not in (total_steps, kegg_steps, retropath_steps):
+                lines.append(
+                    f"排名第 {rank} 路线：共 {total_steps} 步"
+                    f"（KEGG {kegg_steps} 步，RetroPath {retropath_steps} 步）"
+                )
+            sink_ids = [
+                item.strip()
+                for item in str(preview.get("sink_kegg_ids") or "").split(";")
+                if item.strip()
+            ]
+            if sink_ids:
+                lines.append(f"起始代谢物：{'、'.join(sink_ids)}")
+        solution_ids = [
+            str(item).strip()
+            for item in payload.get("materialized_solution_ids", [])
+            if str(item).strip()
+        ]
+        if solution_ids:
+            lines.append(f"生成方案：Solution {', '.join(solution_ids)}")
+        lines.append(
+            "结果来源：使用已有缓存"
+            if payload.get("cache_hit") is True
+            else "结果来源：本次运行 RetroPath"
+        )
+        if payload.get("upstream_enumeration_truncated") is True:
+            lines.append("注意：逆向路径枚举达到上限，可能还有未展示路线。")
+        if payload.get("candidate_top_k_truncated") is True:
+            lines.append("注意：候选经过 Top-K 筛选，只保留了排名靠前的路线。")
+        lines.extend(
+            (
+                "",
+                "注意：以上是预测候选，尚需计量、GEM 和人工验证。",
+                "",
+                "查看第 1 条候选：",
+                "python main.py info -i <输入文件名> "
+                f"--retropath-candidate 1 -d {depth}",
+            )
+        )
+    elif status in {
+        "retropath_target_already_reachable",
+        "retropath_source_in_sink",
+    }:
+        lines.append("RetroPath 检查完成：目标已在底盘可达范围内")
+        lines.extend(
+            (
+                "",
+                f"目标化合物：{target}",
+                f"底盘范围：{chassis}",
+                "结论：无需新增预测合成路线。",
+            )
+        )
+        aliases = [
+            str(item).strip()
+            for item in payload.get("target_reachable_aliases", [])
+            if str(item).strip()
+        ]
+        if aliases:
+            lines.append(f"底盘匹配ID：{'、'.join(aliases)}")
+    elif status == "retropath_no_scope":
+        lines.append("RetroPath 搜索完成：未找到可用的完整候选路线")
+        lines.extend(
+            (
+                "",
+                f"目标化合物：{target}",
+                f"底盘范围：{chassis}",
+                f"完整逆向路径：{complete_count} 条",
+                f"命中底盘代谢物：{sink_count} 个",
+                f"被拒绝路线：{rejection_count} 条",
+            )
+        )
+        if complete_count:
+            lines.append("结论：存在完整逆向路径，但拼接或筛选后没有可用候选。")
+        else:
+            lines.append("结论：没有一条路线的所有必要分支都连接到底盘。")
+        lines.extend(
+            (
+                "",
+                "查看运行状态和拒绝原因：",
+                "python main.py info -i <输入文件名> "
+                f"--retropath -d {depth}",
+            )
+        )
+    else:
+        lines.append(f"RetroPath 运行完成：{status}")
+        lines.extend(("", f"目标化合物：{target}", f"底盘范围：{chassis}"))
+
+    result_path = str(payload.get("pipeline_result_file") or "").strip()
+    if result_path:
+        lines.extend(("", "完整审计文件：", result_path))
+    return "\n".join(lines)
+
+
 def run_retropath_pipeline(config: Any) -> dict[str, Any]:
     """Run P2 -> P3 -> P4 -> P5 and return one auditable result envelope."""
 
@@ -313,7 +484,6 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             },
         }
         _atomic_write_json(result_path, payload)
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return payload
 
     try:
@@ -569,7 +739,6 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         },
     }
     _atomic_write_json(result_path, payload)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return payload
 
 
@@ -578,7 +747,9 @@ def run_gap_command(config: Any) -> dict[str, Any]:
 
     if not getattr(config, "retropath", False):
         return run_gap(config)
-    return run_retropath_pipeline(config)
+    result = run_retropath_pipeline(config)
+    print(_format_retropath_summary(result))
+    return result
 
 
 __all__ = [
