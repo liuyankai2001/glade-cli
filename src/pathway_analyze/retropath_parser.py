@@ -63,6 +63,11 @@ SCOPE_JSON_FILE_NAMES = ("target_scope.json", "scope.json")
 SCOPE_CSV_FILE_NAMES = ("target_scope.csv", "scope.csv")
 RESULTS_CSV_FILE_NAMES = ("results.csv",)
 
+_NON_STRUCTURAL_AUXILIARY_SMILES = frozenset(
+    {"[H+]", "[H-]", "[H]", "[e-]"}
+)
+_RDKIT_UNSUPPORTED_REACTION_COMPONENTS = frozenset({"[e-]"})
+
 _SOURCE_REACTION_PATTERN = re.compile(
     r"(?:MNXR\d+|RHEA(?::|_)\d+|(?<![A-Z0-9])R\d{5}(?!\d))",
     re.IGNORECASE,
@@ -412,9 +417,23 @@ def _validate_reaction_smiles(value: Any) -> str:
     left, right = reaction_smiles.split(">>", 1)
     if not left.strip() or not right.strip():
         raise ValueError("Reaction SMILES must contain non-empty sides")
+    rdkit_left = ".".join(
+        component
+        for component in (item.strip() for item in left.split("."))
+        if component not in _RDKIT_UNSUPPORTED_REACTION_COMPONENTS
+    )
+    rdkit_right = ".".join(
+        component
+        for component in (item.strip() for item in right.split("."))
+        if component not in _RDKIT_UNSUPPORTED_REACTION_COMPONENTS
+    )
+    if not rdkit_left or not rdkit_right:
+        raise ValueError(
+            "Reaction SMILES must contain structural components on both sides"
+        )
     try:
         reaction = rdChemReactions.ReactionFromSmarts(
-            reaction_smiles,
+            f"{rdkit_left}>>{rdkit_right}",
             useSmiles=True,
         )
     except (RuntimeError, ValueError) as exc:
@@ -725,7 +744,7 @@ def _pseudo_fragment(inchi: str, smiles: str) -> Optional[AuxiliaryFragment]:
             normalized_smiles,
             "non_structural_auxiliary_fragment",
         )
-    if normalized_smiles in {"[H+]", "[H-]", "[H]", "[e-]"}:
+    if normalized_smiles in _NON_STRUCTURAL_AUXILIARY_SMILES:
         return AuxiliaryFragment(
             normalized_inchi,
             normalized_smiles,
@@ -870,7 +889,7 @@ def _reaction_product_multiplicities(reaction_smiles: str) -> dict[str, int]:
     _, right = reaction_smiles.split(">>", 1)
     counts: dict[str, int] = {}
     for component in (item.strip() for item in right.split(".")):
-        if not component or component in {"[H+]", "[H-]", "[H]", "[e-]"}:
+        if not component or component in _NON_STRUCTURAL_AUXILIARY_SMILES:
             continue
         try:
             molecule = Chem.MolFromSmiles(component, sanitize=True)
@@ -1280,8 +1299,12 @@ def parse_retropath_network(
                 auxiliary = product_resolution.auxiliary
                 if auxiliary is not None:
                     if raw_product.in_sink:
-                        raise ValueError(
-                            "wrapper marked a non-structural fragment as sink"
+                        sink_names = ";".join(
+                            sorted(set(raw_product.sink_names))
+                        ) or "None"
+                        warnings.add(
+                            "auxiliary_sink_flag_ignored:"
+                            f"{raw.transformation_id}:{sink_names}"
                         )
                     auxiliary_fragments.append(auxiliary)
                     continue
