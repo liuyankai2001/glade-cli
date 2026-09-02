@@ -47,6 +47,7 @@ _RULE_REQUIRED_COLUMNS = {
 }
 _MNXR_PATTERN = re.compile(r"MNXR\d+")
 _MNXM_PATTERN = re.compile(r"MNXM\d+")
+_INCHIKEY_CONNECTIVITY_PATTERN = re.compile(r"^[A-Z]{14}$")
 _TERM_PATTERN = re.compile(
     r"^\s*(?P<coefficient>\d+(?:\.\d+)?)\s+"
     r"(?P<compound>MNXM\d+)(?:@(?P<compartment>MNX[CD]\d+))?\s*$"
@@ -783,6 +784,61 @@ class MnxrefIndex:
                 xrefs=xrefs,
             )
         return result
+
+    def chemicals_by_connectivity_keys(
+        self,
+        connectivity_keys: Iterable[str],
+    ) -> dict[str, tuple[MnxrefChemical, ...]]:
+        normalized = sorted(
+            {
+                str(value).strip().upper()
+                for value in connectivity_keys
+                if _INCHIKEY_CONNECTIVITY_PATTERN.fullmatch(
+                    str(value).strip().upper()
+                )
+            }
+        )
+        if not normalized:
+            return {}
+        placeholders = ",".join("?" for _ in normalized)
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM chemicals
+            WHERE substr(inchikey, 1, 14) IN ({placeholders})
+            ORDER BY substr(inchikey, 1, 14), mnxm_id
+            """,
+            normalized,
+        ).fetchall()
+        grouped: dict[str, list[MnxrefChemical]] = {
+            key: [] for key in normalized
+        }
+        for row in rows:
+            xrefs = tuple(
+                item[0]
+                for item in self._connection.execute(
+                    "SELECT xref FROM chemical_xrefs "
+                    "WHERE mnxm_id = ? ORDER BY xref",
+                    (row["mnxm_id"],),
+                )
+            )
+            chemical = MnxrefChemical(
+                mnxm_id=row["mnxm_id"],
+                name=row["name"],
+                formula=row["formula"],
+                charge=row["charge"],
+                mass=row["mass"],
+                inchi=row["inchi"],
+                smiles=row["smiles"],
+                reference=row["reference"],
+                inchikey=row["inchikey"],
+                xrefs=xrefs,
+            )
+            grouped[row["inchikey"][:14]].append(chemical)
+        return {
+            key: tuple(values)
+            for key, values in grouped.items()
+            if values
+        }
 
 
 def _main(argv: Sequence[str] | None = None) -> int:

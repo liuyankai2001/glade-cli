@@ -347,8 +347,9 @@ python main.py info -i demo01.json --solution 1 --step 2 -d 0
 ```
 
 路线详情默认使用中文卡片展示，不打印完整 JSON 或超长哈希路径链。每一步按“输入 → 输出”
-列出，RetroPath 预测中间体使用简短结构标识；完整反应 ID、Reaction SMILES 和原始字段仍
-保存在 `all_solution_steps.csv` 中。
+列出。RetroPath 预测中间体优先通过本地 MNXref 3.0 按结构显示化合物名称；名称后的 `*`
+表示只确认了连接结构，立体构型或质子化状态仍待确认。无法解析名称时才显示简短结构
+标识。完整反应 ID、Reaction SMILES 和原始字段仍保存在 `all_solution_steps.csv` 中。
 
 选择路线时应重点关注：异源步骤数、是否可以推荐、电子载体平衡、是否需要额外电子
 再生系统、是否需要确认载体兼容性，以及具体反应方向。

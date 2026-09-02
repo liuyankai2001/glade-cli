@@ -9,6 +9,12 @@ from src.pathway_analyze.kegg_gap_analyze import (
     ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
+from src.pathway_analyze.retropath_mnxref import (
+    MnxrefIndex,
+    MnxrefIndexError,
+    default_install_dir,
+    default_rules_path,
+)
 from src.pathway_analyze.target_status import (
     TARGET_ALREADY_AVAILABLE_STATUS,
     read_target_already_available_status,
@@ -180,6 +186,22 @@ def _friendly_compounds(
     return [_friendly_compound(item, aliases) for item in items]
 
 
+def _friendly_named_compound(
+    compound_id: Any,
+    compound_name: Any,
+    aliases: dict[str, str] | None = None,
+) -> str:
+    identifier = str(compound_id or "").strip()
+    name = str(compound_name or "").strip()
+    if aliases and identifier in aliases:
+        return aliases[identifier]
+    if identifier.startswith("RP2CPD:"):
+        return _friendly_compound(identifier, aliases)
+    if identifier and name and name != identifier:
+        return f"{identifier} ({name})"
+    return _friendly_compound(name or identifier, aliases)
+
+
 def _retropath_anchor_aliases(
     gap_dir: Path,
     summary: dict[str, Any],
@@ -218,6 +240,68 @@ def _retropath_anchor_aliases(
         f"RP2CPD:{inchikey}": labels_by_id.get(kegg_id, kegg_id)
         for kegg_id, inchikey in zip(sink_ids, sink_keys)
     }
+
+
+def _retropath_compound_aliases(
+    config: Any,
+    gap_dir: Path,
+    summary: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, str], bool]:
+    aliases = _retropath_anchor_aliases(gap_dir, summary)
+    predicted_ids = {
+        compound_id
+        for row in rows
+        for field in ("produced_compound_id", "precursor_compound_ids")
+        for compound_id in _split_values(row.get(field))
+        if compound_id.startswith("RP2CPD:") and compound_id not in aliases
+    }
+    keys_by_id = {
+        compound_id: compound_id.split(":", 1)[1].split("-", 1)[0]
+        for compound_id in predicted_ids
+        if len(compound_id.split(":", 1)[1].split("-", 1)[0]) == 14
+    }
+    if not keys_by_id:
+        return aliases, False
+    mnxref_dir = Path(
+        getattr(
+            config,
+            "data_dir",
+            default_install_dir().parents[2],
+        )
+    ) / "retropath" / "mnxref" / "3.0"
+    rules_path = Path(
+        getattr(config, "retropath_rules_path", default_rules_path())
+    )
+    try:
+        with MnxrefIndex(mnxref_dir, rules_path) as index:
+            matches = index.chemicals_by_connectivity_keys(
+                keys_by_id.values()
+            )
+    except (OSError, MnxrefIndexError):
+        return aliases, False
+
+    enriched = False
+    for compound_id, connectivity_key in sorted(keys_by_id.items()):
+        candidates = matches.get(connectivity_key, tuple())
+        names = {
+            item.name.strip()
+            for item in candidates
+            if item.name.strip() and item.name.strip().lower() not in {"na", "none"}
+        }
+        if len(names) != 1:
+            continue
+        name = next(iter(names))
+        exact = any(
+            f"RP2CPD:{item.inchikey}" == compound_id for item in candidates
+        )
+        aliases[compound_id] = (
+            name
+            if exact
+            else f"{name}*"
+        )
+        enriched = True
+    return aliases, enriched
 
 
 def _risk_name(value: Any) -> str:
@@ -285,9 +369,9 @@ def _step_overview(
             or row.get("precursor_compound_ids"),
             compound_aliases,
         ),
-        "输出": _friendly_compound(
-            row.get("produced_compound_name")
-            or row.get("produced_compound_id"),
+        "输出": _friendly_named_compound(
+            row.get("produced_compound_id"),
+            row.get("produced_compound_name"),
             compound_aliases,
         ),
         "反应名称": (
@@ -381,6 +465,9 @@ def _format_solution_info(result: dict[str, Any]) -> str:
             f"计量：{_validation_name(result.get('计量补全状态'))}；"
             f"GEM：{_validation_name(result.get('GEM验证状态'))}"
         )
+        name_note = str(result.get("中间体名称说明") or "").strip()
+        if name_note:
+            lines.append(f"名称说明：{name_note}")
     risks = [
         VALIDATION_RISK_NAMES.get(str(item).strip(), str(item).strip())
         for item in result.get("验证风险", [])
@@ -607,11 +694,15 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     if not rows:
         raise ValueError(f"路线 {selected_solution_id} 没有反应步骤")
     forward_rows = _order_steps_forward(rows, target_compound)
-    compound_aliases = (
-        _retropath_anchor_aliases(gap_dir, summary)
-        if solution_source == "retropath"
-        else {}
-    )
+    if solution_source == "retropath":
+        compound_aliases, names_enriched = _retropath_compound_aliases(
+            config,
+            gap_dir,
+            summary,
+            forward_rows,
+        )
+    else:
+        compound_aliases, names_enriched = {}, False
 
     common = {
         "运行成功": True,
@@ -632,6 +723,11 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             ),
             "验证风险": _split_values(summary.get("validation_issue")),
         })
+        if names_enriched:
+            common["中间体名称说明"] = (
+                "名称来自本地 MNXref 3.0；带 * 的名称仅为连接结构匹配，"
+                "立体构型或质子化状态仍待确认"
+            )
     if selected_step_index is not None:
         if selected_step_index > len(forward_rows):
             raise ValueError(
@@ -646,9 +742,9 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             or selected_row.get("precursor_compound_ids"),
             compound_aliases,
         )
-        step_detail["生成化合物名称"] = _friendly_compound(
-            selected_row.get("produced_compound_name")
-            or selected_row.get("produced_compound_id"),
+        step_detail["生成化合物名称"] = _friendly_named_compound(
+            selected_row.get("produced_compound_id"),
+            selected_row.get("produced_compound_name"),
             compound_aliases,
         )
         return {
