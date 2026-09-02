@@ -387,8 +387,8 @@ python main.py gap -i demo01.json --retropath -d 5
 搜索完成后，建议按下面的顺序查看结果：
 
 ```powershell
-# 先看本次运行是否成功以及找到了多少条路线
-python main.py info -i demo01.json --retropath -d 0
+# 统一查看当前深度的全部 KEGG 和 RetroPath 路线
+python main.py info -i demo01.json --gap -d 0
 
 # 再看排名第 1 的 RetroPath 候选详情
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
@@ -396,6 +396,10 @@ python main.py info -i demo01.json --retropath-candidate 1 -d 0
 # 候选详情会给出对应的路线编号，假设为 N
 python main.py info -i demo01.json --solution N -d 0
 ```
+
+`info --gap` 读取共用的 `solutions.csv`。即使当前深度只运行过 RetroPath、没有 KEGG
+`run_config.json` 也可以使用；两种搜索都运行过时，会合并展示并标明每条路线来源。
+`info --retropath` 保留为 RetroPath 专项诊断视图，用于查看任务状态、sink 命中和拒绝原因。
 
 这里有两种编号，不能混用：
 
