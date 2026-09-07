@@ -109,3 +109,55 @@ docker compose -f compose.retropath.yml down
 ```
 
 不要默认使用 `down -v`，否则会删除保存任务和结果的命名卷。
+
+## 7. 内存超限排查
+
+出现 `RetroPath cgroup working set exceeded ... for 3 consecutive samples`
+时，服务监控器检测到工作集连续超出软上限，主动终止任务。
+服务端 `failure_code` 为 `resource_exhausted`，流水线状态仍为
+`failed`。这不能解释为“没有合成路线”。GLADE 会检查服务已列入清单并完成
+哈希校验的 `results.csv`，只恢复其中从目标到可信 sink 的完整闭合路线。
+
+若恢复到候选，`pipeline_result.json` 使用
+`retropath_partial_candidates_found`，并记录 `search_complete=false` 和
+`interrupted_result_recovered=true`。这些候选可以继续接受严格 GEM 验证，
+但不能说明搜索空间已经穷尽。若没有闭合路线、结果损坏或失败原因不是内存超限/
+墙钟超时，流水线仍返回原来的执行失败。
+
+查看本次输出目录的 `raw/service_run_manifest.json`：
+
+- `parameters`：实际提交的 `max_steps`、`topx` 等参数。
+- `resource_telemetry`：工作集峰值、软上限、连续超限次数和运行时间。
+- `failure_code`、`return_code`：失败原因和进程退出码。
+
+`pipeline_result.json` 同时保留 `service_failure`（任务 ID、失败码、退出码、
+提交参数、服务监控记录路径）。没有恢复出候选时，内存超限错误还提供
+`recovery_hint`。
+
+例如 C05432 的一次运行使用 `max_steps=5`、`topx=100`，约 112 秒后工作集
+峰值达到 10.35 GiB，触发 10 GiB 软上限。监控已减去可回收的
+`inactive_file`，该次原始内存与工作集仅相差约 5.5 MiB。
+
+如果可以接受缩小搜索范围，可在原命令中将 `--step 5` 改为 `--step 3`，
+其余参数保持一致。`--step` 控制 RetroPath 逆合成步数，`-d` 控制底盘扩展
+深度；两者不同。降低步数不保证解决内存问题，也不能证明更长路线不存在。
+`--input` 仍只传 `inputs` 目录下的文件名。
+
+如果必须保留搜索范围，先检查实际资源配置：
+
+```powershell
+docker info --format '{{.MemTotal}} {{.NCPU}}'
+docker compose -f compose.retropath.yml exec -T retropath cat /sys/fs/cgroup/memory.max
+docker compose -f compose.retropath.yml exec -T retropath cat /sys/fs/cgroup/cpu.max
+docker compose -f compose.retropath.yml exec -T retropath cat /opt/knime/knime_4.7.0/knime.ini
+```
+
+当前镜像设置 `-Xmx2048m`，它只限制 Java 堆；cgroup 工作集还包含原生库、
+线程和其他进程等内存。若日志显示大量 KNIME 工作线程，应进一步排查运行
+并发对峰值内存的影响。不要仅根据 Java 堆上限判断容器内存需求。
+
+软上限由 `.env` 中的 `RETROPATH_MEMORY_LIMIT_BYTES` 控制，容器硬上限由
+`RETROPATH_CONTAINER_MEMORY_LIMIT` 控制；调整和重建容器的方法见
+[GLADE 部署教程](GLADE部署教程.md)。必须同时核对 Docker/WSL 总内存和
+宿主机余量。例如硬上限已有 11 GiB，而 Docker 总内存约 11.68 GiB 时，
+继续提高软上限的空间很小，应优先评估搜索规模及并发。

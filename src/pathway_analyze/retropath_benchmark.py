@@ -635,7 +635,10 @@ def _run_task(
         )
         validation_dir: Path | None = None
         validation_error: Exception | None = None
-        if pipeline.get("status") == "retropath_candidates_found":
+        if pipeline.get("status") in {
+            "retropath_candidates_found",
+            "retropath_partial_candidates_found",
+        }:
             try:
                 validation = validate_retropath_candidates(config)
                 validation_dir = Path(validation["validation_dir"])

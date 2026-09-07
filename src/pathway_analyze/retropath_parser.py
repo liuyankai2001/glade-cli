@@ -62,6 +62,7 @@ RETRO_RULES_REQUIRED_COLUMNS = (
 SCOPE_JSON_FILE_NAMES = ("target_scope.json", "scope.json")
 SCOPE_CSV_FILE_NAMES = ("target_scope.csv", "scope.csv")
 RESULTS_CSV_FILE_NAMES = ("results.csv",)
+RECOVERABLE_INTERRUPTION_CODES = frozenset({"resource_exhausted", "wall_timeout"})
 
 _NON_STRUCTURAL_AUXILIARY_SMILES = frozenset(
     {"[H+]", "[H-]", "[H]", "[e-]"}
@@ -264,6 +265,7 @@ class ParsedRetroPathNetwork:
     rule_evidence: Tuple[RuleEvidence, ...]
     rejections: Tuple[NetworkRejection, ...]
     warnings: Tuple[str, ...]
+    search_complete: bool = True
     source_in_sink: Optional[SinkMatch] = None
 
     @property
@@ -289,6 +291,7 @@ class ParsedRetroPathNetwork:
             "rule_evidence": [item.to_dict() for item in self.rule_evidence],
             "rejections": [item.to_dict() for item in self.rejections],
             "warnings": list(self.warnings),
+            "search_complete": self.search_complete,
             "source_in_sink": (
                 None if self.source_in_sink is None else self.source_in_sink.to_dict()
             ),
@@ -1102,6 +1105,8 @@ def parse_retropath_network(
     client_run: RetroPathClientRun,
     input_bundle: RetroPathInputBundle,
     rules_path: str | Path,
+    *,
+    allow_interrupted: bool = False,
 ) -> ParsedRetroPathNetwork:
     """Parse and validate one P3 run without claiming pathway completeness."""
 
@@ -1109,18 +1114,25 @@ def parse_retropath_network(
         raise ValueError("client_run must be a RetroPathClientRun")
     if not isinstance(input_bundle, RetroPathInputBundle):
         raise ValueError("input_bundle must be a RetroPathInputBundle")
-    status = client_run.result.status
-    if status in {"queued", "running"}:
+    if not isinstance(allow_interrupted, bool):
+        raise ValueError("allow_interrupted must be a boolean")
+    source_status = client_run.result.status
+    if source_status in {"queued", "running"}:
         raise RetroPathParseError(
             "run_not_terminal",
-            f"RetroPath run is still {status}",
+            f"RetroPath run is still {source_status}",
         )
-    if status in {"failed", "timed_out"}:
+    interrupted = source_status in {"failed", "timed_out"}
+    if interrupted and (
+        not allow_interrupted
+        or client_run.result.failure_code not in RECOVERABLE_INTERRUPTION_CODES
+    ):
         raise RetroPathParseError(
             "retropath_execution_failed",
-            f"RetroPath run ended with status {status}",
+            f"RetroPath run ended with status {source_status}",
         )
-    if status == "no_solution":
+    status = "interrupted" if interrupted else source_status
+    if source_status == "no_solution":
         return _empty_network(client_run, input_bundle)
 
     target = input_bundle.target_compound
@@ -1152,7 +1164,7 @@ def parse_retropath_network(
         key: tuple(sorted(values, key=lambda item: item.compound_id))
         for key, values in sink_by_stereo_stripped_inchikey_lists.items()
     }
-    if status == "source_in_sink":
+    if source_status == "source_in_sink":
         sink = sink_by_inchikey.get(target.inchikey)
         if sink is None:
             raise RetroPathParseError(
@@ -1165,7 +1177,7 @@ def parse_retropath_network(
             sink_names=(sink.compound_id,),
         )
         return _empty_network(client_run, input_bundle, source_in_sink=match)
-    if status != "succeeded":
+    if status not in {"succeeded", "interrupted"}:
         raise RetroPathParseError(
             "artifact_inconsistent",
             f"unsupported RetroPath run status: {status}",
@@ -1178,6 +1190,15 @@ def parse_retropath_network(
             f"P3 raw artifact directory does not exist: {raw_dir}",
         )
     table_path, rows = _select_scope_table(raw_dir)
+    declared_artifact_names = {
+        Path(str(item).replace("\\", "/")).name
+        for item in client_run.result.artifacts
+    }
+    if interrupted and table_path.name not in declared_artifact_names:
+        raise RetroPathParseError(
+            "artifact_inconsistent",
+            f"scope artifact is not declared by the service: {table_path.name}",
+        )
     raw_transformations, grouping_rejections = _group_rows(rows)
     json_path = _artifact_path(raw_dir, SCOPE_JSON_FILE_NAMES)
     json_topology = None if json_path is None else _json_topology(json_path)
@@ -1212,6 +1233,11 @@ def parse_retropath_network(
     accepted: list[ParsedTransformation] = []
     rejections = list(grouping_rejections)
     warnings: set[str] = set()
+    if interrupted:
+        warnings.add(
+            "search_interrupted:"
+            f"{client_run.result.failure_code or source_status}"
+        )
 
     def add_node(
         compound: PredictedCompound,
@@ -1570,6 +1596,7 @@ def parse_retropath_network(
             )
         ),
         warnings=tuple(sorted(warnings)),
+        search_complete=not interrupted,
     )
 
 
@@ -1579,6 +1606,7 @@ __all__ = [
     "ParsedCompoundNode",
     "ParsedRetroPathNetwork",
     "ParsedTransformation",
+    "RECOVERABLE_INTERRUPTION_CODES",
     "RETROPATH_RESULTS_COLUMNS",
     "RETRO_RULES_REQUIRED_COLUMNS",
     "RetroPathParseError",

@@ -45,6 +45,9 @@ from src.pathway_analyze.target_id import validate_target_compound_id
 
 STATUS_NAMES = {
     "retropath_candidates_found": "已找到 RetroPath 候选路线",
+    "retropath_partial_candidates_found": (
+        "RetroPath 搜索中断，但已恢复完整候选路线"
+    ),
     "retropath_target_already_reachable": (
         "目标化合物已在底盘细胞中，无需运行 RetroPath"
     ),
@@ -391,6 +394,7 @@ def _load_context(config: Any) -> _RetroPathViewContext:
         raise ValueError(f"RetroPath 运行结果包含未知状态：{status!r}")
     successful_statuses = {
         "retropath_candidates_found",
+        "retropath_partial_candidates_found",
         "retropath_target_already_reachable",
         "retropath_no_scope",
         "retropath_source_in_sink",
@@ -448,7 +452,11 @@ def _load_context(config: Any) -> _RetroPathViewContext:
         raise ValueError("RetroPath pipeline 候选数量与 candidate_routes.csv 不一致")
     if rejection_count != len(rejected_routes):
         raise ValueError("RetroPath pipeline 拒绝数量与 rejected_routes.csv 不一致")
-    if (status == "retropath_candidates_found") != bool(candidate_routes):
+    candidate_statuses = {
+        "retropath_candidates_found",
+        "retropath_partial_candidates_found",
+    }
+    if (status in candidate_statuses) != bool(candidate_routes):
         raise ValueError("RetroPath 运行状态与候选文件是否包含路线不一致")
     _validate_candidate_relationships(
         target_compound=target_compound,
@@ -646,7 +654,7 @@ def _success_warnings(context: _RetroPathViewContext) -> list[str]:
         for row in context.candidate_routes
     ):
         warnings.append("部分候选包含辅助片段，共底物或辅因子仍需恢复")
-    if any(
+    enumeration_incomplete = any(
         _as_bool(
             row.get("upstream_enumeration_truncated"),
             "upstream_enumeration_truncated",
@@ -655,7 +663,16 @@ def _success_warnings(context: _RetroPathViewContext) -> list[str]:
     ) or _as_bool(
         context.pipeline.get("upstream_enumeration_truncated"),
         "upstream_enumeration_truncated",
-    ):
+    )
+    search_complete = _as_bool(
+        context.pipeline.get("search_complete", True),
+        "search_complete",
+    )
+    if not search_complete:
+        warnings.append(
+            "RetroPath 服务在搜索完成前中断；候选路线自身闭合，但结果并非穷尽"
+        )
+    elif enumeration_incomplete:
         warnings.append("RetroPath 完整路径枚举达到上限，结果并非穷尽")
     if any(
         _as_bool(
@@ -1056,6 +1073,11 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         "运行状态": STATUS_NAMES.get(status, status),
         "原始状态代码": status,
     }
+    if "search_complete" in pipeline:
+        common["搜索完整"] = _as_bool(
+            pipeline.get("search_complete"),
+            "search_complete",
+        )
     if pipeline["ok"] is False:
         detail = str(pipeline.get("detail") or "").strip()
         stage = str(pipeline.get("stage") or "").strip()

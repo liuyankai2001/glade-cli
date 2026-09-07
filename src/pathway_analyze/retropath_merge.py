@@ -813,7 +813,7 @@ def merge_retropath_candidates(
             max_total_steps=total_step_limit,
             max_new_enzymes=enzyme_limit,
         )
-    if enumeration_result.network.status != "succeeded":
+    if enumeration_result.network.status not in {"succeeded", "interrupted"}:
         raise ValueError("P5 requires a terminal P4 network")
 
     transformations_by_id = {

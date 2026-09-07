@@ -32,7 +32,10 @@ from src.pathway_analyze.retropath_input import (
     RetroPathInputBuildError,
     build_retropath_inputs,
 )
-from src.pathway_analyze.retropath_parser import RetroPathParseError
+from src.pathway_analyze.retropath_parser import (
+    RECOVERABLE_INTERRUPTION_CODES,
+    RetroPathParseError,
+)
 from src.pathway_analyze.retropath_routes import parse_and_enumerate_retropath
 from src.pathway_analyze.retropath_structure import KeggMolStructureProvider
 from src.pathway_analyze.target_id import validate_target_compound_id
@@ -113,6 +116,8 @@ def _write_failure(
     status: str,
     detail: str,
     stage: str,
+    service_failure: Mapping[str, Any] | None = None,
+    recovery_hint: str | None = None,
 ) -> RetroPathPipelineError:
     result_path = output_dir / PIPELINE_RESULT_FILE_NAME
     payload = {
@@ -131,10 +136,14 @@ def _write_failure(
         "output_dir": str(output_dir),
         "pipeline_result_file": str(result_path),
     }
+    if service_failure is not None:
+        payload["service_failure"] = dict(service_failure)
+    if recovery_hint:
+        payload["recovery_hint"] = recovery_hint
     _atomic_write_json(result_path, payload)
     return RetroPathPipelineError(
         status,
-        detail,
+        f"{detail}; {recovery_hint}" if recovery_hint else detail,
         stage=stage,
         result_path=result_path,
     )
@@ -225,10 +234,18 @@ def _format_retropath_summary(payload: Mapping[str, Any]) -> str:
         lines.append("RetroPath 运行失败")
         detail = str(payload.get("detail") or "未提供失败原因").strip()
         lines.extend(("", f"目标化合物：{target}", f"失败原因：{detail}"))
-    elif status == "retropath_candidates_found":
-        lines.append(
-            f"RetroPath 搜索完成：找到 {candidate_count} 条候选合成路线"
-        )
+    elif status in {
+        "retropath_candidates_found",
+        "retropath_partial_candidates_found",
+    }:
+        if status == "retropath_partial_candidates_found":
+            lines.append(
+                f"RetroPath 搜索中断，但已恢复 {candidate_count} 条完整候选合成路线"
+            )
+        else:
+            lines.append(
+                f"RetroPath 搜索完成：找到 {candidate_count} 条候选合成路线"
+            )
         lines.extend(
             (
                 "",
@@ -268,7 +285,12 @@ def _format_retropath_summary(payload: Mapping[str, Any]) -> str:
             if payload.get("cache_hit") is True
             else "结果来源：本次运行 RetroPath"
         )
-        if payload.get("upstream_enumeration_truncated") is True:
+        if payload.get("search_complete") is False:
+            lines.append(
+                "注意：RetroPath 服务在搜索完成前中断；已显示的候选自身闭合，"
+                "但结果不代表全部可能路线。"
+            )
+        elif payload.get("upstream_enumeration_truncated") is True:
             lines.append("注意：逆向路径枚举达到上限，可能还有未展示路线。")
         if payload.get("candidate_top_k_truncated") is True:
             lines.append("注意：候选经过 Top-K 筛选，只保留了排名靠前的路线。")
@@ -538,23 +560,53 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         ) from exc
 
     service_status = client_run.result.status
+    interrupted_recovery = False
+    service_failure_status = None
+    service_failure_detail = None
+    service_failure: dict[str, Any] | None = None
+    recovery_hint = None
     if service_status in {"failed", "timed_out"}:
-        status = (
+        service_failure_status = (
             "retropath_timeout"
             if service_status == "timed_out"
             else "retropath_execution_failed"
         )
-        detail = "; ".join(client_run.result.errors) or (
+        service_failure_detail = "; ".join(client_run.result.errors) or (
             f"RetroPath service ended with status {service_status}"
         )
-        raise _write_failure(
-            output_dir=output_dir,
-            target_compound=target_compound,
-            depth=depth,
-            status=status,
-            detail=detail,
-            stage="client",
+        service_failure = {
+            "job_id": client_run.result.job_id,
+            "status": service_status,
+            "failure_code": client_run.result.failure_code,
+            "return_code": client_run.result.return_code,
+            "parameters": job_parameters.to_dict(),
+            "service_manifest_file": str(
+                client_run.raw_dir / "service_run_manifest.json"
+            ),
+        }
+        if client_run.result.failure_code == "resource_exhausted":
+            recovery_hint = (
+                "RetroPath 服务因内存超限主动终止任务。"
+                f"本次 max_steps={job_parameters.max_steps}、topx={job_parameters.topx}。"
+                "可降低 --step 后重试（会缩小搜索范围）；若需保留搜索范围，"
+                "请检查服务并发及 Docker/WSL 可用内存，再调整服务内存配置。"
+                "排查说明：docs/RetroPath本地服务使用说明.md；"
+                f"资源监控记录：{client_run.raw_dir / 'service_run_manifest.json'}"
+            )
+        interrupted_recovery = (
+            client_run.result.failure_code in RECOVERABLE_INTERRUPTION_CODES
         )
+        if not interrupted_recovery:
+            raise _write_failure(
+                output_dir=output_dir,
+                target_compound=target_compound,
+                depth=depth,
+                status=service_failure_status,
+                detail=service_failure_detail,
+                stage="client",
+                service_failure=service_failure,
+                recovery_hint=recovery_hint,
+            )
 
     try:
         enumeration_result = parse_and_enumerate_retropath(
@@ -567,8 +619,25 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
                 "retropath_max_search_states",
                 100000,
             ),
+            allow_interrupted=interrupted_recovery,
         )
     except RetroPathParseError as exc:
+        if interrupted_recovery:
+            assert service_failure_status is not None
+            assert service_failure_detail is not None
+            raise _write_failure(
+                output_dir=output_dir,
+                target_compound=target_compound,
+                depth=depth,
+                status=service_failure_status,
+                detail=(
+                    f"{service_failure_detail}; interrupted result recovery failed: "
+                    f"{exc.code}: {exc.detail}"
+                ),
+                stage="client",
+                service_failure=service_failure,
+                recovery_hint=recovery_hint,
+            ) from exc
         raise _write_failure(
             output_dir=output_dir,
             target_compound=target_compound,
@@ -578,6 +647,22 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             stage="enumeration",
         ) from exc
     except (OSError, ValueError) as exc:
+        if interrupted_recovery:
+            assert service_failure_status is not None
+            assert service_failure_detail is not None
+            raise _write_failure(
+                output_dir=output_dir,
+                target_compound=target_compound,
+                depth=depth,
+                status=service_failure_status,
+                detail=(
+                    f"{service_failure_detail}; interrupted result recovery failed: "
+                    f"{exc}"
+                ),
+                stage="client",
+                service_failure=service_failure,
+                recovery_hint=recovery_hint,
+            ) from exc
         raise _write_failure(
             output_dir=output_dir,
             target_compound=target_compound,
@@ -616,10 +701,31 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             status="retropath_merge_failed",
             detail=str(exc),
             stage="candidate_merge",
+            service_failure=service_failure,
         ) from exc
 
     if candidate_artifacts.candidate_count:
-        status = "retropath_candidates_found"
+        status = (
+            "retropath_partial_candidates_found"
+            if interrupted_recovery
+            else "retropath_candidates_found"
+        )
+    elif interrupted_recovery:
+        assert service_failure_status is not None
+        assert service_failure_detail is not None
+        raise _write_failure(
+            output_dir=output_dir,
+            target_compound=target_compound,
+            depth=depth,
+            status=service_failure_status,
+            detail=(
+                f"{service_failure_detail}; interrupted result contained no "
+                "fully closed candidate route"
+            ),
+            stage="client",
+            service_failure=service_failure,
+            recovery_hint=recovery_hint,
+        )
     elif service_status == "source_in_sink":
         status = "retropath_source_in_sink"
     else:
@@ -658,6 +764,8 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "pipeline_result_file": str(result_path),
         "job_id": client_run.result.job_id,
         "service_status": service_status,
+        "search_complete": not interrupted_recovery,
+        "interrupted_result_recovered": interrupted_recovery,
         "return_code": client_run.result.return_code,
         "failure_code": getattr(client_run.result, "failure_code", None),
         "cache_hit": client_run.cache_hit,
@@ -668,7 +776,9 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "materialized_solution_count": materialization["solution_count"],
         "materialized_solution_ids": materialization["solution_ids"],
         "rejection_count": candidate_artifacts.rejection_count,
-        "upstream_enumeration_truncated": enumeration_result.truncated,
+        "upstream_enumeration_truncated": (
+            enumeration_result.truncated or interrupted_recovery
+        ),
         "candidate_top_k_truncated": candidate_artifacts.merge_result.truncated,
         "input_summary": {
             "reachable_compound_count": input_bundle.reachable_compound_count,
@@ -738,6 +848,8 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             },
         },
     }
+    if service_failure is not None:
+        payload["service_failure"] = service_failure
     _atomic_write_json(result_path, payload)
     return payload
 

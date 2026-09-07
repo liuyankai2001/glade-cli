@@ -325,9 +325,10 @@ def enumerate_sink_routes(
             max_search_states=state_limit,
             truncated=False,
         )
-    if network.status != "succeeded":
+    if network.status not in {"succeeded", "interrupted"}:
         raise ValueError(
-            "only succeeded, no_solution, or source_in_sink networks can be enumerated"
+            "only succeeded, interrupted, no_solution, or source_in_sink networks "
+            "can be enumerated"
         )
 
     transformations_by_id = {
@@ -557,7 +558,7 @@ def enumerate_sink_routes(
         explored_states=explored_states,
         max_routes=route_limit,
         max_search_states=state_limit,
-        truncated=truncated,
+        truncated=truncated or not network.search_complete,
     )
 
 
@@ -568,10 +569,16 @@ def parse_and_enumerate_retropath(
     *,
     max_routes: int = DEFAULT_MAX_ROUTES,
     max_search_states: int = DEFAULT_MAX_SEARCH_STATES,
+    allow_interrupted: bool = False,
 ) -> RetroPathEnumerationResult:
     """Run the complete P4 parse-and-enumerate pipeline."""
 
-    network = parse_retropath_network(client_run, input_bundle, rules_path)
+    network = parse_retropath_network(
+        client_run,
+        input_bundle,
+        rules_path,
+        allow_interrupted=allow_interrupted,
+    )
     return enumerate_sink_routes(
         network,
         max_routes=max_routes,

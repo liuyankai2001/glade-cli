@@ -329,7 +329,11 @@ def _load_candidate_inputs(config: Any) -> _CandidateInputs:
         not isinstance(pipeline, dict)
         or pipeline.get("schema_version") != RETROPATH_PIPELINE_SCHEMA
         or pipeline.get("ok") is not True
-        or pipeline.get("status") != "retropath_candidates_found"
+        or pipeline.get("status")
+        not in {
+            "retropath_candidates_found",
+            "retropath_partial_candidates_found",
+        }
     ):
         raise ValueError("RetroPath pipeline did not produce candidate routes")
     if pipeline.get("target_compound") != target:
