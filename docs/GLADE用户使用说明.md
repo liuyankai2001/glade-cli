@@ -405,7 +405,20 @@ python main.py info -i demo01.json --retropath-candidate 1 -d 0
 
 # 候选详情会给出对应的路线编号，假设为 N
 python main.py info -i demo01.json --solution N -d 0
+
+# 按需计算并查看培养基有机底物到目标化合物的完整路线
+python main.py info -i demo01.json --solution N --all -d 0
 ```
+
+`--all` 会在内存中加载当前 GEM 和培养基，对该路线的底盘锚点运行 pFBA，再把
+底盘内源段与 gap 路线拼接展示。起点不会写死为葡萄糖：系统从锚点沿实际通量反向
+追踪到培养基 exchange，自动列出真正参与目标路线的葡萄糖、氨基酸、甘油、有机酸
+等有机底物；氧气、铵、磷酸盐和金属离子作为辅助培养基输入单独显示。结果是一套
+当前约束下的简约可行路线及其必要分支，不代表底盘中唯一可能的代谢路线。
+
+`--all` 只能与 `--solution N` 使用，不能和 `--step N` 同时使用。该查看过程不请求
+网络，也不会修改 gap、验证或 manifest 文件；但需要先完成 `chassis`，并保留对应的
+GEM、培养基、底盘可生成代谢物和分析摘要。
 
 `info --gap` 读取共用的 `solutions.csv`。即使当前深度只运行过 RetroPath、没有 KEGG
 `run_config.json` 也可以使用；两种搜索都运行过时，会合并展示并标明每条路线来源。

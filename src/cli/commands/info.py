@@ -75,5 +75,13 @@ def register(subparsers):
             "--retropath-candidate 和主酶候选视图"
         ),
     )
+    p.add_argument(
+        "--all",
+        dest="show_all",
+        action="store_true",
+        help=(
+            "与 --solution N 配合，按需计算并展示培养基有机底物到目标的完整路线"
+        ),
+    )
     p.set_defaults(func=run_info)
     return p

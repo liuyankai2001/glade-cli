@@ -47,6 +47,11 @@ def run_info(config: Any) -> dict[str, Any]:
     main_enzyme_candidate = getattr(config, "main_enzyme_candidate", None)
     main_enzyme_set = getattr(config, "main_enzyme_set", None)
     retropath_candidate = getattr(config, "retropath_candidate", None)
+    show_all = bool(getattr(config, "show_all", False))
+    if show_all and getattr(config, "solution", None) is None:
+        raise ValueError("--all 只能与 --solution N 一起使用")
+    if show_all and getattr(config, "step", None) is not None:
+        raise ValueError("--all 不能与 --step 同时使用")
     if (
         main_enzyme_candidate is not None
         and getattr(config, "step", None) is None

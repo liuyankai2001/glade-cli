@@ -446,6 +446,9 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         )
         return "\n".join(lines)
 
+    if result.get("完整路线模式") is True:
+        return _format_full_solution_info(result)
+
     total_steps = result.get("步骤数量", 0)
     heterologous_steps = result.get("异源步骤数", 0)
     starts = _friendly_compounds(result.get("可达起始化合物", []))
@@ -498,6 +501,119 @@ def _format_solution_info(result: dict[str, Any]) -> str:
             f"--solution {solution_id} --step N -d {depth}",
         )
     )
+    return "\n".join(lines)
+
+
+def _format_source_metabolite(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or item.get("model_metabolite_id") or "未知")
+    kegg_ids = _split_values(item.get("kegg_ids"))
+    identifier = "、".join(kegg_ids) or str(item.get("model_metabolite_id") or "")
+    flux = item.get("uptake_flux")
+    flux_text = f"，摄取通量 {float(flux):.6g}" if flux is not None else ""
+    return f"{name} [{identifier}]{flux_text}"
+
+
+def _format_full_solution_info(result: dict[str, Any]) -> str:
+    solution_id = result.get("路径编号", "未知")
+    target = result.get("目标化合物", "未知")
+    source = result.get("路线来源", "未知")
+    trace_complete = bool(result.get("上游追踪完整"))
+    lines = [
+        f"路线 {solution_id}：培养基有机底物到 {target}",
+        "",
+        f"路线来源：{source}",
+        "路线性质：当前培养基和生长约束下的一套 pFBA 简约可行路线，"
+        "不代表唯一生物学路线",
+        f"上游追踪：{'完整' if trace_complete else '不完整'}",
+        "",
+        "最起始有机底物：",
+    ]
+    organic_sources = result.get("起始有机底物", [])
+    if organic_sources:
+        lines.extend(
+            f"  - {_format_source_metabolite(item)}"
+            for item in organic_sources
+        )
+    else:
+        lines.append("  - 未识别到有机培养基起点")
+
+    auxiliary = result.get("辅助培养基输入", [])
+    if auxiliary:
+        lines.extend(("", "辅助培养基输入："))
+        lines.extend(
+            f"  - {_format_source_metabolite(item)}"
+            for item in auxiliary
+        )
+
+    other_organic = result.get("其他活跃有机输入", [])
+    if other_organic:
+        lines.extend(("", "其他活跃有机摄取（未分配到锚点路径）："))
+        lines.extend(
+            f"  - {_format_source_metabolite(item)}"
+            for item in other_organic
+        )
+
+    anchors = result.get("连接锚点", [])
+    lines.extend(("", "底盘与 gap 的连接锚点："))
+    for item in anchors:
+        role = (
+            "主碳骨架"
+            if item.get("role") == "main_carbon_anchor"
+            else "路线侧边需求"
+        )
+        lines.append(
+            "  - "
+            f"{item.get('name') or item.get('model_metabolite_id')} "
+            f"[{item.get('kegg_id')}]（{role}，相对需求 "
+            f"{float(item.get('relative_requirement') or 0):.6g}）"
+        )
+
+    lines.extend(("", "底盘内源反应网络（从边界向锚点近似排序）："))
+    for index, step in enumerate(result.get("底盘内源步骤", []), start=1):
+        lines.append(
+            f"Native {index} · {step.get('model_reaction_id')} · "
+            f"{step.get('reaction_name') or ''}"
+        )
+        lines.append(f"  {step.get('equation')}")
+        lines.append(
+            f"  pFBA 通量：{float(step.get('pfba_flux') or 0):.6g}；"
+            f"方向：{step.get('direction')}"
+        )
+
+    side_dependencies = result.get("侧边依赖", [])
+    if side_dependencies:
+        lines.extend(("", "能量、氧化还原及其他侧边依赖："))
+        for item in side_dependencies:
+            reaction_ids = _split_values(item.get("used_by_reaction_ids"))
+            suffix = f"；用于 {', '.join(reaction_ids)}" if reaction_ids else ""
+            lines.append(
+                f"  - {item.get('name') or item.get('model_metabolite_id')} "
+                f"[{item.get('model_metabolite_id')}]{suffix}"
+            )
+
+    lines.extend(("", "gap 路线步骤："))
+    for step in result.get("反应步骤", []):
+        step_index = step.get("步骤编号", "未知")
+        step_source = step.get("步骤来源") or step.get("反应类型") or "反应"
+        reaction_name = str(step.get("反应名称") or "").strip()
+        lines.append(f"Step {step_index} · {reaction_name or step_source}")
+        lines.append(
+            f"  输入：{' + '.join(_friendly_compounds(step.get('输入', [])))}"
+        )
+        lines.append(f"  输出：{_friendly_compound(step.get('输出'))}")
+
+    summary = result.get("pFBA摘要", {})
+    lines.extend((
+        "",
+        "pFBA 摘要：",
+        f"  基线生长：{float(summary.get('baseline_growth') or 0):.6g}",
+        f"  锚点联合供给通量：{float(summary.get('pfba_anchor_flux') or 0):.6g}",
+        f"  追踪内源反应数：{int(summary.get('traced_reaction_count') or 0)}",
+    ))
+    warnings = result.get("警告", [])
+    if warnings:
+        lines.extend(("", "警告："))
+        lines.extend(f"  - {item}" for item in warnings)
     return "\n".join(lines)
 
 
@@ -610,6 +726,9 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     selected_step_index = int(raw_step_index) if raw_step_index is not None else None
     if selected_step_index is not None and selected_step_index < 1:
         raise ValueError("step 必须是正整数")
+    show_all = bool(getattr(config, "show_all", False))
+    if show_all and selected_step_index is not None:
+        raise ValueError("--all 不能与 --step 同时使用")
     summaries_path = gap_dir / "solutions.csv"
     steps_path = gap_dir / "all_solution_steps.csv"
 
@@ -753,7 +872,7 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             "步骤详情": step_detail,
         }
 
-    return {
+    result = {
         **common,
         "路径链": _build_path_chain(rows, target_compound),
         "步骤数量": _to_int(summary.get("total_steps") or len(rows), "total_steps"),
@@ -786,6 +905,36 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             for step_index, row in enumerate(forward_rows, start=1)
         ],
     }
+    if not show_all:
+        return result
+
+    from src.pathway_analyze.upstream_pathway import trace_upstream_pathway
+
+    anchor_ids = _split_values(summary.get("reachable_anchor_compounds"))
+    trace = trace_upstream_pathway(
+        model_path=config.model_path,
+        medium_path=config.medium_path,
+        chassis_producible_csv=config.chassis_producible_csv,
+        chassis_summary_csv=config.chassis_metabolites_summary_csv,
+        steps=rows,
+        target_compound=target_compound,
+        anchor_compound_ids=anchor_ids,
+        compound_aliases=compound_aliases,
+    )
+    result.update({
+        "完整路线模式": True,
+        "上游追踪完整": trace["trace_complete"],
+        "起始有机底物": trace["organic_sources"],
+        "辅助培养基输入": trace["auxiliary_medium_inputs"],
+        "其他活跃有机输入": trace["other_active_organic_inputs"],
+        "底盘内源步骤": trace["reactions"],
+        "连接锚点": trace["anchors"],
+        "侧边依赖": trace["side_dependencies"],
+        "未解析含碳代谢物": trace["unresolved_carbon_metabolites"],
+        "pFBA摘要": trace["pfba_summary"],
+        "警告": trace["warnings"],
+    })
+    return result
 
 
 def run_solution_info(config: Any) -> dict[str, Any]:
