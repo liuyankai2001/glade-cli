@@ -30,40 +30,35 @@ INORGANIC_CARBON_KEGG_IDS = frozenset({
     "C00288",  # bicarbonate
     "C01353",  # carbonate
 })
-INORGANIC_CARBON_BIGG_IDS = frozenset({"co", "co2", "h2co3", "hco3"})
+INORGANIC_CARBON_FORMULAE = frozenset({"CO", "CO2", "CHO3", "CO3"})
 
 # These metabolites support energy, redox or group transfer.  They are shown
 # as side dependencies and are deliberately not used as main-carbon shortcuts.
-CURRENCY_METABOLITE_BIGG_IDS = frozenset({
-    "adp",
-    "amp",
-    "atp",
-    "cdp",
-    "cmp",
-    "coa",
-    "ctp",
-    "fad",
-    "fadh2",
-    "flxr",
-    "flxso",
-    "gdp",
-    "gmp",
-    "gtp",
-    "h",
-    "h2o",
-    "mql8",
-    "mqn8",
-    "nad",
-    "nadh",
-    "nadp",
-    "nadph",
-    "pi",
-    "ppi",
-    "q8",
-    "q8h2",
-    "udp",
-    "ump",
-    "utp",
+CURRENCY_METABOLITE_KEGG_IDS = frozenset({
+    "C00001",  # water
+    "C00002",  # ATP
+    "C00003",  # NAD+
+    "C00004",  # NADH
+    "C00005",  # NADPH
+    "C00006",  # NADP+
+    "C00008",  # ADP
+    "C00009",  # phosphate
+    "C00010",  # CoA
+    "C00013",  # diphosphate
+    "C00015",  # UDP
+    "C00016",  # FAD
+    "C00020",  # AMP
+    "C00035",  # GDP
+    "C00044",  # GTP
+    "C00055",  # CMP
+    "C00063",  # CTP
+    "C00075",  # UTP
+    "C00080",  # proton
+    "C00105",  # UMP
+    "C00112",  # CDP
+    "C00144",  # GMP
+    "C01328",  # water
+    "C01352",  # FADH2
 })
 
 
@@ -80,11 +75,6 @@ def _split_values(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
-
-
-def _base_metabolite_id(metabolite_id: str) -> str:
-    value = str(metabolite_id or "").strip().lower()
-    return re.sub(r"_(?:c|e|p|m|n|r|x|v|g|u|l)$", "", value)
 
 
 def _annotation_values(value: Any) -> list[str]:
@@ -138,14 +128,19 @@ def _has_carbon(metabolite: cobra.Metabolite) -> bool:
 
 
 def _is_inorganic_carbon(metabolite: cobra.Metabolite) -> bool:
+    formula = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        str(getattr(metabolite, "formula", "") or ""),
+    ).upper()
     return bool(
         set(_kegg_ids(metabolite)) & INORGANIC_CARBON_KEGG_IDS
-        or _base_metabolite_id(metabolite.id) in INORGANIC_CARBON_BIGG_IDS
+        or formula in INORGANIC_CARBON_FORMULAE
     )
 
 
 def _is_currency_metabolite(metabolite: cobra.Metabolite) -> bool:
-    return _base_metabolite_id(metabolite.id) in CURRENCY_METABOLITE_BIGG_IDS
+    return bool(set(_kegg_ids(metabolite)) & CURRENCY_METABOLITE_KEGG_IDS)
 
 
 def _is_organic(metabolite: cobra.Metabolite) -> bool:
@@ -163,10 +158,15 @@ def _metabolite_payload(
     exchange_reaction_id: str = "",
     uptake_flux: float | None = None,
 ) -> dict[str, Any]:
+    model = getattr(metabolite, "_model", None)
+    compartments = getattr(model, "compartments", {}) if model is not None else {}
     return {
         "model_metabolite_id": metabolite.id,
         "name": metabolite.name or metabolite.id,
         "compartment": metabolite.compartment,
+        "compartment_name": str(
+            compartments.get(metabolite.compartment, metabolite.compartment)
+        ),
         "formula": metabolite.formula or "",
         "kegg_ids": _kegg_ids(metabolite),
         "exchange_reaction_id": exchange_reaction_id,
@@ -208,13 +208,36 @@ def _format_term(metabolite: cobra.Metabolite, coefficient: float) -> str:
     return f"{prefix}{metabolite.id}"
 
 
+def _format_display_term(metabolite: cobra.Metabolite, coefficient: float) -> str:
+    prefix = "" if math.isclose(coefficient, 1.0, abs_tol=1e-12) else f"{coefficient:g} "
+    model = getattr(metabolite, "_model", None)
+    compartments = getattr(model, "compartments", {}) if model is not None else {}
+    compartment = str(
+        compartments.get(metabolite.compartment, metabolite.compartment)
+    )
+    location = f"，{compartment}" if compartment else ""
+    return (
+        f"{prefix}{metabolite.name or metabolite.id}"
+        f"（{metabolite.id}{location}）"
+    )
+
+
 def _oriented_equation(
     substrates: Sequence[tuple[cobra.Metabolite, float]],
     products: Sequence[tuple[cobra.Metabolite, float]],
 ) -> str:
-    left = " + ".join(_format_term(*item) for item in substrates) or "∅"
-    right = " + ".join(_format_term(*item) for item in products) or "∅"
+    left = " + ".join(_format_term(*item) for item in substrates) or "无"
+    right = " + ".join(_format_term(*item) for item in products) or "无"
     return f"{left} -> {right}"
+
+
+def _display_equation(
+    substrates: Sequence[tuple[cobra.Metabolite, float]],
+    products: Sequence[tuple[cobra.Metabolite, float]],
+) -> str:
+    left = " + ".join(_format_display_term(*item) for item in substrates) or "无"
+    right = " + ".join(_format_display_term(*item) for item in products) or "无"
+    return f"{left} → {right}"
 
 
 def _canonical_compound_id(
@@ -520,7 +543,7 @@ def _trace_active_network(
         if required_rate <= flux_threshold or truncated:
             return
         if metabolite.id in active_stack:
-            warnings.add(f"检测到循环并在 {metabolite.id} 截断")
+            warnings.add(f"检测到稳态循环依赖，已复用节点 {metabolite.id}")
             return
         if _is_currency_metabolite(metabolite):
             remember_side(metabolite, "")
@@ -610,7 +633,8 @@ def _trace_active_network(
             "signed_pfba_flux": flux,
             "pfba_flux": abs(flux),
             "attributed_flux": selected_extent[reaction_id],
-            "equation": _oriented_equation(substrates, products),
+            "equation": _display_equation(substrates, products),
+            "model_equation": _oriented_equation(substrates, products),
             "substrates": [
                 {**_metabolite_payload(item), "coefficient": coefficient}
                 for item, coefficient in substrates

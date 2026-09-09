@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -505,7 +506,11 @@ def _format_solution_info(result: dict[str, Any]) -> str:
 
 
 def _format_source_metabolite(item: dict[str, Any]) -> str:
-    name = str(item.get("name") or item.get("model_metabolite_id") or "未知")
+    name = str(
+        item.get("name")
+        or item.get("model_metabolite_id")
+        or "未知"
+    )
     kegg_ids = _split_values(item.get("kegg_ids"))
     identifier = "、".join(kegg_ids) or str(item.get("model_metabolite_id") or "")
     flux = item.get("uptake_flux")
@@ -513,7 +518,16 @@ def _format_source_metabolite(item: dict[str, Any]) -> str:
     return f"{name} [{identifier}]{flux_text}"
 
 
+def _name_first_compound(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^([CDG]\d{5})\s+\((.*)\)$", text, flags=re.IGNORECASE)
+    if match is None:
+        return text
+    return f"{match.group(2)} [{match.group(1).upper()}]"
+
+
 def _format_full_solution_info(result: dict[str, Any]) -> str:
+
     solution_id = result.get("路径编号", "未知")
     target = result.get("目标化合物", "未知")
     source = result.get("路线来源", "未知")
@@ -570,14 +584,19 @@ def _format_full_solution_info(result: dict[str, Any]) -> str:
 
     lines.extend(("", "底盘内源反应网络（从边界向锚点近似排序）："))
     for index, step in enumerate(result.get("底盘内源步骤", []), start=1):
+        direction = {
+            "forward": "正向",
+            "reverse": "反向",
+        }.get(str(step.get("direction") or ""), step.get("direction"))
         lines.append(
-            f"Native {index} · {step.get('model_reaction_id')} · "
-            f"{step.get('reaction_name') or ''}"
+            f"内源 {index} · "
+            f"{step.get('reaction_name') or ''} "
+            f"（{step.get('model_reaction_id')}）"
         )
         lines.append(f"  {step.get('equation')}")
         lines.append(
             f"  pFBA 通量：{float(step.get('pfba_flux') or 0):.6g}；"
-            f"方向：{step.get('direction')}"
+            f"方向：{direction}"
         )
 
     side_dependencies = result.get("侧边依赖", [])
@@ -596,11 +615,19 @@ def _format_full_solution_info(result: dict[str, Any]) -> str:
         step_index = step.get("步骤编号", "未知")
         step_source = step.get("步骤来源") or step.get("反应类型") or "反应"
         reaction_name = str(step.get("反应名称") or "").strip()
-        lines.append(f"Step {step_index} · {reaction_name or step_source}")
+        reaction_id = str(step.get("反应ID") or "").strip()
+        display_name = reaction_name or step_source
+        lines.append(f"Step {step_index} · {display_name}（{reaction_id}）")
         lines.append(
-            f"  输入：{' + '.join(_friendly_compounds(step.get('输入', [])))}"
+            "  输入："
+            + " + ".join(
+                _name_first_compound(item)
+                for item in _friendly_compounds(step.get("输入", []))
+            )
         )
-        lines.append(f"  输出：{_friendly_compound(step.get('输出'))}")
+        lines.append(
+            f"  输出：{_name_first_compound(_friendly_compound(step.get('输出')))}"
+        )
 
     summary = result.get("pFBA摘要", {})
     lines.extend((
