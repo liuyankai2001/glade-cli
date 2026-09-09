@@ -51,6 +51,7 @@ from src.main_protein_selection.uniprot_protein_candidates import (
 )
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
+    normalize_scoring_weights,
     resolve_chassis_taxonomy,
 )
 
@@ -212,6 +213,7 @@ def _disabled_request_fingerprint(
     top_n: int,
     max_results: int,
     allow_transmembrane: bool,
+    scoring_weights: Mapping[str, float],
 ) -> str:
     """Fingerprint disabled input without applying literature-only validation."""
 
@@ -230,6 +232,7 @@ def _disabled_request_fingerprint(
             "top_n": top_n,
             "max_results": max_results,
             "allow_transmembrane": allow_transmembrane,
+            "scoring_weights": dict(scoring_weights),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -253,6 +256,7 @@ async def _run_enabled(
     model: Any,
     env_path: str | Path | None,
     taxonomy_profile: ChassisTaxonomyProfile,
+    scoring_weights: Mapping[str, float],
 ) -> tuple[
     list[Any],
     list[LiteratureActivityEvidence],
@@ -360,6 +364,7 @@ async def _run_enabled(
         session=session,
         resolver=identity_resolver,
         taxonomy_profile=taxonomy_profile,
+        scoring_weights=scoring_weights,
     )
     failures.extend(identity_failures)
     candidates_by_step = {
@@ -397,6 +402,7 @@ def run_literature_activity_search(
     model: Any = None,
     env_path: str | Path | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> LiteratureActivitySearchResult:
     """Search unresolved steps and return literature-backed candidates.
 
@@ -405,6 +411,7 @@ def run_literature_activity_search(
     model, start ToolUniverse, call UniProt, or perform any other network I/O.
     """
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     if max_results < 1:
@@ -416,6 +423,7 @@ def run_literature_activity_search(
             top_n=top_n,
             max_results=max_results,
             allow_transmembrane=allow_transmembrane,
+            scoring_weights=active_weights,
         )
         summary = _summary(
             [],
@@ -468,6 +476,7 @@ def run_literature_activity_search(
         top_n=top_n,
         max_results=max_results,
         allow_transmembrane=allow_transmembrane,
+        scoring_weights=active_weights,
         model_identity=model_cache_identity,
     )
     if not normalized:
@@ -525,6 +534,7 @@ def run_literature_activity_search(
             model=model,
             env_path=env_path,
             taxonomy_profile=taxonomy_profile,
+            scoring_weights=active_weights,
         )
     )
     successful_queries = sum(
@@ -590,6 +600,7 @@ def write_source_unavailable_artifact(
     top_n: int = 5,
     max_results: int = 25,
     allow_transmembrane: bool = False,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> LiteratureActivitySearchResult:
     """Overwrite stale literature outputs after an unexpected pipeline failure.
 
@@ -597,6 +608,7 @@ def write_source_unavailable_artifact(
     cache access, model construction, ToolUniverse and every network client.
     """
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     error_message = str(message or "").strip()
     if not error_message:
         raise ValueError("message must not be empty")
@@ -606,6 +618,7 @@ def write_source_unavailable_artifact(
         top_n=top_n,
         max_results=max_results,
         allow_transmembrane=allow_transmembrane,
+        scoring_weights=active_weights,
     )
     fingerprint = hashlib.sha256(
         f"literature_activity_source_unavailable.v1|{base_fingerprint}".encode("utf-8")

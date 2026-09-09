@@ -668,10 +668,27 @@ outputs/C00811/main_protein_selection/
 
 `main-enzyme` 只生成候选与证据，不直接修改 manifest。
 
-候选蛋白综合评分使用以下固定权重：反应功能 40%、来源分类学适配 25%、
-表达风险 20%、UniProt/实验依据 15%。来源适配不再依赖写死的物种名称顺序：系统读取
+候选蛋白综合评分默认使用以下权重：反应功能 40%、来源分类学适配 25%、
+表达风险 20%、UniProt/实验依据 15%。用户可以在 `src/config/run_config.py` 中修改
+`candidate_protein_scoring_weights`：
+
+```python
+self.candidate_protein_scoring_weights = {
+    "function": 0.40,    # 反应功能
+    "evidence": 0.15,    # UniProt/实验依据
+    "expression": 0.20,  # 表达风险
+    "host": 0.25,        # 来源分类学适配
+}
+```
+
+四个键必须完整，权重必须为有限非负数且总和为 1；配置错误时 `main-enzyme`
+会在检索和写文件前直接报错。该配置应用于 `main-enzyme` 的所有候选来源，包括
+所选 RetroPath 路线中的预测步骤，但不改变独立 RetroPath P9 候选流程。
+
+来源适配不再依赖写死的物种名称顺序：系统读取
 底盘和候选蛋白的 UniProt taxon lineage，按最近共同祖先（LCA）所在的 strain、
 species、genus、family、order、class、phylum、kingdom 或 domain 层级评分。
+实际生效权重会写入 `main_enzyme_selection.json`，也会由候选信息命令展示。
 `taxonomy_evidence.json` 保存底盘 taxon、完整 ranked lineage、评分表、权重及数据来源；
 逐步候选 CSV 还会记录每个候选的共同祖先、匹配层级和分类来源分。
 

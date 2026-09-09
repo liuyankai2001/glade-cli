@@ -402,6 +402,7 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         "底盘Taxon ID": selection.host_taxon_id,
         "分类学数据来源": selection.taxonomy_source,
         "分类学评分策略": selection.taxonomy_scoring_policy_version,
+        "候选评分权重": dict(selection.scoring_weights),
         "候选生成状态": selection.status,
     }
     if selected_step is not None:
@@ -674,6 +675,7 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
         },
         "评分与筛选": {
             "综合评分": candidate.protein_score,
+            "评分权重": dict(selection.scoring_weights),
             "分项评分": _json_object(detail.get("score_breakdown")),
             "评估排名": _as_int(detail.get("evaluation_rank")),
             "选择状态": detail.get("selection_status"),

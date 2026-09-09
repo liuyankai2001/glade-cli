@@ -34,6 +34,7 @@ from src.main_protein_selection.selenzyme_retrieval import (
 from src.main_protein_selection.sequence_quality import analyze_protein_sequence
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
+    normalize_scoring_weights,
     resolve_chassis_taxonomy,
 )
 from src.main_protein_selection.uniprot_protein_candidates import (
@@ -1005,6 +1006,7 @@ def _source_uniprot_candidates(
     taxonomy_profile: ChassisTaxonomyProfile,
     entry_cache: dict[str, dict[str, Any] | None],
     accession_errors: Mapping[str, str] | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]]]:
     candidates: list[ProteinCandidate] = []
     evidence: list[dict[str, Any]] = []
@@ -1045,6 +1047,7 @@ def _source_uniprot_candidates(
                         "source template"
                     ),
                     taxonomy_profile=taxonomy_profile,
+                    scoring_weights=scoring_weights,
                 )
                 if entry is not None
                 else None
@@ -1075,6 +1078,7 @@ def _search_requirement(
     entry_cache: dict[str, dict[str, Any] | None],
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     source_accession_errors: Mapping[str, str] | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> _SearchOutcome:
     taxonomy_profile = taxonomy_profile or resolve_chassis_taxonomy(
         chassis_key,
@@ -1102,6 +1106,7 @@ def _search_requirement(
         taxonomy_profile=taxonomy_profile,
         entry_cache=entry_cache,
         accession_errors=source_accession_errors,
+        scoring_weights=scoring_weights,
     )
     evidence.extend(source_evidence)
     source_unavailable |= any(
@@ -1123,6 +1128,7 @@ def _search_requirement(
                 allow_transmembrane=allow_transmembrane,
                 session=session,
                 taxonomy_profile=taxonomy_profile,
+                scoring_weights=scoring_weights,
             )
             records.extend(
                 _candidate_record(
@@ -1182,6 +1188,7 @@ def _search_requirement(
             allow_transmembrane=allow_transmembrane,
             session=session,
             taxonomy_profile=taxonomy_profile,
+            scoring_weights=scoring_weights,
         )
         records.extend(
             _candidate_record(
@@ -1266,6 +1273,7 @@ def _search_requirement(
                         session=session,
                         entry_cache=entry_cache,
                         taxonomy_profile=taxonomy_profile,
+                        scoring_weights=scoring_weights,
                     )
                 )
                 records.extend(
@@ -1619,9 +1627,11 @@ def retrieve_manifest_retropath_candidates(
     max_results: int,
     allow_transmembrane: bool,
     session: requests.Session,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retrieve predicted-step candidates and project standard candidate rows."""
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     rules_path = Path(config.retropath_rules_path).expanduser().resolve()
     rules = _load_rules(rules_path)
     search_requirements = requirements_from_manifest(requirements, rules)
@@ -1684,6 +1694,7 @@ def retrieve_manifest_retropath_candidates(
                 entry_cache=entry_cache,
                 taxonomy_profile=taxonomy_profile,
                 source_accession_errors=source_accession_errors,
+                scoring_weights=active_weights,
             )
         outcome = search_cache[key]
         source_unavailable |= outcome.source_unavailable

@@ -10,6 +10,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.main_protein_selection.taxonomy_compatibility import (
+    normalize_scoring_weights,
+)
+
 
 MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v3"
 MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v3"
@@ -335,11 +339,7 @@ class MainEnzymeSelectionResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MainEnzymeSelectionResult":
-        expected_weights = {"function", "evidence", "expression", "host"}
-        if set(self.scoring_weights) != expected_weights:
-            raise ValueError("scoring_weights must define function/evidence/expression/host")
-        if not isclose(sum(self.scoring_weights.values()), 1.0, abs_tol=1e-9):
-            raise ValueError("scoring_weights must sum to 1")
+        normalize_scoring_weights(self.scoring_weights)
         if self.ok != (self.status == "complete"):
             raise ValueError("ok must agree with selection status")
         for step_index, candidates in self.candidates_by_step.items():

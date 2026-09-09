@@ -7,6 +7,7 @@ import json
 import math
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from src.main_protein_selection.settings import (
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
     chassis_host_taxon_id,
+    normalize_scoring_weights,
 )
 from src.main_protein_selection.uniprot_protein_candidates import (
     ProteinCandidate,
@@ -454,9 +456,11 @@ def retrieve_selenzyme_candidates(
     session: requests.Session,
     entry_cache: dict[str, dict[str, Any] | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]], list[str], dict[str, str]]:
     """Resolve ranked Selenzyme accessions to filtered UniProt candidates."""
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     entry_cache = entry_cache if entry_cache is not None else {}
     candidates: list[ProteinCandidate] = []
     audit_rows: list[dict[str, Any]] = []
@@ -607,6 +611,7 @@ def retrieve_selenzyme_candidates(
                 else "function: SelenzymeRF similar-reaction candidate"
             ),
             taxonomy_profile=taxonomy_profile,
+            scoring_weights=active_weights,
         )
         if candidate is None:
             row["rejection_reasons"] = ["uniprot_sequence_safety_filter_failed"]

@@ -6,12 +6,16 @@ import hashlib
 import json
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from src.main_protein_selection.taxonomy_compatibility import ChassisTaxonomyProfile
+from src.main_protein_selection.taxonomy_compatibility import (
+    ChassisTaxonomyProfile,
+    normalize_scoring_weights,
+)
 
 from src.main_protein_selection.settings import KEGG_HTTP_CONFIG, KEGG_REST_BASE_URL
 from src.main_protein_selection.uniprot_protein_candidates import (
@@ -193,9 +197,11 @@ def retrieve_ko_candidates(
     session: requests.Session,
     entry_cache: dict[str, dict[str, Any] | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]], list[str], dict[str, str]]:
     """Resolve an exact KEGG KO mapping to filtered UniProt candidates."""
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     entry_cache = entry_cache if entry_cache is not None else {}
     ko_id = str(query_result.get("ko_id") or "").strip().upper()
     requirement_ko_ids = {
@@ -254,6 +260,7 @@ def retrieve_ko_candidates(
             allow_transmembrane=allow_transmembrane,
             function_evidence_reason=f"function: exact KEGG KO match {ko_id}",
             taxonomy_profile=taxonomy_profile,
+            scoring_weights=active_weights,
         )
         if candidate is None:
             audit_rows.append({

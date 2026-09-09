@@ -18,8 +18,8 @@ from src.main_protein_selection.uniprot_protein_candidates import (
     resolve_uniprot_identity,
 )
 from src.main_protein_selection.taxonomy_compatibility import (
-    SCORING_WEIGHTS,
     ChassisTaxonomyProfile,
+    normalize_scoring_weights,
     score_taxonomic_fit,
 )
 
@@ -91,7 +91,9 @@ def _candidate_from_hit(
     evidence: LiteratureActivityEvidence,
     hit: Any,
     taxonomy_profile: ChassisTaxonomyProfile,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> ProteinCandidate:
+    active_weights = normalize_scoring_weights(scoring_weights)
     identity_score = float(_field(hit, "identity_score", 0.0) or 0.0)
     level_base = 82.0 if evidence.evidence_level == "A" else 74.0
     function_score = 90.0 if evidence.evidence_level == "A" else 82.0
@@ -110,10 +112,10 @@ def _candidate_from_hit(
     }
     taxonomy_fit = score_taxonomic_fit(pseudo_entry, taxonomy_profile)
     score = round(
-        function_score * SCORING_WEIGHTS["function"]
-        + evidence_score * SCORING_WEIGHTS["evidence"]
-        + identity_score * SCORING_WEIGHTS["expression"]
-        + taxonomy_fit.score * SCORING_WEIGHTS["host"],
+        function_score * active_weights["function"]
+        + evidence_score * active_weights["evidence"]
+        + identity_score * active_weights["expression"]
+        + taxonomy_fit.score * active_weights["host"],
         2,
     )
     hit_publications = [str(item) for item in _field(hit, "publication_ids", [])]
@@ -244,6 +246,7 @@ async def resolve_evidence_identities(
     session: Any = None,
     resolver: Callable[..., Any] = resolve_uniprot_identity,
     taxonomy_profile: ChassisTaxonomyProfile,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[
     list[LiteratureActivityEvidence],
     dict[int, list[ProteinCandidate]],
@@ -251,6 +254,7 @@ async def resolve_evidence_identities(
 ]:
     """Resolve only A/B evidence; ambiguity can never create a candidate."""
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     updated_records: list[LiteratureActivityEvidence] = []
     candidates_by_step: dict[int, list[ProteinCandidate]] = {}
     failures: list[LiteratureActivityFailure] = []
@@ -352,7 +356,12 @@ async def resolve_evidence_identities(
         })
         updated_records.append(resolved)
         candidates_by_step.setdefault(evidence.step_index, []).append(
-            _candidate_from_hit(resolved, selected, taxonomy_profile)
+            _candidate_from_hit(
+                resolved,
+                selected,
+                taxonomy_profile,
+                active_weights,
+            )
         )
 
     return (

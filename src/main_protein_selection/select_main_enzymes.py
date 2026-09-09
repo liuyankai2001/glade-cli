@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -74,8 +75,8 @@ from src.main_protein_selection.sequence_quality import (
     analyze_protein_sequence,
 )
 from src.main_protein_selection.taxonomy_compatibility import (
-    SCORING_WEIGHTS,
     TAXONOMY_SCORING_POLICY_VERSION,
+    normalize_scoring_weights,
     resolve_chassis_taxonomy,
 )
 
@@ -272,6 +273,7 @@ def select_main_enzymes(
     fetch_proteins: bool = True,
     literature_search: bool = False,
     retropath_rules_path: str | Path | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> dict:
     """
     为已选 solution 的异源步骤选择主反应酶候选。
@@ -279,6 +281,7 @@ def select_main_enzymes(
     限制：只写主酶候选与检索证据，不写 design_manifest.json。
     """
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     try:
         if top_n < 1:
             raise ValueError("top_n must be at least 1")
@@ -354,6 +357,7 @@ def select_main_enzymes(
                     allow_transmembrane=allow_transmembrane,
                     session=session,
                     taxonomy_profile=taxonomy_profile,
+                    scoring_weights=active_weights,
                 )
             except Exception as exc:
                 candidates_by_ec[ec_number] = []
@@ -422,6 +426,7 @@ def select_main_enzymes(
                     allow_transmembrane=allow_transmembrane,
                     session=session,
                     taxonomy_profile=taxonomy_profile,
+                    scoring_weights=active_weights,
                 )
                 candidates_by_step[step_index].extend(reaction_candidates)
                 reaction_query_ids.extend(query_ids)
@@ -472,6 +477,7 @@ def select_main_enzymes(
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
                                 taxonomy_profile=taxonomy_profile,
+                                scoring_weights=active_weights,
                             )
                         )
                         candidates_by_step[step_index].extend(reaction_candidates)
@@ -558,6 +564,7 @@ def select_main_enzymes(
                     allow_transmembrane=allow_transmembrane,
                     session=session,
                     taxonomy_profile=taxonomy_profile,
+                    scoring_weights=active_weights,
                 )
                 literature_status = str(literature_result.status)
                 literature_query_errors.update(literature_result.query_errors)
@@ -583,6 +590,7 @@ def select_main_enzymes(
                     top_n=top_n,
                     max_results=min(max_results, 25),
                     allow_transmembrane=allow_transmembrane,
+                    scoring_weights=active_weights,
                 )
                 literature_status = str(failure_result.status)
                 literature_query_errors.update(failure_result.query_errors)
@@ -713,6 +721,7 @@ def select_main_enzymes(
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
                                 taxonomy_profile=taxonomy_profile,
+                                scoring_weights=active_weights,
                             )
                         )
                         candidates_by_step[step_index].extend(reaction_candidates)
@@ -776,6 +785,7 @@ def select_main_enzymes(
                 max_results=min(max_results, 25),
                 allow_transmembrane=allow_transmembrane,
                 session=session,
+                scoring_weights=active_weights,
             )
             literature_status = str(literature_result.status)
             literature_evidence_count = int(
@@ -829,6 +839,7 @@ def select_main_enzymes(
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
                 session=session,
+                scoring_weights=active_weights,
             )
         else:
             retropath_result = {
@@ -922,7 +933,7 @@ def select_main_enzymes(
         write_csv(paths["main_enzyme_candidates_csv"], merged_rows, PROTEIN_CANDIDATE_COLUMNS)
         write_json_atomic(
             paths["taxonomy_evidence_json"],
-            taxonomy_profile.to_evidence(),
+            taxonomy_profile.to_evidence(active_weights),
         )
         write_json_atomic(paths["reaction_evidence_json"], {
             "schema_version": "reaction_evidence.v1",
@@ -1022,8 +1033,10 @@ def select_main_enzymes(
             "taxonomy_status": taxonomy_profile.status,
             "taxonomy_source": taxonomy_profile.source,
             "taxonomy_scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
-            "taxonomy_fingerprint": taxonomy_profile.semantic_fingerprint(),
-            "scoring_weights": dict(SCORING_WEIGHTS),
+            "taxonomy_fingerprint": taxonomy_profile.semantic_fingerprint(
+                active_weights
+            ),
+            "scoring_weights": active_weights,
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
             "heterologous_step_count": len(all_requirements),
@@ -1136,8 +1149,10 @@ def select_main_enzymes(
             taxonomy_status=taxonomy_profile.status,
             taxonomy_source=taxonomy_profile.source,
             taxonomy_scoring_policy_version=TAXONOMY_SCORING_POLICY_VERSION,
-            taxonomy_fingerprint=taxonomy_profile.semantic_fingerprint(),
-            scoring_weights=dict(SCORING_WEIGHTS),
+            taxonomy_fingerprint=taxonomy_profile.semantic_fingerprint(
+                active_weights
+            ),
+            scoring_weights=active_weights,
             parameters=MainEnzymeSelectionParameters(
                 top_n=top_n,
                 max_results=max_results,
@@ -1253,6 +1268,9 @@ def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     selection_options.setdefault(
         "literature_search", bool(getattr(config, "literature_search", False))
     )
+    configured_weights = getattr(config, "candidate_protein_scoring_weights", None)
+    if configured_weights is not None:
+        selection_options.setdefault("scoring_weights", configured_weights)
     if getattr(config, "retropath_rules_path", None) is not None:
         selection_options.setdefault(
             "retropath_rules_path",

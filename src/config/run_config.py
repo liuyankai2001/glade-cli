@@ -39,6 +39,14 @@ class RunConfig:
         self.reaction_resolution_mode = 'strict' # strict 或 audit
         self.gap_output_path = self.project_output_path / f'kegg_gap_{self.target_name}'
 
+        # 主酶候选蛋白综合评分权重。四项必须完整、非负且总和为 1。
+        self.candidate_protein_scoring_weights: dict[str, float] = {
+            "function": 0.40,
+            "evidence": 0.15,
+            "expression": 0.20,
+            "host": 0.25,
+        }
+
         # RetroPath 候选搜索参数。只有 gap --retropath 才会读取这些配置；默认
         # gap 仍完整沿用 KEGG 搜索，不自动运行 expand 或 RetroPath。
         self.retropath = False

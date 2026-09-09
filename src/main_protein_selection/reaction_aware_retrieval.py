@@ -5,12 +5,16 @@ import hashlib
 import io
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from src.main_protein_selection.taxonomy_compatibility import ChassisTaxonomyProfile
+from src.main_protein_selection.taxonomy_compatibility import (
+    ChassisTaxonomyProfile,
+    normalize_scoring_weights,
+)
 
 from src.main_protein_selection.settings import (
     GLADE_CONTACT_EMAIL_ENV,
@@ -273,7 +277,9 @@ def retrieve_rhea_candidates_for_requirement(
     allow_transmembrane: bool,
     session: requests.Session,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[list[ProteinCandidate], list[str], dict[str, str]]:
+    active_weights = normalize_scoring_weights(scoring_weights)
     rhea_ids = [
         str(value)
         for value in (
@@ -302,6 +308,7 @@ def retrieve_rhea_candidates_for_requirement(
             matched_rhea_ids=matched,
             allow_transmembrane=allow_transmembrane,
             taxonomy_profile=taxonomy_profile,
+            scoring_weights=active_weights,
         )
         if candidate is not None:
             candidates.append(candidate)

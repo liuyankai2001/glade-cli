@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -19,6 +20,7 @@ SCORING_WEIGHTS = {
     "expression": 0.20,
     "host": 0.25,
 }
+SCORING_WEIGHT_KEYS = ("function", "evidence", "expression", "host")
 
 UNKNOWN_TAXONOMY_SCORE = 50.0
 RANK_SCORES = {
@@ -115,7 +117,11 @@ class ChassisTaxonomyProfile:
             return self.lineage
         return (*self.lineage, current)
 
-    def to_evidence(self) -> dict[str, Any]:
+    def to_evidence(
+        self,
+        scoring_weights: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        active_weights = normalize_scoring_weights(scoring_weights)
         return {
             "schema_version": TAXONOMY_PROFILE_SCHEMA,
             "scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
@@ -130,11 +136,15 @@ class ChassisTaxonomyProfile:
             "rank_scores": dict(RANK_SCORES),
             "root_only_score": ROOT_ONLY_SCORE,
             "unknown_score": UNKNOWN_TAXONOMY_SCORE,
-            "scoring_weights": dict(SCORING_WEIGHTS),
-            "taxonomy_fingerprint": self.semantic_fingerprint(),
+            "scoring_weights": active_weights,
+            "taxonomy_fingerprint": self.semantic_fingerprint(active_weights),
         }
 
-    def semantic_fingerprint(self) -> str:
+    def semantic_fingerprint(
+        self,
+        scoring_weights: Mapping[str, Any] | None = None,
+    ) -> str:
+        active_weights = normalize_scoring_weights(scoring_weights)
         payload = {
             "scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
             "chassis_key": self.chassis_key,
@@ -146,7 +156,7 @@ class ChassisTaxonomyProfile:
             "rank_scores": dict(RANK_SCORES),
             "root_only_score": ROOT_ONLY_SCORE,
             "unknown_score": UNKNOWN_TAXONOMY_SCORE,
-            "scoring_weights": dict(SCORING_WEIGHTS),
+            "scoring_weights": active_weights,
         }
         canonical = json.dumps(
             payload,
@@ -155,6 +165,57 @@ class ChassisTaxonomyProfile:
             separators=(",", ":"),
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def normalize_scoring_weights(
+    scoring_weights: Mapping[str, Any] | None = None,
+) -> dict[str, float]:
+    """Validate and copy the four candidate-protein scoring weights."""
+
+    source: Any = SCORING_WEIGHTS if scoring_weights is None else scoring_weights
+    if not isinstance(source, Mapping):
+        raise ValueError(
+            "candidate_protein_scoring_weights must be a mapping with "
+            "function/evidence/expression/host"
+        )
+    expected = set(SCORING_WEIGHT_KEYS)
+    actual = set(source)
+    if actual != expected:
+        missing = sorted(expected - actual, key=str)
+        extra = sorted(actual - expected, key=str)
+        details = []
+        if missing:
+            details.append(f"missing keys: {', '.join(map(str, missing))}")
+        if extra:
+            details.append(f"unexpected keys: {', '.join(map(str, extra))}")
+        raise ValueError(
+            "candidate_protein_scoring_weights must define exactly "
+            "function/evidence/expression/host"
+            + (f" ({'; '.join(details)})" if details else "")
+        )
+
+    normalized: dict[str, float] = {}
+    for key in SCORING_WEIGHT_KEYS:
+        value = source[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"candidate_protein_scoring_weights[{key!r}] must be a number"
+            )
+        number = float(value)
+        if not math.isfinite(number) or number < 0.0:
+            raise ValueError(
+                f"candidate_protein_scoring_weights[{key!r}] must be finite "
+                "and non-negative"
+            )
+        normalized[key] = number
+    if not math.isclose(
+        sum(normalized.values()),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("candidate_protein_scoring_weights must sum to 1.0")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,12 +517,14 @@ __all__ = [
     "RANK_SCORES",
     "ROOT_ONLY_SCORE",
     "SCORING_WEIGHTS",
+    "SCORING_WEIGHT_KEYS",
     "TAXONOMY_PROFILE_SCHEMA",
     "TAXONOMY_SCORING_POLICY_VERSION",
     "TaxonNode",
     "TaxonomyFit",
     "UNKNOWN_TAXONOMY_SCORE",
     "chassis_host_taxon_id",
+    "normalize_scoring_weights",
     "resolve_chassis_taxonomy",
     "score_taxonomic_fit",
 ]

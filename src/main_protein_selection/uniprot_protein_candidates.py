@@ -21,9 +21,9 @@ from src.main_protein_selection.settings import (
 )
 from src.main_protein_selection.taxonomy_compatibility import (
     CHASSIS_TAXON_PRESETS,
-    SCORING_WEIGHTS,
     ChassisTaxonomyProfile,
     TaxonomyFit,
+    normalize_scoring_weights,
     resolve_chassis_taxonomy,
     score_taxonomic_fit,
 )
@@ -1301,17 +1301,20 @@ def score_candidate(
     entry: dict[str, Any],
     target_ec: str,
     chassis_profile: ChassisTaxonomyProfile,
+    *,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> tuple[float, list[str], list[str], dict[str, float], TaxonomyFit]:
+    active_weights = normalize_scoring_weights(scoring_weights)
     target_ec = normalize_ec_number(target_ec)
     function_score, function_reasons, function_warnings = _score_function(entry, target_ec)
     evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
     expression_score, expression_reasons, expression_warnings = _score_expression(entry)
     host_score, host_reasons, taxonomy_fit = _score_host(entry, chassis_profile)
     total = (
-        function_score * SCORING_WEIGHTS["function"]
-        + evidence_score * SCORING_WEIGHTS["evidence"]
-        + expression_score * SCORING_WEIGHTS["expression"]
-        + host_score * SCORING_WEIGHTS["host"]
+        function_score * active_weights["function"]
+        + evidence_score * active_weights["evidence"]
+        + expression_score * active_weights["expression"]
+        + host_score * active_weights["host"]
     )
     return (
         round(total, 2),
@@ -2178,7 +2181,9 @@ def candidate_from_reaction_entry(
     complex_evidence_type: str = "",
     component_stoichiometry: dict[str, float | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> ProteinCandidate | None:
+    active_weights = normalize_scoring_weights(scoring_weights)
     if chassis_key not in CHASSIS_TAXON_PRESETS:
         raise ValueError(f"Unknown chassis_key: {chassis_key}")
     profile = taxonomy_profile or resolve_chassis_taxonomy(
@@ -2198,6 +2203,7 @@ def candidate_from_reaction_entry(
             entry=entry,
             target_ec=scoring_ec,
             chassis_profile=profile,
+            scoring_weights=active_weights,
         )
     else:
         evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
@@ -2210,10 +2216,10 @@ def candidate_from_reaction_entry(
             "expression": expression_score,
             "host": host_score,
             "total": round(
-                function_score * SCORING_WEIGHTS["function"]
-                + evidence_score * SCORING_WEIGHTS["evidence"]
-                + expression_score * SCORING_WEIGHTS["expression"]
-                + host_score * SCORING_WEIGHTS["host"],
+                function_score * active_weights["function"]
+                + evidence_score * active_weights["evidence"]
+                + expression_score * active_weights["expression"]
+                + host_score * active_weights["host"],
                 2,
             ),
         }
@@ -2256,7 +2262,9 @@ def recommend_uniprot_proteins(
     allow_transmembrane: bool = False,
     session: requests.Session | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
+    scoring_weights: Mapping[str, Any] | None = None,
 ) -> list[ProteinCandidate]:
+    active_weights = normalize_scoring_weights(scoring_weights)
     ec_number = normalize_ec_number(ec_number)
     if chassis_key not in CHASSIS_TAXON_PRESETS:
         raise ValueError(f"Unknown chassis_key: {chassis_key}")
@@ -2291,6 +2299,7 @@ def recommend_uniprot_proteins(
             entry=entry,
             target_ec=ec_number,
             chassis_profile=chassis_profile,
+            scoring_weights=active_weights,
         )
         candidates.append(_candidate_from_entry(
             entry=entry,

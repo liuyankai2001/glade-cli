@@ -14,6 +14,9 @@ from src.main_protein_selection.literature_activity.models import (
     LiteratureSearchQuery,
     ReactionCompound,
 )
+from src.main_protein_selection.taxonomy_compatibility import (
+    normalize_scoring_weights,
+)
 
 
 _COMPOUND_ID_PATTERN = re.compile(r"\bC\d{5}\b", re.IGNORECASE)
@@ -310,10 +313,12 @@ def request_fingerprint(
     top_n: int,
     max_results: int,
     allow_transmembrane: bool,
+    scoring_weights: Mapping[str, Any] | None = None,
     model_identity: str = "unconfigured",
 ) -> str:
     """Bind cache entries to reaction direction, compounds and search controls."""
 
+    active_weights = normalize_scoring_weights(scoring_weights)
     payload = {
         "algorithm_version": LITERATURE_ACTIVITY_ALGORITHM_VERSION,
         "component_versions": literature_component_versions(
@@ -323,6 +328,7 @@ def request_fingerprint(
         "top_n": int(top_n),
         "max_results": int(max_results),
         "allow_transmembrane": bool(allow_transmembrane),
+        "scoring_weights": active_weights,
         "requirements": [
             item.model_dump(mode="json") for item in requirements
         ],
