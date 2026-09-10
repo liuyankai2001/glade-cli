@@ -83,5 +83,13 @@ def register(subparsers):
             "与 --solution N 配合，按需计算并展示培养基有机底物到目标的完整路线"
         ),
     )
+    p.add_argument(
+        "--verbose",
+        dest="show_verbose",
+        action="store_true",
+        help=(
+            "与 --solution N --all 配合，显示模型反应、区室和 pFBA 通量等详情"
+        ),
+    )
     p.set_defaults(func=run_info)
     return p

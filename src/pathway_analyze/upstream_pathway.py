@@ -6,6 +6,7 @@ import csv
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -238,6 +239,323 @@ def _display_equation(
     left = " + ".join(_format_display_term(*item) for item in substrates) or "无"
     right = " + ".join(_format_display_term(*item) for item in products) or "无"
     return f"{left} → {right}"
+
+
+def _strongly_connected_reaction_groups(
+    reaction_ids: Sequence[str],
+    adjacency: Mapping[str, set[str]],
+) -> list[tuple[str, ...]]:
+    """Return deterministic strongly connected components for reaction flow."""
+
+    next_index = 0
+    indices: dict[str, int] = {}
+    low_links: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    groups: list[tuple[str, ...]] = []
+
+    def visit(reaction_id: str) -> None:
+        nonlocal next_index
+        indices[reaction_id] = next_index
+        low_links[reaction_id] = next_index
+        next_index += 1
+        stack.append(reaction_id)
+        on_stack.add(reaction_id)
+
+        for successor in sorted(adjacency.get(reaction_id, set())):
+            if successor not in indices:
+                visit(successor)
+                low_links[reaction_id] = min(
+                    low_links[reaction_id],
+                    low_links[successor],
+                )
+            elif successor in on_stack:
+                low_links[reaction_id] = min(
+                    low_links[reaction_id],
+                    indices[successor],
+                )
+
+        if low_links[reaction_id] != indices[reaction_id]:
+            return
+        component: list[str] = []
+        while stack:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.append(member)
+            if member == reaction_id:
+                break
+        groups.append(tuple(sorted(component)))
+
+    for reaction_id in sorted(reaction_ids):
+        if reaction_id not in indices:
+            visit(reaction_id)
+    return groups
+
+
+def _build_route_stages(
+    reaction_rows: Sequence[Mapping[str, Any]],
+    *,
+    source_metabolite_ids: set[str],
+    anchor_metabolite_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Collapse a traced carbon-flow network into user-facing route stages.
+
+    Reactions are first condensed at steady-state cycles. Adjacent components
+    carrying the same model-provided subsystem are then merged along linear
+    stretches. Parallel branches with matching boundaries are grouped together,
+    while branch and merge boundaries remain visible. Leading exchange and
+    transport components are folded into the first metabolic stage so model
+    plumbing does not obscure the biochemical route.
+    """
+
+    rows = {
+        str(row.get("model_reaction_id") or ""): dict(row)
+        for row in reaction_rows
+        if str(row.get("model_reaction_id") or "")
+    }
+    if not rows:
+        return []
+
+    metabolite_payloads: dict[str, dict[str, Any]] = {}
+    producers: dict[str, set[str]] = {}
+    consumers: dict[str, set[str]] = {}
+    for reaction_id, row in rows.items():
+        for item in row.get("main_carbon_substrates", []):
+            metabolite_id = str(item.get("model_metabolite_id") or "")
+            if not metabolite_id:
+                continue
+            metabolite_payloads.setdefault(metabolite_id, dict(item))
+            consumers.setdefault(metabolite_id, set()).add(reaction_id)
+        for item in row.get("main_carbon_products", []):
+            metabolite_id = str(item.get("model_metabolite_id") or "")
+            if not metabolite_id:
+                continue
+            metabolite_payloads.setdefault(metabolite_id, dict(item))
+            producers.setdefault(metabolite_id, set()).add(reaction_id)
+
+    adjacency = {reaction_id: set() for reaction_id in rows}
+    for metabolite_id, producing_reactions in producers.items():
+        for producer in producing_reactions:
+            for consumer in consumers.get(metabolite_id, set()):
+                if producer != consumer:
+                    adjacency[producer].add(consumer)
+
+    components = _strongly_connected_reaction_groups(tuple(rows), adjacency)
+    component_by_reaction = {
+        reaction_id: component_index
+        for component_index, component in enumerate(components)
+        for reaction_id in component
+    }
+    component_edges: set[tuple[int, int]] = set()
+    for reaction_id, successors in adjacency.items():
+        source_component = component_by_reaction[reaction_id]
+        for successor in successors:
+            target_component = component_by_reaction[successor]
+            if source_component != target_component:
+                component_edges.add((source_component, target_component))
+
+    parent = list(range(len(components)))
+
+    def find(value: int) -> int:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    component_subsystems: dict[int, set[str]] = {}
+    component_is_transfer: dict[int, bool] = {}
+    component_successors = {index: set() for index in range(len(components))}
+    component_predecessors = {index: set() for index in range(len(components))}
+    for source_component, target_component in component_edges:
+        component_successors[source_component].add(target_component)
+        component_predecessors[target_component].add(source_component)
+    for component_index, component in enumerate(components):
+        component_rows = [rows[reaction_id] for reaction_id in component]
+        component_subsystems[component_index] = {
+            str(row.get("subsystem") or "").strip()
+            for row in component_rows
+            if str(row.get("subsystem") or "").strip()
+        }
+        component_is_transfer[component_index] = all(
+            bool(row.get("is_exchange")) or bool(row.get("is_transport"))
+            for row in component_rows
+        )
+
+    for source_component, target_component in sorted(component_edges):
+        source_labels = component_subsystems[source_component]
+        target_labels = component_subsystems[target_component]
+        same_subsystem = (
+            len(source_labels) == 1
+            and source_labels == target_labels
+            and len(component_successors[source_component]) == 1
+            and len(component_predecessors[target_component]) == 1
+        )
+        unnamed_linear = (
+            not source_labels
+            and not target_labels
+            and len(component_successors[source_component]) == 1
+            and len(component_predecessors[target_component]) == 1
+        )
+        leading_transfer = (
+            component_is_transfer[source_component]
+            and len(component_successors[source_component]) == 1
+        )
+        if same_subsystem or unnamed_linear or leading_transfer:
+            union(source_component, target_component)
+
+    component_ids = range(len(components))
+    for left_component in component_ids:
+        for right_component in range(left_component + 1, len(components)):
+            if (
+                component_subsystems[left_component]
+                and component_subsystems[left_component]
+                == component_subsystems[right_component]
+                and component_predecessors[left_component]
+                == component_predecessors[right_component]
+                and component_successors[left_component]
+                == component_successors[right_component]
+                and component_predecessors[left_component]
+                and component_successors[left_component]
+            ):
+                union(left_component, right_component)
+
+    grouped_reactions: dict[int, set[str]] = {}
+    for component_index, component in enumerate(components):
+        grouped_reactions.setdefault(find(component_index), set()).update(component)
+
+    group_by_reaction = {
+        reaction_id: group_id
+        for group_id, reaction_ids in grouped_reactions.items()
+        for reaction_id in reaction_ids
+    }
+    group_edges: set[tuple[int, int]] = set()
+    for reaction_id, successors in adjacency.items():
+        source_group = group_by_reaction[reaction_id]
+        for successor in successors:
+            target_group = group_by_reaction[successor]
+            if source_group != target_group:
+                group_edges.add((source_group, target_group))
+
+    group_successors = {group_id: set() for group_id in grouped_reactions}
+    group_indegree = {group_id: 0 for group_id in grouped_reactions}
+    for source_group, target_group in group_edges:
+        group_successors[source_group].add(target_group)
+        group_indegree[target_group] += 1
+
+    def group_sort_key(group_id: int) -> tuple[int, str]:
+        group_rows = [rows[item] for item in grouped_reactions[group_id]]
+        maximum_distance = max(
+            int(row.get("distance_to_anchor") or 0)
+            for row in group_rows
+        )
+        return (-maximum_distance, min(grouped_reactions[group_id]))
+
+    available = sorted(
+        (group_id for group_id, degree in group_indegree.items() if degree == 0),
+        key=group_sort_key,
+    )
+    ordered_groups: list[int] = []
+    while available:
+        group_id = available.pop(0)
+        ordered_groups.append(group_id)
+        for successor in sorted(group_successors[group_id], key=group_sort_key):
+            group_indegree[successor] -= 1
+            if group_indegree[successor] == 0:
+                available.append(successor)
+                available.sort(key=group_sort_key)
+    if len(ordered_groups) != len(grouped_reactions):
+        remaining = set(grouped_reactions).difference(ordered_groups)
+        ordered_groups.extend(sorted(remaining, key=group_sort_key))
+
+    stages: list[dict[str, Any]] = []
+    for stage_index, group_id in enumerate(ordered_groups, start=1):
+        reaction_ids = grouped_reactions[group_id]
+        group_rows = [rows[reaction_id] for reaction_id in reaction_ids]
+        group_metabolites = {
+            str(item.get("model_metabolite_id") or "")
+            for row in group_rows
+            for key in ("main_carbon_substrates", "main_carbon_products")
+            for item in row.get(key, [])
+            if str(item.get("model_metabolite_id") or "")
+        }
+        consumed = {
+            str(item.get("model_metabolite_id") or "")
+            for row in group_rows
+            for item in row.get("main_carbon_substrates", [])
+            if str(item.get("model_metabolite_id") or "")
+        }
+        produced = {
+            str(item.get("model_metabolite_id") or "")
+            for row in group_rows
+            for item in row.get("main_carbon_products", [])
+            if str(item.get("model_metabolite_id") or "")
+        }
+        produced_outside = {
+            metabolite_id
+            for metabolite_id, reaction_set in producers.items()
+            if reaction_set.difference(reaction_ids)
+        }
+        consumed_outside = {
+            metabolite_id
+            for metabolite_id, reaction_set in consumers.items()
+            if reaction_set.difference(reaction_ids)
+        }
+        input_ids = (
+            consumed.intersection(produced_outside)
+            | group_metabolites.intersection(source_metabolite_ids)
+        )
+        output_ids = produced.intersection(
+            consumed_outside | anchor_metabolite_ids
+        )
+
+        subsystem_counts = Counter(
+            str(row.get("subsystem") or "").strip()
+            for row in group_rows
+            if str(row.get("subsystem") or "").strip()
+            and not bool(row.get("is_exchange"))
+            and not bool(row.get("is_transport"))
+        )
+        if not subsystem_counts:
+            subsystem_counts.update(
+                str(row.get("subsystem") or "").strip()
+                for row in group_rows
+                if str(row.get("subsystem") or "").strip()
+            )
+        subsystem_names = [
+            name
+            for name, _ in sorted(
+                subsystem_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        has_cycle = any(
+            len(components[component_by_reaction[reaction_id]]) > 1
+            for reaction_id in reaction_ids
+        )
+        stages.append({
+            "stage_index": stage_index,
+            "subsystem_names": subsystem_names,
+            "reaction_count": len(reaction_ids),
+            "reaction_ids": sorted(reaction_ids),
+            "inputs": [
+                metabolite_payloads[metabolite_id]
+                for metabolite_id in sorted(input_ids)
+                if metabolite_id in metabolite_payloads
+            ],
+            "outputs": [
+                metabolite_payloads[metabolite_id]
+                for metabolite_id in sorted(output_ids)
+                if metabolite_id in metabolite_payloads
+            ],
+            "contains_cycle": has_cycle,
+        })
+    return stages
 
 
 def _canonical_compound_id(
@@ -626,9 +944,29 @@ def _trace_active_network(
     for reaction_id in selected_extent:
         reaction = model.reactions.get_by_id(reaction_id)
         substrates, products, flux = oriented_by_reaction[reaction_id]
+        main_carbon_substrates = [
+            _metabolite_payload(item)
+            for item, _ in substrates
+            if _has_carbon(item)
+            and not _is_inorganic_carbon(item)
+            and not _is_currency_metabolite(item)
+        ]
+        main_carbon_products = [
+            _metabolite_payload(item)
+            for item, _ in products
+            if _has_carbon(item)
+            and not _is_inorganic_carbon(item)
+            and not _is_currency_metabolite(item)
+        ]
+        carbon_compartments = {
+            str(item.get("compartment") or "")
+            for item in main_carbon_substrates + main_carbon_products
+            if str(item.get("compartment") or "")
+        }
         reaction_rows.append({
             "model_reaction_id": reaction.id,
             "reaction_name": reaction.name or reaction.id,
+            "subsystem": str(getattr(reaction, "subsystem", "") or "").strip(),
             "direction": "forward" if flux >= 0 else "reverse",
             "signed_pfba_flux": flux,
             "pfba_flux": abs(flux),
@@ -646,6 +984,9 @@ def _trace_active_network(
             "kegg_reaction_ids": _reaction_kegg_ids(reaction),
             "gene_ids": sorted(gene.id for gene in reaction.genes),
             "is_exchange": reaction.id in exchange_ids,
+            "is_transport": len(carbon_compartments) > 1,
+            "main_carbon_substrates": main_carbon_substrates,
+            "main_carbon_products": main_carbon_products,
             "distance_to_anchor": selected_distance[reaction_id],
         })
     reaction_rows.sort(key=lambda row: (
@@ -679,6 +1020,14 @@ def _trace_active_network(
             + ", ".join(item["model_metabolite_id"] for item in other_organic_inputs)
         )
 
+    route_stages = _build_route_stages(
+        reaction_rows,
+        source_metabolite_ids=set(organic_sources),
+        anchor_metabolite_ids={
+            metabolite.id for metabolite in anchor_metabolites.values()
+        },
+    )
+
     return {
         "trace_complete": not truncated and not unresolved,
         "truncated": truncated,
@@ -699,6 +1048,7 @@ def _trace_active_network(
             key=lambda item: item["model_metabolite_id"],
         ),
         "reactions": reaction_rows,
+        "route_stages": route_stages,
         "unresolved_carbon_metabolites": sorted(unresolved),
         "warnings": sorted(warnings),
     }
@@ -832,6 +1182,7 @@ def trace_upstream_pathway(
         "other_active_organic_inputs": trace["other_active_organic_inputs"],
         "side_dependencies": trace["side_dependencies"],
         "reactions": trace["reactions"],
+        "route_stages": trace["route_stages"],
         "unresolved_carbon_metabolites": trace[
             "unresolved_carbon_metabolites"
         ],

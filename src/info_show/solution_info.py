@@ -448,7 +448,9 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         return "\n".join(lines)
 
     if result.get("完整路线模式") is True:
-        return _format_full_solution_info(result)
+        if result.get("详细模式") is True:
+            return _format_full_solution_verbose(result)
+        return _format_full_solution_summary(result)
 
     total_steps = result.get("步骤数量", 0)
     heterologous_steps = result.get("异源步骤数", 0)
@@ -526,7 +528,192 @@ def _name_first_compound(value: Any) -> str:
     return f"{match.group(2)} [{match.group(1).upper()}]"
 
 
-def _format_full_solution_info(result: dict[str, Any]) -> str:
+def _compact_model_name(value: Any) -> str:
+    name = str(value or "").strip()
+    prefix, separator, suffix = name.rpartition(" ")
+    if (
+        separator
+        and any(character.isdigit() for character in suffix)
+        and re.fullmatch(r"(?:[A-Z][a-z]?\d*)+[+-]?", suffix)
+    ):
+        return prefix
+    return name
+
+
+def _format_compact_metabolite(item: dict[str, Any]) -> str:
+    name = _compact_model_name(
+        item.get("name")
+        or item.get("model_metabolite_id")
+        or "未知化合物"
+    )
+    kegg_ids = [
+        identifier
+        for identifier in _split_values(item.get("kegg_ids"))
+        if re.fullmatch(r"[CG]\d{5}", identifier, flags=re.IGNORECASE)
+    ]
+    if not kegg_ids:
+        return name
+    return f"{name} [{kegg_ids[0].upper()}]"
+
+
+def _format_stage_label(stage: dict[str, Any]) -> str:
+    subsystem_names = _split_values(stage.get("subsystem_names"))
+    if not subsystem_names:
+        return ""
+    suffix = " 等" if len(subsystem_names) > 1 else ""
+    return f"{subsystem_names[0]}{suffix}"
+
+
+def _format_compact_dependency_names(
+    items: list[dict[str, Any]],
+    *,
+    limit: int = 6,
+) -> str:
+    names = list(dict.fromkeys(
+        _compact_model_name(
+            item.get("name") or item.get("model_metabolite_id") or ""
+        )
+        for item in items
+        if str(item.get("name") or item.get("model_metabolite_id") or "").strip()
+    ))
+    if not names:
+        return ""
+    if len(names) <= limit:
+        return "、".join(names)
+    return f"{'、'.join(names[:limit])} 等，共 {len(names)} 种"
+
+
+def _format_full_solution_summary(result: dict[str, Any]) -> str:
+    solution_id = result.get("路径编号", "未知")
+    source = result.get("路线来源", "未知")
+    depth = result.get("Gap深度", 0)
+    trace_complete = bool(result.get("上游追踪完整"))
+    organic_sources = result.get("起始有机底物", [])
+    source_labels = [
+        _format_compact_metabolite(item)
+        for item in organic_sources
+    ] or ["未识别有机底物"]
+    gap_steps = result.get("反应步骤", [])
+    target_label = str(result.get("目标化合物") or "未知目标")
+    if gap_steps:
+        target_label = _name_first_compound(
+            _friendly_compound(gap_steps[-1].get("输出"))
+        )
+
+    lines = [
+        f"路线 {solution_id}：{' + '.join(source_labels)} → {target_label}",
+        "",
+        f"路线来源：{source}",
+        "路线性质：当前培养基和生长约束下的一套 pFBA 简约可行路线，"
+        "不代表唯一生物学路线",
+        f"上游追踪：{'完整' if trace_complete else '不完整'}",
+        "",
+        "完整碳骨架路线：",
+    ]
+
+    route_stages = result.get("底盘路线阶段", [])
+    if route_stages:
+        for display_index, stage in enumerate(route_stages, start=1):
+            inputs = " + ".join(
+                _format_compact_metabolite(item)
+                for item in stage.get("inputs", [])
+            ) or "未识别阶段输入"
+            outputs = " + ".join(
+                _format_compact_metabolite(item)
+                for item in stage.get("outputs", [])
+            ) or "未识别阶段输出"
+            reaction_count = int(stage.get("reaction_count") or 0)
+            label = _format_stage_label(stage)
+            title = f"底盘阶段 {display_index}"
+            if label:
+                title += f" · {label}"
+            lines.extend((
+                f"  {title}（{reaction_count} 个反应）",
+                f"    {inputs} → {outputs}",
+            ))
+    else:
+        anchor_labels = [
+            _format_compact_metabolite(item)
+            for item in result.get("连接锚点", [])
+            if item.get("role") == "main_carbon_anchor"
+        ]
+        lines.append(
+            "  "
+            + " + ".join(source_labels)
+            + " → "
+            + (" + ".join(anchor_labels) or "未识别连接锚点")
+        )
+
+    if gap_steps:
+        lines.extend(("", "gap 路线："))
+        for index, step in enumerate(gap_steps, start=1):
+            inputs = " + ".join(
+                _name_first_compound(item)
+                for item in _friendly_compounds(step.get("输入", []))
+            )
+            output = _name_first_compound(
+                _friendly_compound(step.get("输出"))
+            )
+            reaction_id = str(step.get("反应ID") or "").strip()
+            reaction_name = str(
+                step.get("反应名称")
+                or step.get("步骤来源")
+                or step.get("反应类型")
+                or "反应"
+            ).strip()
+            reaction_label = " · ".join(
+                item for item in (reaction_id, reaction_name) if item
+            )
+            lines.extend((
+                f"  {index}. {inputs} → {output}",
+                f"     {reaction_label}",
+            ))
+
+    native_count = int(
+        (result.get("pFBA摘要") or {}).get("traced_reaction_count") or 0
+    )
+    lines.extend((
+        "",
+        f"路线规模：底盘内源 {native_count} 个反应；gap {len(gap_steps)} 个反应",
+    ))
+    auxiliary = result.get("辅助培养基输入", [])
+    if auxiliary:
+        lines.append(
+            "辅助培养基：当前生长与产物约束激活 "
+            f"{len(auxiliary)} 种无机或辅助输入（详细模式查看）"
+        )
+    side_dependencies = result.get("侧边依赖", [])
+    dependency_text = _format_compact_dependency_names(side_dependencies)
+    if dependency_text:
+        lines.append(f"辅因子及侧边依赖：{dependency_text}")
+    other_organic = result.get("其他活跃有机输入", [])
+    if other_organic:
+        lines.append(
+            f"其他有机摄取：{len(other_organic)} 种，仅用于生长或未分配到主碳路线"
+        )
+
+    if not trace_complete:
+        warnings = result.get("警告", [])
+        unresolved = result.get("未解析含碳代谢物", [])
+        if warnings or unresolved:
+            lines.extend(("", "路线完整性提醒："))
+            lines.extend(f"  - {item}" for item in warnings)
+            if unresolved:
+                lines.append(
+                    "  - 未解析含碳代谢物："
+                    + "、".join(str(item) for item in unresolved)
+                )
+
+    lines.extend((
+        "",
+        "查看反应级详情：",
+        "python main.py info -i <输入文件名> "
+        f"--solution {solution_id} --all --verbose -d {depth}",
+    ))
+    return "\n".join(lines)
+
+
+def _format_full_solution_verbose(result: dict[str, Any]) -> str:
 
     solution_id = result.get("路径编号", "未知")
     target = result.get("目标化合物", "未知")
@@ -754,8 +941,11 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     if selected_step_index is not None and selected_step_index < 1:
         raise ValueError("step 必须是正整数")
     show_all = bool(getattr(config, "show_all", False))
+    show_verbose = bool(getattr(config, "show_verbose", False))
     if show_all and selected_step_index is not None:
         raise ValueError("--all 不能与 --step 同时使用")
+    if show_verbose and not show_all:
+        raise ValueError("--verbose 只能与 --solution N --all 一起使用")
     summaries_path = gap_dir / "solutions.csv"
     steps_path = gap_dir / "all_solution_steps.csv"
 
@@ -950,11 +1140,13 @@ def get_solution_info(config: Any) -> dict[str, Any]:
     )
     result.update({
         "完整路线模式": True,
+        "详细模式": show_verbose,
         "上游追踪完整": trace["trace_complete"],
         "起始有机底物": trace["organic_sources"],
         "辅助培养基输入": trace["auxiliary_medium_inputs"],
         "其他活跃有机输入": trace["other_active_organic_inputs"],
         "底盘内源步骤": trace["reactions"],
+        "底盘路线阶段": trace.get("route_stages", []),
         "连接锚点": trace["anchors"],
         "侧边依赖": trace["side_dependencies"],
         "未解析含碳代谢物": trace["unresolved_carbon_metabolites"],
