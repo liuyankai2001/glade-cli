@@ -198,7 +198,12 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         "dnachisel_version": importlib.metadata.version("dnachisel"),
         "algorithm_version": GC_REPORT_SCHEMA,
     }
-    if output.exists() and source_report.get("request") == request and lower <= _gc_count(source_sequence) <= upper:
+    if (
+        output.exists() and source_report.get("request") == request
+        and lower <= _gc_count(source_sequence) <= upper
+        and source_report.get("raw", {}).get("user_forbidden_site_hits") == raw_audit["user_forbidden_site_hits"]
+        and source_report.get("final", {}).get("user_forbidden_site_hits") == input_audit["user_forbidden_site_hits"]
+    ):
         return {"accession": accession, "reused_existing": True, "output_path": str(output)}
     seed = int(sha256_text(json.dumps(request, sort_keys=True) + sha256_text(source_sequence))[:8], 16)
     final = _adjust_gc(source_sequence, protein, lower, upper, seed)
@@ -230,6 +235,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     updated_item = next(row for row in updated["proteins"] if row["accession"].upper() == accession)
     # The raw metrics are a stable baseline for --raw, even after repeated edits.
     baseline = copy.deepcopy(previous.get("metrics", {}).get("raw") or raw_audit)
+    baseline["user_forbidden_site_hits"] = raw_audit["user_forbidden_site_hits"]
     updated_item["optimized_cds"] = {
         "path": output_relative, "file_sha256": hashlib.sha256(fasta).hexdigest(),
         "sequence_sha256": sha256_text(final), "length_nt": length,

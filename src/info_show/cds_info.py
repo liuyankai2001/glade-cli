@@ -40,6 +40,17 @@ def _directory(root: Path, path_value: Any) -> str | None:
     return str(path.parent)
 
 
+def _selected_site_count(metrics: Mapping[str, Any]) -> tuple[bool, int | None]:
+    # Legacy forbidden_site_count includes built-in defaults, not a user selection.
+    hits = metrics.get("user_forbidden_site_hits")
+    if not isinstance(hits, Mapping) or not hits:
+        return False, None
+    counts = [_number(value, integer=True) for value in hits.values()]
+    if any(value is None for value in counts):
+        return True, None
+    return True, sum(counts)
+
+
 def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]:
     """Read one stage only, without falling back to the other stage."""
     show_raw = bool(getattr(config, "raw", False))
@@ -121,13 +132,15 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
         metric_key = "raw" if show_raw else "final"
         final = _mapping(metrics.get(metric_key, {}), f"optimized_cds.metrics.{metric_key}")
         changes = _mapping(metrics.get("changes", {}), "optimized_cds.metrics.changes")
+        sites_configured, site_count = _selected_site_count(final)
         result["CDS列表"].append({
             "蛋白ID": item["accession"],
             "直接使用": False,
             "长度_nt": _number(selected.get("length_nt"), integer=True),
             "GC百分比": _number(final.get("gc_percent")),
             "CAI": _number(final.get("cai")),
-            "禁止位点数": _number(final.get("forbidden_site_count"), integer=True),
+            "位点已配置": sites_configured,
+            "禁止位点数": site_count,
             "修改密码子数量": None if show_raw else _number(changes.get("codon_change_count"), integer=True),
         })
         result["优化成功数"] += 1
@@ -191,7 +204,7 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
             _metric(item["长度_nt"]),
             _metric(item["GC百分比"], 2),
             _metric(item["CAI"], 4),
-            _metric(item["禁止位点数"]),
+            _metric(item["禁止位点数"]) if item["位点已配置"] else "未配置",
             _metric(item["修改密码子数量"]),
         ][:len(headers)]
         for item in result["CDS列表"]

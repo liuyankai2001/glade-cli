@@ -333,6 +333,22 @@ def audit_cds(
     }
 
 
+def _user_forbidden_site_hits(sequence: str, motifs: Iterable[str]) -> dict[str, int]:
+    """Count explicit user motifs only; retain zero hits to distinguish unconfigured.
+
+    A motif and its reverse complement describe the same double-stranded site.
+    Neither duplicate entries nor opposite orientations should count it twice.
+    """
+    result: dict[str, int] = {}
+    seen: set[str] = set()
+    for motif in sorted(set(motifs)):
+        if motif in seen:
+            continue
+        seen.update((motif, reverse_complement(motif)))
+        result[motif] = motif_hits(sequence, {motif: motif}).get(motif, 0)
+    return result
+
+
 def assess_generated_cds(
     sequence: str,
     protein_sequence: str,
@@ -341,8 +357,10 @@ def assess_generated_cds(
 ) -> dict[str, Any]:
     """Measure the model output and require encoding identity only; never edit it."""
     motifs = dict(DEFAULT_FORBIDDEN_MOTIFS)
-    motifs.update(_validate_additional_motifs(additional_forbidden_motifs))
+    user_motifs = _validate_additional_motifs(additional_forbidden_motifs)
+    motifs.update(user_motifs)
     audit = audit_cds(sequence, protein_sequence, _profile_for_organism(organism_id), motifs)
+    audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(sequence, user_motifs.values())
     failed = [
         name for name in (
             "valid_alphabet", "length_multiple_of_three", "start_codon_valid",
@@ -553,8 +571,10 @@ def repair_cds(
     protein = normalize_protein(protein_sequence)
     profile = _profile_for_organism(organism_id)
     motifs = dict(DEFAULT_FORBIDDEN_MOTIFS)
-    motifs.update(_validate_additional_motifs(additional_forbidden_motifs))
+    user_motifs = _validate_additional_motifs(additional_forbidden_motifs)
+    motifs.update(user_motifs)
     initial_audit = audit_cds(initial, protein, profile, motifs)
+    initial_audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(initial, user_motifs.values())
     identity_checks = {
         key: initial_audit["checks"][key]
         for key in (
@@ -627,6 +647,7 @@ def repair_cds(
         motifs,
     )
     final_audit = audit_cds(final, protein, profile, motifs)
+    final_audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(final, user_motifs.values())
     if final_audit["gate_status"] != "PASS":
         raise CdsConstraintError(
             "constraint repair produced a sequence that failed the independent gate: "
