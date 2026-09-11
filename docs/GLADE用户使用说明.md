@@ -1028,6 +1028,18 @@ python main.py write -i demo01.json --expression-box 1
 该步骤只确定蛋白如何分组，不选择 promoter、RBS 和 terminator。选择结果写入 manifest
 的 `expression_box_selection`。
 
+也可以直接指定每个表达盒包含的蛋白。每个方括号代表一个表达盒，括号内蛋白的顺序
+就是后续 CDS 的排列顺序：
+
+```powershell
+python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003] [P00004]
+```
+
+`--custom` 会校验当前 CDS 选择中的全部蛋白是否恰好出现一次，并将分组直接写入
+manifest，无需再运行 `write --expression-box`。未知、重复、遗漏的蛋白或不完整的
+方括号会导致命令失败，manifest 不会被修改。若分组或顺序发生变化，已有的表达元件、
+质粒和最终组装结果将失效，需要重新生成。
+
 ## 13. 表达元件推荐与选择
 
 表达盒分组写入后，从远端 Milvus 推荐 promoter、RBS 和 terminator：
@@ -1258,6 +1270,8 @@ python main.py info -i demo01.json --proteins
 python main.py protein-to-cds -i demo01.json
 python main.py expression --design --box -i demo01.json
 python main.py write -i demo01.json --expression-box 1
+# 或者自定义分组并直接写入（无需执行上一行 write 命令）
+# python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
 python main.py expression --design --parts -i demo01.json --n-designs 12
 python main.py write -i demo01.json --expression-parts 1:12
 

@@ -14,6 +14,7 @@ from src.expression_box import (
     run_expression_box_design,
     run_expression_parts_design,
 )
+from src.write_manifest.expression_box import write_custom_expression_box_selection
 
 
 def _parts_design_count(value: str) -> int:
@@ -31,12 +32,18 @@ def _parts_design_count(value: str) -> int:
 
 
 def _run(config: Any) -> dict[str, Any]:
+    custom = getattr(config, "custom", None)
     if bool(getattr(config, "parts", False)):
+        if custom is not None:
+            raise ValueError("--custom can only be used with --box")
         result = run_expression_parts_design(config)
     else:
         if getattr(config, "n_designs", None) is not None:
             raise ValueError("--n-designs can only be used with --parts")
-        result = run_expression_box_design(config)
+        if custom is not None:
+            result = write_custom_expression_box_selection(config)
+        else:
+            result = run_expression_box_design(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -62,6 +69,16 @@ def register(subparsers):
         "--parts",
         action="store_true",
         help="从远端Milvus生成系统推荐的表达元件方案",
+    )
+    parser.add_argument(
+        "--custom",
+        nargs="+",
+        default=None,
+        metavar="GROUP",
+        help=(
+            "自定义表达盒分组并直接写入manifest，例如 "
+            "--custom [P00001 P00002] [P00003]"
+        ),
     )
     parser.add_argument(
         "--n-designs",

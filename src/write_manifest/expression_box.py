@@ -12,8 +12,13 @@ from src.expression_box.config import (
     EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION,
     GROUPING_ALGORITHM_VERSION,
 )
+from src.expression_box.custom_grouping import build_custom_grouping_design
 from src.expression_box.manifest_adapter import load_expression_grouping_context
-from src.expression_box.models import ExpressionGroupingDesign, ExpressionProtein
+from src.expression_box.models import (
+    ExpressionGroupingContext,
+    ExpressionGroupingDesign,
+    ExpressionProtein,
+)
 from src.expression_box.pipeline import EXPRESSION_BOX_DESIGNS_FILENAME
 from src.expression_box.protein_grouping import generate_grouping_designs
 from src.pathway_analyze.target_id import validate_target_compound_id
@@ -255,6 +260,55 @@ def _selection_payload(
     }
 
 
+def _custom_selection_payload(
+    selected: Mapping[str, Any],
+    context: ExpressionGroupingContext,
+) -> dict[str, Any]:
+    design_fingerprint = _stable_json_hash(
+        {
+            "input_fingerprint": context.input_fingerprint,
+            "selection_mode": "custom_cli",
+            "design": selected,
+        }
+    )
+    cassettes = [
+        {
+            "cassette_index": cassette["cassette_index"],
+            "protein_accessions": list(cassette["protein_accessions"]),
+            "protein_count": cassette["protein_count"],
+            "main_enzyme_count": cassette["main_enzyme_count"],
+            "total_cds_length_nt": cassette["total_cds_length_nt"],
+            "reason": cassette["reason"],
+        }
+        for cassette in selected["cassettes"]
+    ]
+    return {
+        "schema_version": EXPRESSION_BOX_SELECTION_SCHEMA_VERSION,
+        "selection_status": "user_selected",
+        "selected_design_id": 1,
+        "selected_design_fingerprint": design_fingerprint,
+        "rank": 1,
+        "strategy": "custom",
+        "name": "用户自定义方案",
+        "recommended": False,
+        "source": {
+            "selection_mode": "custom_cli",
+            "artifact_manifest_revision": context.manifest_revision,
+            "cds_selection_source_fingerprint": (
+                context.cds_selection_source_fingerprint
+            ),
+            "input_fingerprint": context.input_fingerprint,
+        },
+        "summary": {
+            "cassette_count": selected["cassette_count"],
+            "protein_count": selected["protein_count"],
+            "total_cds_length_nt": selected["total_cds_length_nt"],
+        },
+        "cassettes": cassettes,
+        "warnings": list(selected["warnings"]),
+    }
+
+
 def write_expression_box_selection(config: Any) -> dict[str, Any]:
     """Validate and commit one expression-box grouping to the manifest."""
 
@@ -327,6 +381,70 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
     }
 
 
+def write_custom_expression_box_selection(config: Any) -> dict[str, Any]:
+    """Validate a CLI-defined grouping and commit it directly to the manifest."""
+
+    target_compound_id = validate_target_compound_id(config.target_name)
+    manifest_path = Path(config.manifest_output_path).expanduser().resolve()
+    manifest = read_design_manifest(manifest_path)
+    recorded_target = str(manifest.get("target_compound_id") or "").strip()
+    if not recorded_target:
+        raise ValueError("manifest 尚未建立，请先完成 CDS 优化")
+    if recorded_target != target_compound_id:
+        raise ValueError(
+            f"manifest 目标化合物为 {recorded_target}，"
+            f"与当前输入目标 {target_compound_id} 不一致"
+        )
+
+    context = load_expression_grouping_context(manifest_path)
+    design = build_custom_grouping_design(
+        getattr(config, "custom", None),
+        context.proteins,
+    )
+    selected = _design_payload(design, 1)
+    payload = _custom_selection_payload(selected, context)
+
+    current = manifest.get("expression_box_selection")
+    unchanged = (
+        isinstance(current, Mapping)
+        and current.get("schema_version")
+        == EXPRESSION_BOX_SELECTION_SCHEMA_VERSION
+        and current.get("selected_design_fingerprint")
+        == payload["selected_design_fingerprint"]
+    )
+    if unchanged:
+        updated_manifest = manifest
+    else:
+        updated_manifest = update_design_manifest(
+            manifest_path,
+            target_compound_id=target_compound_id,
+            sections={"expression_box_selection": payload},
+            discard_sections=EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS,
+            expected_revision=context.manifest_revision,
+        )
+
+    return {
+        "运行成功": True,
+        "目标化合物": target_compound_id,
+        "写入方式": "用户自定义并自动写入",
+        "方案名称": selected["name"],
+        "方案策略": selected["strategy"],
+        "是否系统推荐": selected["recommended"],
+        "表达盒数量": selected["cassette_count"],
+        "蛋白数量": selected["protein_count"],
+        "表达盒分组": [
+            {
+                "表达盒编号": cassette["cassette_index"],
+                "蛋白": list(cassette["protein_accessions"]),
+            }
+            for cassette in selected["cassettes"]
+        ],
+        "清单是否更新": not unchanged,
+        "清单文件": str(manifest_path),
+        "清单版本": updated_manifest["revision"],
+    }
+
+
 def run_write_expression_box_selection(config: Any) -> dict[str, Any]:
     """CLI entry point for ``write --expression-box N``."""
 
@@ -339,5 +457,6 @@ __all__ = [
     "EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS",
     "EXPRESSION_BOX_SELECTION_SCHEMA_VERSION",
     "run_write_expression_box_selection",
+    "write_custom_expression_box_selection",
     "write_expression_box_selection",
 ]
