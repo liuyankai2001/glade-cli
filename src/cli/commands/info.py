@@ -61,7 +61,7 @@ def register(subparsers):
     view_group.add_argument(
         "--cds",
         action="store_true",
-        help="查看当前 CDS 修正后的最终指标",
+        help="查看已优化 CDS 的指标，配合 --raw 查看模型原始输出",
     )
     view_group.add_argument(
         "--protein",
@@ -69,6 +69,7 @@ def register(subparsers):
         help="查看当前 manifest 中指定蛋白的详情",
     )
 
+    p.add_argument('--raw', action='store_true', help='查看 CodonTransformer 原始 CDS，仅用于 --cds')
     p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
     p.add_argument(
         "--step",

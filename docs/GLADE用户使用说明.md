@@ -931,7 +931,7 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 - 用户直接上传的 CDS 不经过密码子优化门禁。
 
 原有 `optimize_protein_cds` / `repair_cds` 修正能力仍保留，供后续独立编辑流程调用。
-本次未新增编辑命令，也未改变下游表达盒和组装阶段已有的序列检查规则。
+独立的 `optimize` 命令用于用户指定的整体 GC 调整，不改变下游表达盒和组装阶段已有的序列检查规则。
 
 输出目录：
 
@@ -958,21 +958,48 @@ outputs/C00811/protein_to_cds/
 - `partial`：部分成功，成功产物和失败原因都会保留，CLI 退出码为 2；
 - `failed`：全部失败，失败原因写入 manifest，CLI 退出码为 2。
 
-### 11.1 查看最终 CDS 指标
+### 11.1 查看原始或优化后的 CDS 指标
 
 ```powershell
 python main.py info -i demo01.json --cds
+python main.py info -i demo01.json --cds --raw
 ```
 
-命令显示数量汇总和六列表格：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、
-修改密码子数量，并在表格下列出 CDS 文件目录。GC 保留两位小数，CAI 保留四位小数。
+`--cds` 只显示已登记的优化结果，不回退显示模型原始序列。六列为：蛋白 ID、CDS 长度（nt）、
+GC（%）、CAI、禁止位点数、修改密码子数量。只有部分蛋白已优化时，只列出这些蛋白并显示未优化数量。
+`--cds --raw` 只显示 CodonTransformer 原始结果，保留前五列，不显示修改密码子数量。
+`--raw` 不能与其他信息查看类型配合使用。表格下列出对应文件目录，GC 保留两位小数，CAI 保留四位小数。
 
-GC、CAI 和禁止位点数读取当前使用 CDS 的指标。对于新生成的结果，显示“CodonTransformer
-原始输出，未进行 DNA Chisel 修正”，修改密码子数量为 0；已有修正结果继续显示其历史指标。
-修改密码子数量始终相对于 CodonTransformer 初始生成 CDS，而不是天然 CDS。
-用户上传且跳过优化的 CDS 标注“直接使用”，缺少的指标显示“未评估”。
-部分或全部处理失败时列出蛋白 ID 和原因；当前无结果时提示先运行 `protein-to-cds`。
+两种视图分别读取原始和优化后指标，缺失指标显示“未评估”，不使用另一阶段的数值代替。
+修改密码子数量始终是当前优化序列与原始 raw 的净差异，不是各轮编辑次数之和。
+直接上传、没有模型原始输出或优化记录的 CDS 不混入相应表格；旧的已登记修正结果仍可查看。
+raw 视图会列出生成失败原因；没有优化结果时提示运行 `optimize`。
 该命令只展示 manifest 中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
+
+### 11.2 单独调整整体 GC
+
+```powershell
+python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
+```
+
+一次处理一个蛋白编号；上下限均必填，单位是百分比，要求 `0 <= gc-min <= gc-max <= 100`。
+40～60 仅为使用示例，不是程序默认范围或大肠杆菌的统一最佳范围。
+
+首次从 `protein_to_cds/raw_cds/P21683.raw.fasta` 建立副本，优化结果固定保存为
+`protein_to_cds/optimized_cds/P21683.fasta`。之后每次从这份优化文件继续编辑，raw 始终不变。
+原有 `P21683.optimized.fasta` 不自动迁移或覆盖，新固定文件不存在时从 raw 开始。
+已有固定优化文件必须与 manifest、原始序列及报告来源匹配；文件缺失、外部修改或 raw 来源变化时会报错。
+
+DNA Chisel 只调整整体 GC，保持长度、编码蛋白、起始及终止密码子不变，并尽量减少改动。
+当前 GC 已达标时直接保留序列；不自动执行局部 GC、CAI、位点消除或同聚物修正。
+优化后独立复核精确 GC 数量，不用四舍五入后的显示值判定。不可满足时不放宽范围。
+CAI 和位点数等仍按现有口径统计，因此可能出现 CAI 下降或位点数非零。
+
+成功后将该编号的当前 CDS 引用更新到新文件，并使依赖 CDS 的下游选择按原规则失效。
+结果表与 `info --cds` 共用六列，仅展示本次指定编号。报告保存为
+`protein_to_cds/reports/P21683.gc_optimization.json`，记录本轮输入、raw 基准、范围及修改量。
+相同请求且来源和产物一致时复用，不重复更新 manifest。提交失败会回滚文件和报告，失败退出码为 2。
+若进程被强制终止而遗留 `.gc_optimization.lock`，确认没有优化进程运行后再人工清理该锁文件。
 
 ## 12. 表达盒分组
 
@@ -1183,6 +1210,8 @@ outputs/C00811/final_assembly/
 | 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
 | 查看最终 CDS 指标 | `python main.py info -i demo01.json --cds` |
+| 查看原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
+| 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
 候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号

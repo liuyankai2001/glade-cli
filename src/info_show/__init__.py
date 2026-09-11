@@ -50,6 +50,8 @@ def run_info(config: Any) -> dict[str, Any]:
     retropath_candidate = getattr(config, "retropath_candidate", None)
     show_all = bool(getattr(config, "show_all", False))
     show_verbose = bool(getattr(config, "show_verbose", False))
+    if getattr(config, "raw", False) and not getattr(config, "cds", False):
+        raise ValueError("--raw 只能与 --cds 一起使用")
     if show_all and getattr(config, "solution", None) is None:
         raise ValueError("--all 只能与 --solution N 一起使用")
     if show_all and getattr(config, "step", None) is not None:

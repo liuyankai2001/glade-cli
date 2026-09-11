@@ -1,4 +1,4 @@
-"""Read-only, compact view of the final protein-to-CDS results."""
+"""Read-only, separate views of raw and optimized CDS results."""
 
 from __future__ import annotations
 
@@ -40,8 +40,9 @@ def _directory(root: Path, path_value: Any) -> str | None:
     return str(path.parent)
 
 
-def get_cds_info(config: Any) -> dict[str, Any]:
-    """Read recorded final metrics without rerunning optimization or auditing files."""
+def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]:
+    """Read one stage only, without falling back to the other stage."""
+    show_raw = bool(getattr(config, "raw", False))
     manifest = read_design_manifest(config.manifest_output_path)
     target = str(manifest.get("target_compound_id") or "").strip()
     if target and target != config.target_name:
@@ -49,6 +50,7 @@ def get_cds_info(config: Any) -> dict[str, Any]:
     result: dict[str, Any] = {
         "运行成功": True,
         "状态": "当前无结果",
+        "视图": "raw" if show_raw else "optimized",
         "总数": 0,
         "优化成功数": 0,
         "直接使用数": 0,
@@ -56,9 +58,14 @@ def get_cds_info(config: Any) -> dict[str, Any]:
         "CDS列表": [],
         "CDS文件目录": [],
         "失败信息": [],
+        "未优化数": 0,
+        "跳过数": 0,
     }
     if "cds_selection" not in manifest:
-        result["提示"] = "当前无 CDS 结果，请先运行 protein-to-cds。"
+        result["提示"] = (
+            "当前无原始 CDS 结果，请先运行 protein-to-cds。" if show_raw else
+            "当前无优化后 CDS，请先运行 protein-to-cds 生成原始序列，再运行 optimize。"
+        )
         return result
     if not target:
         raise ValueError("manifest 缺少 target_compound_id")
@@ -78,31 +85,53 @@ def get_cds_info(config: Any) -> dict[str, Any]:
     seen: set[str] = set()
     for raw in proteins + failures:
         item = _mapping(raw, "CDS 记录")
-        accession = item.get("accession")
-        if not isinstance(accession, str) or not accession.strip():
+        record_id = item.get("accession")
+        if not isinstance(record_id, str) or not record_id.strip():
             raise ValueError("CDS 记录缺少 accession")
-        if accession in seen:
-            raise ValueError(f"CDS 记录包含重复蛋白 ID：{accession}")
-        seen.add(accession)
+        if record_id in seen:
+            raise ValueError(f"CDS 记录包含重复蛋白 ID：{record_id}")
+        seen.add(record_id)
 
     for item in sorted(proteins, key=lambda row: row["accession"]):
+        if accession is not None and item["accession"].upper() != accession.upper():
+            continue
         optimized = _mapping(item.get("optimized_cds"), "optimized_cds")
         skipped = optimized.get("optimization_skipped") is True
+        if skipped:
+            result["跳过数"] += 1
+            continue
+        raw = item.get("raw_cds")
+        if show_raw:
+            if not isinstance(raw, Mapping) or not raw.get("path"):
+                result["跳过数"] += 1
+                continue
+            selected = raw
+        else:
+            directory = _directory(root, optimized.get("path"))
+            mode = optimized.get("processing_mode")
+            is_optimized = (
+                mode in {None, "codon_transformer_and_repair", "dna_chisel_gc_only"}
+                and directory == str(root / "protein_to_cds" / "optimized_cds")
+            )
+            if not is_optimized:
+                result["未优化数"] += 1
+                continue
+            selected = optimized
         metrics = _mapping(optimized.get("metrics", {}), "optimized_cds.metrics")
-        final = _mapping(metrics.get("final", {}), "optimized_cds.metrics.final")
+        metric_key = "raw" if show_raw else "final"
+        final = _mapping(metrics.get(metric_key, {}), f"optimized_cds.metrics.{metric_key}")
         changes = _mapping(metrics.get("changes", {}), "optimized_cds.metrics.changes")
         result["CDS列表"].append({
             "蛋白ID": item["accession"],
-            "直接使用": skipped,
-            "仅生成": optimized.get("processing_mode") == "codon_transformer_only",
-            "长度_nt": _number(optimized.get("length_nt"), integer=True),
+            "直接使用": False,
+            "长度_nt": _number(selected.get("length_nt"), integer=True),
             "GC百分比": _number(final.get("gc_percent")),
             "CAI": _number(final.get("cai")),
             "禁止位点数": _number(final.get("forbidden_site_count"), integer=True),
-            "修改密码子数量": _number(changes.get("codon_change_count"), integer=True),
+            "修改密码子数量": None if show_raw else _number(changes.get("codon_change_count"), integer=True),
         })
-        result["直接使用数" if skipped else "优化成功数"] += 1
-        directory = _directory(root, optimized.get("path"))
+        result["优化成功数"] += 1
+        directory = _directory(root, selected.get("path"))
         if directory:
             directories.add(directory)
 
@@ -113,12 +142,17 @@ def get_cds_info(config: Any) -> dict[str, Any]:
             "原因": str(item.get("message") or "未记录失败原因"),
         }
         for item in sorted(failures, key=lambda row: row["accession"])
+        if show_raw and (accession is None or item["accession"].upper() == accession.upper())
     ]
-    result["状态"] = _STATUS_LABELS[status]
-    result["仅生成数"] = sum(row["仅生成"] for row in result["CDS列表"])
-    result["总数"] = len(proteins) + len(failures)
-    result["失败数"] = len(failures)
+    result["状态"] = _STATUS_LABELS[status] if show_raw else "已优化"
+    result["总数"] = len(result["CDS列表"])
+    result["失败数"] = len(result["失败信息"])
     result["CDS文件目录"] = sorted(directories)
+    if not result["CDS列表"] and not result["失败信息"]:
+        result["提示"] = (
+            "当前无原始 CDS 结果，请先运行 protein-to-cds。" if show_raw else
+            "当前无优化后 CDS，请先运行 optimize；可用 info --cds --raw 查看原始结果。"
+        )
     return result
 
 
@@ -137,35 +171,38 @@ def _metric(value: int | float | None, decimals: int | None = None) -> str:
 
 
 def format_cds_info(result: Mapping[str, Any]) -> str:
-    """Render the agreed six columns with Chinese terminal-width alignment."""
+    """Render final metrics in six columns, or raw metrics in five columns."""
     if "提示" in result:
         return str(result["提示"])
-    success_label = "生成成功" if result.get("仅生成数") else "优化成功"
-    lines = [
-        f"CDS：{result['状态']}｜共 {result['总数']} 条"
-        f"｜{success_label} {result['优化成功数']} 条"
-        f"｜直接使用 {result['直接使用数']} 条｜失败 {result['失败数']} 条"
-    ]
-    if result.get("仅生成数"):
-        lines.append(f"其中 {result['仅生成数']} 条为 CodonTransformer 原始输出，未进行 DNA Chisel 修正。")
+    show_raw = result.get("视图") == "raw"
+    summary = (
+        f"原始 CDS（CodonTransformer，未经修正）：共 {result['总数']} 条"
+        if show_raw else f"优化后 CDS：共 {result['总数']} 条｜未优化 {result['未优化数']} 条"
+    )
+    if result["失败数"]:
+        summary += f"｜生成失败 {result['失败数']} 条"
+    if result["跳过数"]:
+        summary += f"｜跳过无对应阶段结果 {result['跳过数']} 条"
+    lines = [summary]
+    headers = _HEADERS[:5] if show_raw else _HEADERS
     rows = [
         [
-            _cell(item["蛋白ID"]) + ("（直接使用）" if item["直接使用"] else ""),
+            _cell(item["蛋白ID"]),
             _metric(item["长度_nt"]),
             _metric(item["GC百分比"], 2),
             _metric(item["CAI"], 4),
             _metric(item["禁止位点数"]),
             _metric(item["修改密码子数量"]),
-        ]
+        ][:len(headers)]
         for item in result["CDS列表"]
     ]
     if rows:
-        widths = [max(_width(row[i]) for row in [_HEADERS, *rows]) for i in range(6)]
+        widths = [max(_width(row[i]) for row in [headers, *rows]) for i in range(len(headers))]
 
         def render(row: Any) -> str:
             return " | ".join(cell + " " * (width - _width(cell)) for cell, width in zip(row, widths)).rstrip()
 
-        lines.extend(["", render(_HEADERS), "-+-".join("-" * width for width in widths)])
+        lines.extend(["", render(headers), "-+-".join("-" * width for width in widths)])
         lines.extend(render(row) for row in rows)
     if result["CDS文件目录"]:
         lines.append("")
