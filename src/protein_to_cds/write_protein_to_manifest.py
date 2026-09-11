@@ -15,6 +15,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 from src.protein_to_cds.codon_optimization import CdsOptimizationResult
+from src.protein_to_cds.codon_generation import GENERATION_MODE, GENERATION_SCHEMA_VERSION
 from src.protein_to_cds.config import HostProfile
 from src.protein_to_cds.get_protein_selection_context import (
     ProteinToCdsContext,
@@ -192,10 +193,19 @@ def _validated_success_payload(
         raise ValueError(f"optimization report root is not an object: {accession}")
     if report != optimization.report:
         raise ValueError(f"optimization report changed after optimization: {accession}")
-    if (
-        report.get("status") != "PASS"
-        or report.get("final", {}).get("gate_status") != "PASS"
-    ):
+    generation_only = report.get("processing_mode") == GENERATION_MODE
+    if generation_only:
+        if (
+            report.get("schema_version") != GENERATION_SCHEMA_VERSION
+            or report.get("status") != "PASS"
+            or report.get("constraint_repair_applied") is not False
+            or report.get("quality_checks_enforced") is not False
+            or raw_sequence != final_sequence
+            or report.get("changes", {}).get("codon_change_count") != 0
+            or report.get("changes", {}).get("nucleotide_change_count") != 0
+        ):
+            raise ValueError(f"CodonTransformer-only result was modified or is invalid: {accession}")
+    elif report.get("status") != "PASS" or report.get("final", {}).get("gate_status") != "PASS":
         raise ValueError(f"optimization constraint gate did not pass: {accession}")
     if report.get("protein", {}).get("sequence_sha256") != protein_hash:
         raise ValueError(f"optimization report protein hash mismatch: {accession}")
@@ -256,6 +266,9 @@ def _validated_success_payload(
             },
             "input_fingerprint": optimization.input_fingerprint,
             "constraint_policy_version": report.get("constraint_policy_version"),
+            "processing_mode": report.get("processing_mode", "codon_transformer_and_repair"),
+            "constraint_repair_applied": not generation_only,
+            "quality_checks_enforced": not generation_only,
             "metrics": {
                 "raw": {
                     key: value

@@ -1,4 +1,4 @@
-"""Manifest-driven batch workflow from selected proteins to optimized CDSs."""
+"""Manifest-driven CodonTransformer generation without automatic CDS repair."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from typing import Any
 
 from src.protein_to_cds.codon_optimization import (
     normalize_forbidden_motifs,
-    optimize_protein_cds,
 )
+from src.protein_to_cds.codon_generation import GENERATION_MODE, generate_protein_cds
 from src.protein_to_cds.config import host_profile_for_chassis
 from src.protein_to_cds.get_protein_selection_context import get_proteins_for_cds
 from src.protein_to_cds.search_protein_sequence import (
@@ -110,7 +110,7 @@ def run_protein_to_cds(
     device: str | None = None,
     additional_forbidden_motifs: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Run the complete selected-protein to optimized-CDS workflow."""
+    """Generate CDSs with CodonTransformer and record metrics without editing."""
 
     manifest_path = Path(config.manifest_output_path).expanduser().resolve()
     project_root = Path(config.project_output_path).expanduser().resolve()
@@ -141,7 +141,6 @@ def run_protein_to_cds(
     for directory in (
         protein_sequence_dir,
         output_root / "raw_cds",
-        output_root / "optimized_cds",
         output_root / "reports",
     ):
         directory.mkdir(parents=True, exist_ok=True)
@@ -182,7 +181,7 @@ def run_protein_to_cds(
                     "UniProt response accession does not match the manifest: "
                     f"{selected.accession} -> {protein.primary_accession}"
                 )
-            optimization = optimize_protein_cds(
+            optimization = generate_protein_cds(
                 protein,
                 host,
                 output_root,
@@ -211,6 +210,7 @@ def run_protein_to_cds(
     summary: dict[str, Any] = {
         "schema_version": RUN_SUMMARY_SCHEMA_VERSION,
         "status": status,
+        "processing_mode": GENERATION_MODE,
         "generated_at": _utc_now(),
         "target_compound_id": context.target_compound_id,
         "source_manifest": str(context.manifest_path),
@@ -232,7 +232,7 @@ def run_protein_to_cds(
             {
                 "accession": success.selected.accession,
                 "roles": list(success.selected.roles),
-                "processing_mode": "optimized_from_protein",
+                "processing_mode": GENERATION_MODE,
                 "protein_sequence": _relative(
                     project_root,
                     success.protein.fasta_path,
@@ -299,6 +299,7 @@ def run_protein_to_cds(
     return {
         "ok": status == "complete",
         "status": status,
+        "processing_mode": GENERATION_MODE,
         "target_compound_id": context.target_compound_id,
         "counts": summary["counts"],
         "warnings": summary["warnings"],

@@ -262,6 +262,31 @@ def _load_cached_result(
     )
 
 
+def predict_cds_sequence(
+    protein: ProteinSequenceRecord,
+    host: HostProfile,
+    device: str = "auto",
+) -> tuple[str, str]:
+    """Run CodonTransformer inference without any constraint repair."""
+    import torch
+    from CodonTransformer.CodonPrediction import predict_dna_sequence
+
+    torch_device, device_name = _resolve_device(device)
+    tokenizer, model = _load_model(device_name)
+    with _MODEL_LOCK, torch.inference_mode():
+        output = predict_dna_sequence(
+            protein=protein.sequence,
+            organism=host.codon_transformer_organism_id,
+            device=torch_device,
+            tokenizer=tokenizer,
+            model=model,
+            attention_type="original_full",
+            deterministic=True,
+            match_protein=True,
+        )
+    return normalize_dna(output.predicted_dna), device_name
+
+
 def optimize_protein_cds(
     protein: ProteinSequenceRecord,
     host: HostProfile,
@@ -311,23 +336,7 @@ def optimize_protein_cds(
         return cached
 
     try:
-        import torch
-        from CodonTransformer.CodonPrediction import predict_dna_sequence
-
-        torch_device, device_name = _resolve_device(device)
-        tokenizer, model = _load_model(device_name)
-        with _MODEL_LOCK, torch.inference_mode():
-            output = predict_dna_sequence(
-                protein=protein.sequence,
-                organism=host.codon_transformer_organism_id,
-                device=torch_device,
-                tokenizer=tokenizer,
-                model=model,
-                attention_type="original_full",
-                deterministic=True,
-                match_protein=True,
-            )
-        raw_sequence = normalize_dna(output.predicted_dna)
+        raw_sequence, device_name = predict_cds_sequence(protein, host, device)
         _write_atomic(
             raw_path,
             _dna_fasta(
@@ -444,5 +453,6 @@ __all__ = [
     "CdsOptimizationResult",
     "clear_model_cache",
     "normalize_forbidden_motifs",
+    "predict_cds_sequence",
     "optimize_protein_cds",
 ]

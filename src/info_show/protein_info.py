@@ -300,6 +300,8 @@ def _cds_summary(record: Mapping[str, Any]) -> dict[str, Any]:
         optimized = optimized if isinstance(optimized, Mapping) else {}
         if optimized.get("optimization_skipped") is True:
             status = "用户CDS直接使用"
+        elif optimized.get("processing_mode") == "codon_transformer_only":
+            status = "CodonTransformer已生成（未修正）"
         else:
             status = "已优化"
         return {

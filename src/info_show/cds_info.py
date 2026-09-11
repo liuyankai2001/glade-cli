@@ -94,6 +94,7 @@ def get_cds_info(config: Any) -> dict[str, Any]:
         result["CDS列表"].append({
             "蛋白ID": item["accession"],
             "直接使用": skipped,
+            "仅生成": optimized.get("processing_mode") == "codon_transformer_only",
             "长度_nt": _number(optimized.get("length_nt"), integer=True),
             "GC百分比": _number(final.get("gc_percent")),
             "CAI": _number(final.get("cai")),
@@ -114,6 +115,7 @@ def get_cds_info(config: Any) -> dict[str, Any]:
         for item in sorted(failures, key=lambda row: row["accession"])
     ]
     result["状态"] = _STATUS_LABELS[status]
+    result["仅生成数"] = sum(row["仅生成"] for row in result["CDS列表"])
     result["总数"] = len(proteins) + len(failures)
     result["失败数"] = len(failures)
     result["CDS文件目录"] = sorted(directories)
@@ -138,11 +140,14 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
     """Render the agreed six columns with Chinese terminal-width alignment."""
     if "提示" in result:
         return str(result["提示"])
+    success_label = "生成成功" if result.get("仅生成数") else "优化成功"
     lines = [
         f"CDS：{result['状态']}｜共 {result['总数']} 条"
-        f"｜优化成功 {result['优化成功数']} 条"
+        f"｜{success_label} {result['优化成功数']} 条"
         f"｜直接使用 {result['直接使用数']} 条｜失败 {result['失败数']} 条"
     ]
+    if result.get("仅生成数"):
+        lines.append(f"其中 {result['仅生成数']} 条为 CodonTransformer 原始输出，未进行 DNA Chisel 修正。")
     rows = [
         [
             _cell(item["蛋白ID"]) + ("（直接使用）" if item["直接使用"] else ""),

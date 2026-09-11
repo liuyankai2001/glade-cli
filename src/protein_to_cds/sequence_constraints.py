@@ -333,6 +333,30 @@ def audit_cds(
     }
 
 
+def assess_generated_cds(
+    sequence: str,
+    protein_sequence: str,
+    organism_id: int,
+    additional_forbidden_motifs: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Measure the model output and require encoding identity only; never edit it."""
+    motifs = dict(DEFAULT_FORBIDDEN_MOTIFS)
+    motifs.update(_validate_additional_motifs(additional_forbidden_motifs))
+    audit = audit_cds(sequence, protein_sequence, _profile_for_organism(organism_id), motifs)
+    failed = [
+        name for name in (
+            "valid_alphabet", "length_multiple_of_three", "start_codon_valid",
+            "stop_codon_valid", "no_internal_stop", "amino_acid_identity_exact",
+        )
+        if not audit["checks"][name]
+    ]
+    if failed:
+        raise CdsConstraintError(
+            "CodonTransformer output failed encoding identity checks: " + ", ".join(failed)
+        )
+    return audit
+
+
 def _rare_cluster_participating_indexes(
     sequence: str,
     weights: dict[str, float],

@@ -912,7 +912,7 @@ python main.py protein-to-cds -i demo01.json
 python main.py protein-to-cds -i demo01.json --device cpu
 ```
 
-添加额外禁用 DNA motif，可重复传入：
+额外统计指定 DNA motif 的出现次数，可重复传入（只检测，不自动消除）：
 
 ```powershell
 python main.py protein-to-cds -i demo01.json --device cpu `
@@ -922,12 +922,16 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 处理规则：
 
 - 主酶根据 manifest 中的 accession 读取本地缓存或从 UniProt 下载氨基酸序列；
-- 手动上传的氨基酸直接从项目快照读取并进行密码子优化；
+- 手动上传的氨基酸直接从项目快照读取，由 CodonTransformer 生成 CDS；
 - 手动上传的 CDS 直接写入选择结果，并标记跳过优化；
 - 未添加辅助蛋白时，只处理主酶；
-- 优化生成的 CDS 必须保持翻译一致，并通过 GC、CAI、稀有密码子簇、禁用 motif、
-  同聚物和起止密码子等门禁；
+- `protein-to-cds` 只运行 CodonTransformer，不自动运行 DNA Chisel 或额外的宿主密码子修正；
+- 模型生成的 CDS 必须保持翻译一致，并通过字符、长度、起止密码子和内部终止密码子检查；
+- GC、CAI、稀有密码子簇、指定 motif 和同聚物等指标仅统计和记录，不阻止原始 CDS 保存；
 - 用户直接上传的 CDS 不经过密码子优化门禁。
+
+原有 `optimize_protein_cds` / `repair_cds` 修正能力仍保留，供后续独立编辑流程调用。
+本次未新增编辑命令，也未改变下游表达盒和组装阶段已有的序列检查规则。
 
 输出目录：
 
@@ -936,12 +940,19 @@ outputs/C00811/protein_to_cds/
 ├── uploaded_sequences/manifest_revision_*/<id>.<type>.fasta
 ├── protein_sequences/<accession>.fasta
 ├── raw_cds/<accession>.raw.fasta
-├── optimized_cds/<accession>.optimized.fasta
-├── reports/<accession>.optimization.json
+├── optimized_cds/<accession>.optimized.fasta  # 以前的修正产物如已存在则保留
+├── reports/<accession>.generation.json       # 当前生成报告
+├── reports/<accession>.optimization.json     # 以前的修正报告如已存在则保留
 └── run_summary.json
 ```
 
 运行结果整体写入 manifest 的 `cds_selection`：
+
+为兼容现有读取接口，`optimized_cds` 字段指向当前使用的模型原始 FASTA（`raw_cds` 目录），
+并标记 `processing_mode=codon_transformer_only`、`constraint_repair_applied=false`。
+原始序列与当前序列相同，修改密码子数量为 0。生成缓存与修正缓存分开，不复用旧的修正结果。
+报告顶层 `status=PASS` 表示生成及编码检查成功；指标中的 `gate_status` 仍是已有质量阈值的
+评估结果，即使为 `FAIL` 也不代表本次生成失败。重新生成成功后，现有下游结果按原规则失效。
 
 - `complete`：全部成功，CLI 退出码为 0；
 - `partial`：部分成功，成功产物和失败原因都会保留，CLI 退出码为 2；
@@ -956,9 +967,10 @@ python main.py info -i demo01.json --cds
 命令显示数量汇总和六列表格：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、
 修改密码子数量，并在表格下列出 CDS 文件目录。GC 保留两位小数，CAI 保留四位小数。
 
-GC、CAI 和禁止位点数读取 CodonTransformer 生成并经过修正后的最终指标；修改密码子
-数量是修正阶段相对于 CodonTransformer 初始生成 CDS 改动的密码子数量，不是与天然
-CDS 的差异。用户上传且跳过优化的 CDS 标注“直接使用”，缺少的指标显示“未评估”。
+GC、CAI 和禁止位点数读取当前使用 CDS 的指标。对于新生成的结果，显示“CodonTransformer
+原始输出，未进行 DNA Chisel 修正”，修改密码子数量为 0；已有修正结果继续显示其历史指标。
+修改密码子数量始终相对于 CodonTransformer 初始生成 CDS，而不是天然 CDS。
+用户上传且跳过优化的 CDS 标注“直接使用”，缺少的指标显示“未评估”。
 部分或全部处理失败时列出蛋白 ID 和原因；当前无结果时提示先运行 `protein-to-cds`。
 该命令只展示 manifest 中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
 
