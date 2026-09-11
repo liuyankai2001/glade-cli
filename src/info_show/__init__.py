@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.info_show.cds_info import get_cds_info, run_cds_info
 from src.info_show.chassis_info import (
     format_chassis_info_zh,
     get_chassis_info,
@@ -92,6 +93,8 @@ def run_info(config: Any) -> dict[str, Any]:
         return run_protein_info(config)
     if getattr(config, "proteins", False):
         return run_proteins_info(config)
+    if getattr(config, "cds", False):
+        return run_cds_info(config)
     if main_enzyme_set is not None:
         return run_main_enzyme_set_info(config)
     if getattr(config, "main_enzyme_sets", False):
@@ -106,11 +109,13 @@ def run_info(config: Any) -> dict[str, Any]:
         "未指定信息查看类型，请使用 --chassis、--gap、--solution、"
         "--retropath、--retropath-candidate、"
         "--main-enzyme-candidates、--main-enzyme-candidate、"
-        "--main-enzyme-sets、--main-enzyme-set、--proteins 或 --protein"
+        "--main-enzyme-sets、--main-enzyme-set、--proteins、--protein 或 --cds"
     )
 
 
 __all__ = [
+    "get_cds_info",
+    "run_cds_info",
     "format_chassis_info_zh",
     "get_chassis_expansion_info",
     "get_chassis_info",

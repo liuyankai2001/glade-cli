@@ -59,6 +59,11 @@ def register(subparsers):
         help="查看当前 manifest 中的主酶和辅助蛋白",
     )
     view_group.add_argument(
+        "--cds",
+        action="store_true",
+        help="查看当前 CDS 修正后的最终指标",
+    )
+    view_group.add_argument(
         "--protein",
         metavar="ID",
         help="查看当前 manifest 中指定蛋白的详情",

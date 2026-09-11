@@ -947,6 +947,21 @@ outputs/C00811/protein_to_cds/
 - `partial`：部分成功，成功产物和失败原因都会保留，CLI 退出码为 2；
 - `failed`：全部失败，失败原因写入 manifest，CLI 退出码为 2。
 
+### 11.1 查看最终 CDS 指标
+
+```powershell
+python main.py info -i demo01.json --cds
+```
+
+命令显示数量汇总和六列表格：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、
+修改密码子数量，并在表格下列出 CDS 文件目录。GC 保留两位小数，CAI 保留四位小数。
+
+GC、CAI 和禁止位点数读取 CodonTransformer 生成并经过修正后的最终指标；修改密码子
+数量是修正阶段相对于 CodonTransformer 初始生成 CDS 改动的密码子数量，不是与天然
+CDS 的差异。用户上传且跳过优化的 CDS 标注“直接使用”，缺少的指标显示“未评估”。
+部分或全部处理失败时列出蛋白 ID 和原因；当前无结果时提示先运行 `protein-to-cds`。
+该命令只展示 manifest 中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
+
 ## 12. 表达盒分组
 
 CDS 阶段完成后生成表达盒分组候选：
@@ -1155,6 +1170,7 @@ outputs/C00811/final_assembly/
 | 查看组合 1 | `python main.py info -i demo01.json --main-enzyme-set 1` |
 | 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
+| 查看最终 CDS 指标 | `python main.py info -i demo01.json --cds` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
 候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号
