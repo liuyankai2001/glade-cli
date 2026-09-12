@@ -17,6 +17,7 @@ from src.expression_box import (
 from src.write_manifest.expression_box import write_custom_expression_box_selection
 from src.write_manifest.expression_parts_draft import (
     upload_expression_promoter,
+    upload_expression_rbs,
     upload_expression_terminator,
 )
 
@@ -37,20 +38,22 @@ def _parts_design_count(value: str) -> int:
 
 def _run(config: Any) -> dict[str, Any]:
     promoter = getattr(config, "promoter", None)
+    rbs = getattr(config, "rbs", None)
     terminator = getattr(config, "terminator", None)
     custom = getattr(config, "custom", None)
-    if promoter is not None or terminator is not None:
+    if promoter is not None or rbs is not None or terminator is not None:
         if bool(getattr(config, "box", False)) or bool(
             getattr(config, "parts", False)
         ):
             raise ValueError("表达元件上传不能与 --box 或 --parts 同时使用")
         if custom is not None or getattr(config, "n_designs", None) is not None:
             raise ValueError("表达元件上传不能与 --custom 或 --n-designs 同时使用")
-        result = (
-            upload_expression_promoter(config)
-            if promoter is not None
-            else upload_expression_terminator(config)
-        )
+        if promoter is not None:
+            result = upload_expression_promoter(config)
+        elif rbs is not None:
+            result = upload_expression_rbs(config)
+        else:
+            result = upload_expression_terminator(config)
     elif bool(getattr(config, "parts", False)):
         if custom is not None:
             raise ValueError("--custom can only be used with --box")
@@ -84,6 +87,12 @@ def register(subparsers):
         nargs=2,
         metavar=("BOX", "FILE"),
         help="为指定表达盒上传 inputs/parts 下的启动子文件",
+    )
+    action.add_argument(
+        "--rbs",
+        nargs=2,
+        metavar=("PROTEIN", "FILE"),
+        help="为指定蛋白上传 inputs/parts 下的 RBS 文件",
     )
     action.add_argument(
         "--terminator",

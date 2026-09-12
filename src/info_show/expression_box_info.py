@@ -380,7 +380,11 @@ def _draft_part_summary(
     project_root: Path,
     role: str,
 ) -> dict[str, Any]:
-    label = "启动子" if role == "promoter" else "终止子"
+    label = {
+        "promoter": "启动子",
+        "rbs": "RBS",
+        "terminator": "终止子",
+    }[role]
     item = _mapping(part, f"expression_parts_draft.{role}")
     summary = _part_summary(item, role)
     sequence_file = _mapping(item.get("sequence_file"), f"{role}.sequence_file")
@@ -443,6 +447,7 @@ def _apply_draft(
         ):
             raise ValueError("表达元件草稿与当前表达盒数量不一致")
         promoter_count = 0
+        rbs_count = 0
         terminator_count = 0
         for cassette in result["表达盒列表"]:
             raw = by_index[cassette["表达盒编号"]]
@@ -461,6 +466,26 @@ def _apply_draft(
                     "promoter",
                 )
                 promoter_count += 1
+            raw_rbs = raw.get("rbs_by_accession", {})
+            if not isinstance(raw_rbs, Mapping):
+                raise ValueError(
+                    f"表达盒 {cassette['表达盒编号']} 的 rbs_by_accession 无效"
+                )
+            unknown_rbs = sorted(set(raw_rbs) - set(expected_accessions))
+            if unknown_rbs:
+                raise ValueError("表达元件草稿包含未知 RBS 蛋白：" + ", ".join(unknown_rbs))
+            for gene in cassette["基因列表"]:
+                raw_gene_rbs = raw_rbs.get(gene["蛋白ID"])
+                if raw_gene_rbs is None:
+                    continue
+                rbs_item = _mapping(raw_gene_rbs, "draft.rbs_by_accession[]")
+                gene["RBS"] = _draft_part_summary(
+                    rbs_item,
+                    project_root,
+                    "rbs",
+                )
+                gene["OSTIR"] = _ostir_summary(rbs_item.get("ostir"))
+                rbs_count += 1
             terminator = raw.get("terminator")
             if terminator is not None:
                 cassette["Terminator"] = _draft_part_summary(
@@ -469,16 +494,17 @@ def _apply_draft(
                     "terminator",
                 )
                 terminator_count += 1
-            if promoter is not None or terminator is not None:
+            if promoter is not None or raw_rbs or terminator is not None:
                 cassette["状态"] = "表达元件部分设置"
         result["表达元件草稿"] = {
             "状态": str(draft.get("status") or "partial"),
             "已上传启动子数": promoter_count,
+            "已上传RBS数": rbs_count,
             "已上传终止子数": terminator_count,
             "表达盒总数": len(result["表达盒列表"]),
             "草稿Fingerprint": str(draft.get("draft_fingerprint") or ""),
         }
-        if promoter_count or terminator_count:
+        if promoter_count or rbs_count or terminator_count:
             result["表达元件状态"] = "部分设置"
     except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
         _parts_unavailable(result, str(exc))
@@ -671,6 +697,7 @@ def _part_row(
     role: str,
     accession: str,
     part: Mapping[str, Any] | None,
+    translation_rate: Any = None,
 ) -> list[str]:
     return [
         str(order),
@@ -678,9 +705,20 @@ def _part_row(
         accession or "-",
         _cell(part["元件ID"]) if part else "-",
         _length(part["长度_bp"], "bp") if part else "-",
+        _format_translation_rate(translation_rate),
         _cell(part["来源"]) if part else "-",
         "已设置" if part else "未设置",
     ]
+
+
+def _format_translation_rate(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{number:.8g}"
 
 
 def format_expression_box_info(result: Mapping[str, Any]) -> str:
@@ -714,11 +752,21 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
         lines.append(
             f"已上传启动子：{draft.get('已上传启动子数', 0)}/"
             f"{draft.get('表达盒总数', 0)}｜"
+            f"已上传 RBS：{draft.get('已上传RBS数', 0)}｜"
             f"已上传终止子：{draft.get('已上传终止子数', 0)}/"
             f"{draft.get('表达盒总数', 0)}"
         )
 
-    headers = ["组装顺序", "组件", "对应蛋白", "元件 ID", "长度", "来源", "状态"]
+    headers = [
+        "组装顺序",
+        "组件",
+        "对应蛋白",
+        "元件 ID",
+        "长度",
+        "翻译起始率",
+        "来源",
+        "状态",
+    ]
     for cassette in result["表达盒列表"]:
         lines.extend(["", f"表达盒 {cassette['表达盒编号']}"])
         rows: list[list[str]] = []
@@ -726,7 +774,20 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
         rows.append(_part_row(order, "Promoter", "", cassette["Promoter"]))
         order += 1
         for gene in cassette["基因列表"]:
-            rows.append(_part_row(order, "RBS", gene["蛋白ID"], gene["RBS"]))
+            translation_rate = (
+                gene["OSTIR"].get("翻译起始率")
+                if isinstance(gene["OSTIR"], Mapping)
+                else None
+            )
+            rows.append(
+                _part_row(
+                    order,
+                    "RBS",
+                    gene["蛋白ID"],
+                    gene["RBS"],
+                    translation_rate,
+                )
+            )
             order += 1
             rows.append(
                 [
@@ -735,6 +796,7 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
                     gene["蛋白ID"],
                     gene["蛋白ID"],
                     _length(gene["CDS"]["长度_nt"], "nt"),
+                    "-",
                     "CDS选择",
                     "已就绪",
                 ]

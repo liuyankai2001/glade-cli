@@ -1062,7 +1062,7 @@ python main.py info -i demo01.json --expression-box --parts-design 3
 
 ## 13. 表达元件推荐与选择
 
-### 13.1 手动上传启动子和终止子
+### 13.1 手动上传启动子、RBS 和终止子
 
 先将启动子文件放入 `inputs/parts`。例如：
 
@@ -1093,13 +1093,25 @@ python main.py expression -i demo01.json --terminator 1 terminator_1.txt
 再次为同一表达盒上传终止子会替换当前值。启动子和终止子保存在同一个草稿中，上传其中
 一个不会覆盖另一个。
 
+RBS 使用蛋白 accession 定位，系统会自动找到该蛋白所属的表达盒：
+
+```powershell
+python main.py expression -i demo01.json --rbs P21683 rbs_1.txt
+```
+
+RBS 文件同样从 `inputs/parts` 读取并使用相同的格式和 DNA 校验规则。上传时系统立即按
+表达盒顺序构建上下文：首个蛋白使用 `RBS + 当前 CDS 起始段`，后续蛋白使用
+`前一个 CDS 末端 + RBS + 当前 CDS 起始段`。OSTIR 必须返回唯一、有效且大于 0 的翻译
+起始率，否则不保存快照或草稿。
+
 ```powershell
 python main.py info -i demo01.json --expression-box
 ```
 
-此阶段不会运行 OSTIR 或完整表达盒 DNA Chisel 检查，也不会建立完整的
-`parts_selection`。若已有完整表达元件、质粒或组装结果，上传新启动子会使这些下游结果
-失效。
+信息表格始终包含“翻译起始率”列：未配置 RBS 以及非 RBS 组件显示 `-`，已配置 RBS
+显示 OSTIR 结果。启动子和终止子上传本身不运行 OSTIR；草稿阶段不运行完整表达盒
+DNA Chisel 检查，也不会建立完整的 `parts_selection`。若已有完整表达元件、质粒或组装
+结果，上传或替换任一表达元件都会使这些下游结果失效。
 
 ### 13.2 系统推荐表达元件
 
@@ -1290,6 +1302,7 @@ outputs/C00811/final_assembly/
 | 查看原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
 | 查看表达盒和当前表达元件 | `python main.py info -i demo01.json --expression-box` |
 | 为表达盒 1 上传启动子 | `python main.py expression -i demo01.json --promoter 1 promoter_1.txt` |
+| 为蛋白 P21683 上传 RBS | `python main.py expression -i demo01.json --rbs P21683 rbs_1.txt` |
 | 为表达盒 1 上传终止子 | `python main.py expression -i demo01.json --terminator 1 terminator_1.txt` |
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 
@@ -1338,6 +1351,8 @@ python main.py write -i demo01.json --expression-box 1
 # python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
 # 可选：从 inputs/parts 为表达盒 1 上传启动子
 # python main.py expression -i demo01.json --promoter 1 promoter_1.txt
+# 可选：从 inputs/parts 为蛋白 P21683 上传 RBS
+# python main.py expression -i demo01.json --rbs P21683 rbs_1.txt
 # 可选：从 inputs/parts 为表达盒 1 上传终止子
 # python main.py expression -i demo01.json --terminator 1 terminator_1.txt
 python main.py info -i demo01.json --expression-box
