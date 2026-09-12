@@ -1,4 +1,4 @@
-"""Import one user-provided promoter into an expression-parts draft."""
+"""Import user-provided boundary parts into an expression-parts draft."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from src.write_manifest.store import read_design_manifest, update_design_manifes
 
 
 EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION = "expression_parts_draft.v1"
-PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS = (
+EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS = (
     "parts_selection",
     "assembled_expression_cassettes",
     "assembled_expression_constructs",
@@ -33,6 +33,7 @@ PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS = (
     "final_assembly_plan",
     "final_assembly",
 )
+PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS = EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS
 _SUPPORTED_SUFFIXES = {".txt", ".fa", ".fasta", ".fna"}
 _SAFE_PART_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DNA_ALPHABET = frozenset("ACGT")
@@ -70,30 +71,33 @@ def _positive_int(value: Any, field: str) -> int:
     return parsed
 
 
-def _promoter_args(config: Any) -> tuple[int, str]:
-    raw = getattr(config, "promoter", None)
+def _part_args(config: Any, role: str) -> tuple[int, str]:
+    label = "启动子" if role == "promoter" else "终止子"
+    option = f"--{role}"
+    raw = getattr(config, role, None)
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-        raise ValueError("--promoter 后必须提供表达盒编号和文件名")
+        raise ValueError(f"{option} 后必须提供表达盒编号和文件名")
     cassette_index = _positive_int(raw[0], "表达盒编号")
     filename = str(raw[1] or "").strip()
     if not filename:
-        raise ValueError("启动子文件名不能为空")
+        raise ValueError(f"{label}文件名不能为空")
     path = Path(filename)
     if path.name != filename or path.is_absolute() or "/" in filename or "\\" in filename:
-        raise ValueError("--promoter 只接受 inputs/parts 目录下的文件名")
+        raise ValueError(f"{option} 只接受 inputs/parts 目录下的文件名")
     if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
-        raise ValueError("启动子文件仅支持 .txt、.fa、.fasta 或 .fna")
+        raise ValueError(f"{label}文件仅支持 .txt、.fa、.fasta 或 .fna")
     return cassette_index, filename
 
 
-def _read_promoter(path: Path) -> tuple[str, str, str]:
+def _read_part(path: Path, role: str) -> tuple[str, str, str]:
+    label = "启动子" if role == "promoter" else "终止子"
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        raise ValueError(f"无法读取启动子文件：{path}") from exc
+        raise ValueError(f"无法读取{label}文件：{path}") from exc
     text = text.lstrip("\ufeff")
     if not text.strip():
-        raise ValueError(f"启动子文件为空：{path}")
+        raise ValueError(f"{label}文件为空：{path}")
 
     if path.suffix.lower() == ".txt":
         part_id = path.stem
@@ -103,28 +107,28 @@ def _read_promoter(path: Path) -> tuple[str, str, str]:
         try:
             records = list(SeqIO.parse(StringIO(text), "fasta"))
         except Exception as exc:
-            raise ValueError(f"启动子 FASTA 无法解析：{path}") from exc
+            raise ValueError(f"{label} FASTA 无法解析：{path}") from exc
         if len(records) != 1:
-            raise ValueError("启动子 FASTA 必须恰好包含一条序列")
+            raise ValueError(f"{label} FASTA 必须恰好包含一条序列")
         part_id = str(records[0].id or "").strip()
         sequence = re.sub(r"\s+", "", str(records[0].seq)).upper()
         input_format = "fasta"
 
     if not part_id or _SAFE_PART_ID.fullmatch(part_id) is None:
         raise ValueError(
-            "启动子 ID 只能包含英文字母、数字、下划线、点和连字符"
+            f"{label} ID 只能包含英文字母、数字、下划线、点和连字符"
         )
     if not sequence:
-        raise ValueError("启动子 DNA 序列不能为空")
+        raise ValueError(f"{label} DNA 序列不能为空")
     invalid = sorted(set(sequence) - _DNA_ALPHABET)
     if invalid:
-        raise ValueError("启动子 DNA 只能包含 A/C/G/T；发现：" + ", ".join(invalid))
+        raise ValueError(f"{label} DNA 只能包含 A/C/G/T；发现：" + ", ".join(invalid))
     return part_id, sequence, input_format
 
 
-def _canonical_fasta(part_id: str, sequence: str) -> bytes:
+def _canonical_fasta(part_id: str, sequence: str, role: str) -> bytes:
     lines = [sequence[index : index + 80] for index in range(0, len(sequence), 80)]
-    return (f">{part_id} user_uploaded_promoter\n" + "\n".join(lines) + "\n").encode(
+    return (f">{part_id} user_uploaded_{role}\n" + "\n".join(lines) + "\n").encode(
         "utf-8"
     )
 
@@ -156,7 +160,7 @@ def _relative(project_root: Path, path: Path) -> str:
     try:
         return resolved.relative_to(project_root.resolve()).as_posix()
     except ValueError as exc:
-        raise ValueError("启动子快照路径超出当前项目输出目录") from exc
+        raise ValueError("表达元件快照路径超出当前项目输出目录") from exc
 
 
 def _current_expression_box(
@@ -249,11 +253,17 @@ def _assert_part_id_consistent(
     sequence_sha256: str,
     *,
     replacing_cassette_index: int,
+    replacing_role: str,
 ) -> None:
     for cassette in cassettes:
-        parts: list[Any] = [cassette.get("terminator")]
-        if cassette.get("cassette_index") != replacing_cassette_index:
-            parts.append(cassette.get("promoter"))
+        parts: list[Any] = []
+        for role in ("promoter", "terminator"):
+            replacing_current = (
+                cassette.get("cassette_index") == replacing_cassette_index
+                and role == replacing_role
+            )
+            if not replacing_current:
+                parts.append(cassette.get(role))
         rbs = cassette.get("rbs_by_accession")
         if isinstance(rbs, Mapping):
             parts.extend(rbs.values())
@@ -299,19 +309,18 @@ def _draft_payload(
     }
 
 
-def upload_expression_promoter(config: Any) -> dict[str, Any]:
-    """Upload or replace the promoter for one selected expression cassette."""
-
-    cassette_index, filename = _promoter_args(config)
+def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
+    label = "启动子" if role == "promoter" else "终止子"
+    cassette_index, filename = _part_args(config, role)
     target_compound_id = validate_target_compound_id(config.target_name)
     inputs_root = Path(config.inputs_dir).expanduser().resolve()
     input_path = (inputs_root / "parts" / filename).resolve()
     parts_root = (inputs_root / "parts").resolve()
     if input_path.parent != parts_root:
-        raise ValueError("启动子文件必须直接位于 inputs/parts 目录")
+        raise ValueError(f"{label}文件必须直接位于 inputs/parts 目录")
     if not input_path.is_file():
-        raise FileNotFoundError(f"未找到启动子文件：{input_path}")
-    part_id, sequence, input_format = _read_promoter(input_path)
+        raise FileNotFoundError(f"未找到{label}文件：{input_path}")
+    part_id, sequence, input_format = _read_part(input_path, role)
 
     manifest_path = Path(config.manifest_output_path).expanduser().resolve()
     project_root = Path(config.project_output_path).expanduser().resolve()
@@ -344,20 +353,21 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
         part_id,
         sequence_sha256,
         replacing_cassette_index=cassette_index,
+        replacing_role=role,
     )
-    fasta_bytes = _canonical_fasta(part_id, sequence)
+    fasta_bytes = _canonical_fasta(part_id, sequence, role)
     snapshot_path = (
         project_root
         / "expression_box"
         / "uploaded_parts"
-        / "promoters"
+        / f"{role}s"
         / f"cassette_{cassette_index:03d}"
         / f"{part_id}.{sequence_sha256[:12]}.fasta"
     ).resolve()
     snapshot_relative = _relative(project_root, snapshot_path)
-    promoter = {
+    part = {
         "part_id": part_id,
-        "role": "promoter",
+        "role": role,
         "source": "user_uploaded",
         "source_input_file": f"parts/{filename}",
         "input_format": input_format,
@@ -374,8 +384,8 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
             "max_homopolymer": max_homopolymer_length(sequence),
         },
     }
-    previous_promoter = cassettes[cassette_index - 1].get("promoter")
-    cassettes[cassette_index - 1]["promoter"] = promoter
+    previous_part = cassettes[cassette_index - 1].get(role)
+    cassettes[cassette_index - 1][role] = part
     payload = _draft_payload(
         target_compound_id=target_compound_id,
         box_fingerprint=box_fingerprint,
@@ -387,7 +397,7 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
         isinstance(current_draft, Mapping) and dict(current_draft) == payload
     )
     downstream_present = any(
-        field in manifest for field in PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS
+        field in manifest for field in EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS
     )
     manifest_changed = draft_changed or downstream_present
 
@@ -396,8 +406,8 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
         snapshot_existed and _sha256_bytes(snapshot_path.read_bytes()) == _sha256_bytes(fasta_bytes)
     )
     previous_sequence_file = (
-        previous_promoter.get("sequence_file")
-        if isinstance(previous_promoter, Mapping)
+        previous_part.get("sequence_file")
+        if isinstance(previous_part, Mapping)
         else None
     )
     snapshot_repair = (
@@ -413,7 +423,7 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
                 manifest_path,
                 target_compound_id=target_compound_id,
                 sections={"expression_parts_draft": payload},
-                discard_sections=PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS,
+                discard_sections=EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS,
                 expected_revision=current_revision,
             )
         else:
@@ -425,7 +435,7 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
 
     action = (
         "新增"
-        if previous_promoter is None
+        if previous_part is None
         else "未变化"
         if not draft_changed
         else "替换"
@@ -435,15 +445,16 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
         "目标化合物": target_compound_id,
         "表达盒编号": cassette_index,
         "操作": action,
-        "启动子ID": part_id,
+        f"{label}ID": part_id,
         "输入文件": f"parts/{filename}",
         "序列长度_bp": len(sequence),
-        "GC百分比": promoter["metrics"]["gc_percent"],
+        "GC百分比": part["metrics"]["gc_percent"],
         "序列SHA256": sequence_sha256,
         "快照文件": str(snapshot_path),
         "快照是否写入": not snapshot_matches,
         "快照是否修复": snapshot_repair,
         "已上传启动子数": payload["summary"]["promoter_count"],
+        "已上传终止子数": payload["summary"]["terminator_count"],
         "表达盒总数": payload["summary"]["required_promoter_count"],
         "清单是否更新": manifest_changed,
         "清单版本": updated["revision"],
@@ -451,8 +462,22 @@ def upload_expression_promoter(config: Any) -> dict[str, Any]:
     }
 
 
+def upload_expression_promoter(config: Any) -> dict[str, Any]:
+    """Upload or replace the promoter for one selected expression cassette."""
+
+    return _upload_expression_boundary_part(config, "promoter")
+
+
+def upload_expression_terminator(config: Any) -> dict[str, Any]:
+    """Upload or replace the terminator for one selected expression cassette."""
+
+    return _upload_expression_boundary_part(config, "terminator")
+
+
 __all__ = [
+    "EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS",
     "EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION",
     "PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS",
     "upload_expression_promoter",
+    "upload_expression_terminator",
 ]

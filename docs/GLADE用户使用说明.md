@@ -1062,7 +1062,7 @@ python main.py info -i demo01.json --expression-box --parts-design 3
 
 ## 13. 表达元件推荐与选择
 
-### 13.1 手动上传启动子
+### 13.1 手动上传启动子和终止子
 
 先将启动子文件放入 `inputs/parts`。例如：
 
@@ -1083,6 +1083,15 @@ FASTA 使用记录 ID 作为启动子 ID，TXT 使用文件名主干。
 上传结果保存到 manifest 的 `expression_parts_draft`，同时在项目输出目录保存标准化 FASTA
 快照。再次为同一表达盒上传启动子会替换当前值；相同内容重复上传不会增加 manifest
 版本。上传后可查看部分配置：
+
+终止子使用相同规则，参数后依次填写表达盒编号和 `inputs/parts` 下的文件名：
+
+```powershell
+python main.py expression -i demo01.json --terminator 1 terminator_1.txt
+```
+
+再次为同一表达盒上传终止子会替换当前值。启动子和终止子保存在同一个草稿中，上传其中
+一个不会覆盖另一个。
 
 ```powershell
 python main.py info -i demo01.json --expression-box
@@ -1281,6 +1290,7 @@ outputs/C00811/final_assembly/
 | 查看原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
 | 查看表达盒和当前表达元件 | `python main.py info -i demo01.json --expression-box` |
 | 为表达盒 1 上传启动子 | `python main.py expression -i demo01.json --promoter 1 promoter_1.txt` |
+| 为表达盒 1 上传终止子 | `python main.py expression -i demo01.json --terminator 1 terminator_1.txt` |
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
@@ -1328,6 +1338,8 @@ python main.py write -i demo01.json --expression-box 1
 # python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
 # 可选：从 inputs/parts 为表达盒 1 上传启动子
 # python main.py expression -i demo01.json --promoter 1 promoter_1.txt
+# 可选：从 inputs/parts 为表达盒 1 上传终止子
+# python main.py expression -i demo01.json --terminator 1 terminator_1.txt
 python main.py info -i demo01.json --expression-box
 python main.py expression --design --parts -i demo01.json --n-designs 12
 python main.py write -i demo01.json --expression-parts 1:12

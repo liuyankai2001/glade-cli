@@ -378,19 +378,25 @@ def _parts_unavailable(result: dict[str, Any], message: str) -> None:
 def _draft_part_summary(
     part: Any,
     project_root: Path,
+    role: str,
 ) -> dict[str, Any]:
-    item = _mapping(part, "expression_parts_draft.promoter")
-    summary = _part_summary(item, "promoter")
-    sequence_file = _mapping(item.get("sequence_file"), "promoter.sequence_file")
-    path = _project_file(project_root, sequence_file.get("path"), "promoter.sequence_file.path")
+    label = "启动子" if role == "promoter" else "终止子"
+    item = _mapping(part, f"expression_parts_draft.{role}")
+    summary = _part_summary(item, role)
+    sequence_file = _mapping(item.get("sequence_file"), f"{role}.sequence_file")
+    path = _project_file(
+        project_root,
+        sequence_file.get("path"),
+        f"{role}.sequence_file.path",
+    )
     if not path.is_file():
-        raise FileNotFoundError(f"启动子快照文件不存在：{path}")
+        raise FileNotFoundError(f"{label}快照文件不存在：{path}")
     expected_hash = _text(
         sequence_file.get("file_sha256"),
-        "promoter.sequence_file.file_sha256",
+        f"{role}.sequence_file.file_sha256",
     )
     if _sha256_file(path) != expected_hash:
-        raise ValueError(f"启动子快照文件哈希不匹配：{path}")
+        raise ValueError(f"{label}快照文件哈希不匹配：{path}")
     summary["序列文件"] = str(path)
     return summary
 
@@ -437,6 +443,7 @@ def _apply_draft(
         ):
             raise ValueError("表达元件草稿与当前表达盒数量不一致")
         promoter_count = 0
+        terminator_count = 0
         for cassette in result["表达盒列表"]:
             raw = by_index[cassette["表达盒编号"]]
             expected_accessions = [
@@ -447,18 +454,31 @@ def _apply_draft(
                     f"表达盒 {cassette['表达盒编号']} 的草稿蛋白顺序不匹配"
                 )
             promoter = raw.get("promoter")
-            if promoter is None:
-                continue
-            cassette["Promoter"] = _draft_part_summary(promoter, project_root)
-            cassette["状态"] = "表达元件部分设置"
-            promoter_count += 1
+            if promoter is not None:
+                cassette["Promoter"] = _draft_part_summary(
+                    promoter,
+                    project_root,
+                    "promoter",
+                )
+                promoter_count += 1
+            terminator = raw.get("terminator")
+            if terminator is not None:
+                cassette["Terminator"] = _draft_part_summary(
+                    terminator,
+                    project_root,
+                    "terminator",
+                )
+                terminator_count += 1
+            if promoter is not None or terminator is not None:
+                cassette["状态"] = "表达元件部分设置"
         result["表达元件草稿"] = {
             "状态": str(draft.get("status") or "partial"),
             "已上传启动子数": promoter_count,
+            "已上传终止子数": terminator_count,
             "表达盒总数": len(result["表达盒列表"]),
             "草稿Fingerprint": str(draft.get("draft_fingerprint") or ""),
         }
-        if promoter_count:
+        if promoter_count or terminator_count:
             result["表达元件状态"] = "部分设置"
     except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
         _parts_unavailable(result, str(exc))
@@ -693,6 +713,8 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
     if isinstance(draft, Mapping):
         lines.append(
             f"已上传启动子：{draft.get('已上传启动子数', 0)}/"
+            f"{draft.get('表达盒总数', 0)}｜"
+            f"已上传终止子：{draft.get('已上传终止子数', 0)}/"
             f"{draft.get('表达盒总数', 0)}"
         )
 

@@ -15,7 +15,10 @@ from src.expression_box import (
     run_expression_parts_design,
 )
 from src.write_manifest.expression_box import write_custom_expression_box_selection
-from src.write_manifest.expression_parts_draft import upload_expression_promoter
+from src.write_manifest.expression_parts_draft import (
+    upload_expression_promoter,
+    upload_expression_terminator,
+)
 
 
 def _parts_design_count(value: str) -> int:
@@ -34,15 +37,20 @@ def _parts_design_count(value: str) -> int:
 
 def _run(config: Any) -> dict[str, Any]:
     promoter = getattr(config, "promoter", None)
+    terminator = getattr(config, "terminator", None)
     custom = getattr(config, "custom", None)
-    if promoter is not None:
+    if promoter is not None or terminator is not None:
         if bool(getattr(config, "box", False)) or bool(
             getattr(config, "parts", False)
         ):
-            raise ValueError("--promoter 不能与 --box 或 --parts 同时使用")
+            raise ValueError("表达元件上传不能与 --box 或 --parts 同时使用")
         if custom is not None or getattr(config, "n_designs", None) is not None:
-            raise ValueError("--promoter 不能与 --custom 或 --n-designs 同时使用")
-        result = upload_expression_promoter(config)
+            raise ValueError("表达元件上传不能与 --custom 或 --n-designs 同时使用")
+        result = (
+            upload_expression_promoter(config)
+            if promoter is not None
+            else upload_expression_terminator(config)
+        )
     elif bool(getattr(config, "parts", False)):
         if custom is not None:
             raise ValueError("--custom can only be used with --box")
@@ -76,6 +84,12 @@ def register(subparsers):
         nargs=2,
         metavar=("BOX", "FILE"),
         help="为指定表达盒上传 inputs/parts 下的启动子文件",
+    )
+    action.add_argument(
+        "--terminator",
+        nargs=2,
+        metavar=("BOX", "FILE"),
+        help="为指定表达盒上传 inputs/parts 下的终止子文件",
     )
     mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument(
