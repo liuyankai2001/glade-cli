@@ -28,6 +28,7 @@ from src.write_manifest.store import read_design_manifest, update_design_manifes
 
 PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v2"
 PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
+    "expression_parts_draft",
     "assembled_expression_cassettes",
     "assembled_expression_constructs",
     "plasmid_selection",

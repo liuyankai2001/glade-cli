@@ -28,6 +28,7 @@ from src.write_manifest.store import read_design_manifest, update_design_manifes
 EXPRESSION_BOX_SELECTION_SCHEMA_VERSION = "expression_box_selection.v1"
 EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_cassette_assembly",
+    "expression_parts_draft",
     "parts_selection",
     "assembled_expression_cassettes",
     "assembled_expression_constructs",

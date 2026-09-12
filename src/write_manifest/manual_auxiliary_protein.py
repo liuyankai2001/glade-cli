@@ -28,6 +28,7 @@ MANUAL_AUXILIARY_DOWNSTREAM_SECTIONS = (
     "cds_selection",
     "expression_box_selection",
     "expression_cassette_assembly",
+    "expression_parts_draft",
     "parts_selection",
     "assembled_expression_cassettes",
     "assembled_expression_constructs",

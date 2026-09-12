@@ -1040,7 +1040,59 @@ manifest，无需再运行 `write --expression-box`。未知、重复、遗漏�
 方括号会导致命令失败，manifest 不会被修改。若分组或顺序发生变化，已有的表达元件、
 质粒和最终组装结果将失效，需要重新生成。
 
+写入表达盒后，可以随时查看当前分组和实际组装顺序：
+
+```powershell
+python main.py info -i demo01.json --expression-box
+```
+
+在尚未选择表达元件时，输出以“未设置”显示每个表达盒的 promoter、每个蛋白对应的
+RBS 和 terminator；CDS 及蛋白顺序仍会完整显示。选择表达元件后，同一命令会在原位置
+显示元件 ID、长度、来源、OSTIR 结果、完整序列检查和 GenBank 构建状态。
+
+如果一次写入了多个表达元件方案，默认显示主方案，也可以查看指定的已选方案：
+
+```powershell
+python main.py info -i demo01.json --expression-box --parts-design 3
+```
+
+`--parts-design` 只能查看已经通过 `write --expression-parts` 写入的方案。命令不会输出
+完整 DNA 序列；若方案文件丢失、被修改或与当前表达盒不一致，会保留表达盒分组视图，
+并将表达元件状态显示为“信息不可用”。
+
 ## 13. 表达元件推荐与选择
+
+### 13.1 手动上传启动子
+
+先将启动子文件放入 `inputs/parts`。例如：
+
+```text
+inputs/parts/promoter_1.txt
+```
+
+然后指定表达盒编号和文件名：
+
+```powershell
+python main.py expression -i demo01.json --promoter 1 promoter_1.txt
+```
+
+文件名不能包含目录。支持 `.txt`、`.fa`、`.fasta` 和 `.fna`；TXT 直接包含 DNA，
+FASTA 必须恰好包含一条记录。序列会去除空白并转为大写，且只能包含 A、C、G、T。
+FASTA 使用记录 ID 作为启动子 ID，TXT 使用文件名主干。
+
+上传结果保存到 manifest 的 `expression_parts_draft`，同时在项目输出目录保存标准化 FASTA
+快照。再次为同一表达盒上传启动子会替换当前值；相同内容重复上传不会增加 manifest
+版本。上传后可查看部分配置：
+
+```powershell
+python main.py info -i demo01.json --expression-box
+```
+
+此阶段不会运行 OSTIR 或完整表达盒 DNA Chisel 检查，也不会建立完整的
+`parts_selection`。若已有完整表达元件、质粒或组装结果，上传新启动子会使这些下游结果
+失效。
+
+### 13.2 系统推荐表达元件
 
 表达盒分组写入后，从远端 Milvus 推荐 promoter、RBS 和 terminator：
 
@@ -1227,6 +1279,8 @@ outputs/C00811/final_assembly/
 | 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
 | 查看最终 CDS 指标 | `python main.py info -i demo01.json --cds` |
 | 查看原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
+| 查看表达盒和当前表达元件 | `python main.py info -i demo01.json --expression-box` |
+| 为表达盒 1 上传启动子 | `python main.py expression -i demo01.json --promoter 1 promoter_1.txt` |
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
@@ -1272,6 +1326,9 @@ python main.py expression --design --box -i demo01.json
 python main.py write -i demo01.json --expression-box 1
 # 或者自定义分组并直接写入（无需执行上一行 write 命令）
 # python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
+# 可选：从 inputs/parts 为表达盒 1 上传启动子
+# python main.py expression -i demo01.json --promoter 1 promoter_1.txt
+python main.py info -i demo01.json --expression-box
 python main.py expression --design --parts -i demo01.json --n-designs 12
 python main.py write -i demo01.json --expression-parts 1:12
 

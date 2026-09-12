@@ -28,6 +28,7 @@ CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v2"
 CDS_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_box_selection",
     "expression_cassette_assembly",
+    "expression_parts_draft",
     "parts_selection",
     "assembled_expression_cassettes",
     "assembled_expression_constructs",

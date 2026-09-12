@@ -68,9 +68,21 @@ def register(subparsers):
         metavar="ID",
         help="查看当前 manifest 中指定蛋白的详情",
     )
+    view_group.add_argument(
+        "--expression-box",
+        action="store_true",
+        help="查看当前表达盒分组及已选择的表达元件",
+    )
 
     p.add_argument('--raw', action='store_true', help='查看 CodonTransformer 原始 CDS，仅用于 --cds')
     p.add_argument('-d', '--depth',type=int, default=0, help='指定信息查看深度，具体含义由查看类型决定')
+    p.add_argument(
+        "--parts-design",
+        type=int,
+        metavar="N",
+        default=None,
+        help="查看指定的已选表达元件方案，仅用于 --expression-box",
+    )
     p.add_argument(
         "--step",
         type=int,
