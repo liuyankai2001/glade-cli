@@ -161,6 +161,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             "位点已配置": sites_configured,
             "禁止位点数": site_count,
             "修改密码子数量": None if show_raw else _number(changes.get("codon_change_count"), integer=True),
+            "局部GC": metrics.get("local_gc") if not show_raw else None,
         })
         result["优化成功数"] += 1
         directory = _directory(root, selected.get("path"))
@@ -236,6 +237,23 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
 
         lines.extend(["", render(headers), "-+-".join("-" * width for width in widths)])
         lines.extend(render(row) for row in rows)
+    if not show_raw:
+        for item in result["CDS列表"]:
+            local = item.get("局部GC")
+            if not isinstance(local, Mapping):
+                continue
+            bounds = local.get("range_percent")
+            range_text = "～".join(str(value) for value in bounds) + "%" if isinstance(bounds, list) and len(bounds) == 2 else "未评估"
+            before = local.get("input", {})
+            final = local.get("final", {})
+            if not isinstance(before, Mapping) or not isinstance(final, Mapping):
+                continue
+            lines.extend([
+                "",
+                f"{_cell(item['蛋白ID'])} 局部 GC：窗口 {_metric(_number(local.get('window_nt'), integer=True))} nt｜范围 {range_text}｜"
+                f"越界窗口 {_metric(_number(before.get('violation_count'), integer=True))} → {_metric(_number(final.get('violation_count'), integer=True))}",
+                f"局部 GC 最小 {_metric(_number(final.get('min_gc_percent')), 2)}%｜最大 {_metric(_number(final.get('max_gc_percent')), 2)}%",
+            ])
     if result["CDS文件目录"]:
         lines.append("")
         lines.extend(f"CDS 文件目录：{directory}" for directory in result["CDS文件目录"])

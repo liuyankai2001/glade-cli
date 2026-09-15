@@ -1,4 +1,4 @@
-"""Explicit, incremental whole-CDS GC editing; raw sequences stay immutable."""
+"""Incremental global/local CDS GC editing; raw sequences stay immutable."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import json
 import random
 import re
 import sys
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 from typing import Any
 
@@ -26,19 +25,14 @@ from src.write_manifest.cds_dependencies import cds_dependency_update
 from src.write_manifest.cds_optimization import commit_cds_optimization
 from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.artifacts import raw_cds_metadata
+from src.protein_to_cds.gc_constraints import (
+    count_bounds, effective_gc_settings, gc_settings_audit, local_gc_summary,
+    validate_gc_range, validate_window, window_gc_audit,
+)
 
 GC_MODE = "dna_chisel_gc_only"
-GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v1"
-
-
-def validate_gc_range(minimum: Any, maximum: Any) -> tuple[Decimal, Decimal]:
-    try:
-        low, high = Decimal(str(minimum)), Decimal(str(maximum))
-    except InvalidOperation as exc:
-        raise ValueError("--gc-min 和 --gc-max 必须是百分比数值") from exc
-    if not low.is_finite() or not high.is_finite() or not Decimal(0) <= low <= high <= Decimal(100):
-        raise ValueError("GC 范围必须满足 0 <= gc-min <= gc-max <= 100")
-    return low, high
+GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v2"
+GC_REPORT_SCHEMAS = {GC_REPORT_SCHEMA, "protein_to_cds.gc_optimization.v1"}
 
 
 def _path(root: Path, value: str) -> Path:
@@ -93,8 +87,11 @@ def _gc_count(sequence: str) -> int:
     return sequence.count("G") + sequence.count("C")
 
 
-def _adjust_gc(sequence: str, protein: str, lower: int, upper: int, seed: int) -> str:
-    if lower <= _gc_count(sequence) <= upper:
+def _adjust_gc(
+    sequence: str, protein: str, lower: int, upper: int, seed: int,
+    *, local: dict[str, Any] | None = None,
+) -> str:
+    if lower <= _gc_count(sequence) <= upper and (local is None or window_gc_audit(sequence, local)["violation_count"] == 0):
         return sequence
     # Fixed start/stop codons plus synonymous choices bound the possible GC count.
     codons = CodonTable.unambiguous_dna_by_id[11].forward_table
@@ -103,6 +100,15 @@ def _adjust_gc(sequence: str, protein: str, lower: int, upper: int, seed: int) -
     if fixed + sum(min(values) for values in possible) > upper or fixed + sum(max(values) for values in possible) < lower:
         raise ValueError("指定 GC 范围无法在保持蛋白及起止密码子不变的条件下达到")
     length = len(sequence)
+    constraints = [
+        EnforceTranslation(genetic_table="Bacterial", start_codon="keep"),
+        AvoidChanges(location=(0, 3)), AvoidChanges(location=(length - 3, length)),
+        EnforceGCContent(mini=lower / length, maxi=upper / length),
+    ]
+    if local is not None:
+        window = local["window_nt"]
+        local_lower, local_upper = count_bounds(local["range_percent"], window)
+        constraints.append(EnforceGCContent(mini=local_lower / window, maxi=local_upper / window, window=window))
     with _OPTIMIZER_LOCK:
         numpy_state, python_state = np.random.get_state(), random.getstate()
         try:
@@ -110,19 +116,14 @@ def _adjust_gc(sequence: str, protein: str, lower: int, upper: int, seed: int) -
             random.seed(seed)
             problem = DnaOptimizationProblem(
                 sequence,
-                constraints=[
-                    EnforceTranslation(genetic_table="Bacterial", start_codon="keep"),
-                    AvoidChanges(location=(0, 3)),
-                    AvoidChanges(location=(length - 3, length)),
-                    EnforceGCContent(mini=lower / length, maxi=upper / length),
-                ],
+                constraints=constraints,
                 objectives=[AvoidChanges()], logger=None,
             )
             problem.resolve_constraints(final_check=True)
             problem.optimize()
             return str(problem.sequence).upper()
         except Exception as exc:
-            raise ValueError(f"整体 GC 优化未找到满足约束的序列：{exc}") from exc
+            raise ValueError(f"GC 优化未找到满足全部约束的序列：{exc}") from exc
         finally:
             np.random.set_state(numpy_state)
             random.setstate(python_state)
@@ -187,7 +188,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         raise ValueError("当前优化文件与来源报告不一致，不能继续编辑")
     if mode == GC_MODE:
         if (
-            source_report.get("schema_version") != GC_REPORT_SCHEMA
+            source_report.get("schema_version") not in GC_REPORT_SCHEMAS
             or _path(root, previous.get("report", {}).get("path")) != report_path
             or source_report.get("source", {}).get("raw_sequence_sha256") != sha256_text(raw)
             or source_report.get("source", {}).get("cds_selection_source_fingerprint") != selection.get("source_fingerprint")
@@ -200,19 +201,23 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     if len(source_sequence) != len(raw) or source_sequence[:3] != raw[:3] or source_sequence[-3:] != raw[-3:]:
         raise ValueError("已有优化序列的长度或起止密码子与 raw 不一致")
     length = len(raw)
-    lower = int((low * length / 100).to_integral_value(rounding=ROUND_CEILING))
-    upper = int((high * length / 100).to_integral_value(rounding=ROUND_FLOOR))
-    if lower > upper:
-        raise ValueError("指定 GC 范围对当前序列长度没有可取的整数 GC 数量")
+    window = getattr(config, "window", None)
+    if window is not None:
+        window = validate_window(window, length)
+    settings = effective_gc_settings(previous, source_report, low, high, window, length)
+    lower, upper = count_bounds(settings["global"]["range_percent"], length) if "global" in settings else (0, length)
+    _, input_local, input_pass = gc_settings_audit(source_sequence, settings)
     request = {
-        "gc_min": str(low.normalize()), "gc_max": str(high.normalize()),
+        "gc_min": settings["global" if window is None else "local"]["range_percent"][0],
+        "gc_max": settings["global" if window is None else "local"]["range_percent"][1],
+        "scope": "global" if window is None else "local", "gc_settings": settings,
         "raw_sequence_sha256": sha256_text(raw), "protein_sequence_sha256": sha256_text(protein),
         "dnachisel_version": importlib.metadata.version("dnachisel"),
         "algorithm_version": GC_REPORT_SCHEMA,
     }
     if (
         output.exists() and source_report.get("request") == request
-        and lower <= _gc_count(source_sequence) <= upper
+        and input_pass
         and source_report.get("raw", {}).get("user_forbidden_site_hits") == raw_audit["user_forbidden_site_hits"]
         and source_report.get("final", {}).get("user_forbidden_site_hits") == input_audit["user_forbidden_site_hits"]
         and source_path == output
@@ -220,12 +225,16 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     ):
         return {"accession": accession, "reused_existing": True, "output_path": str(output)}
     seed = int(sha256_text(json.dumps(request, sort_keys=True) + sha256_text(source_sequence))[:8], 16)
-    final = _adjust_gc(source_sequence, protein, lower, upper, seed)
+    if "local" in settings:
+        final = _adjust_gc(source_sequence, protein, lower, upper, seed, local=settings["local"])
+    else:
+        final = _adjust_gc(source_sequence, protein, lower, upper, seed)
     if len(final) != length or final[:3] != raw[:3] or final[-3:] != raw[-3:]:
         raise ValueError("优化结果改变了序列长度或起止密码子")
     final_audit = assess_generated_cds(final, protein, organism_id, extras)
-    if not lower <= _gc_count(final) <= upper:
-        raise ValueError("优化结果的精确 GC 含量未达到用户范围，未保存")
+    global_validation, final_local, final_pass = gc_settings_audit(final, settings)
+    if not final_pass:
+        raise ValueError("优化结果的精确 GC 含量未达到全部整体/局部范围，未保存")
     changes = _changes(raw, final)
     output_relative = output.relative_to(root).as_posix()
     baseline = copy.deepcopy(previous.get("metrics", {}).get("raw") or source_report.get("raw") or raw_audit)
@@ -240,12 +249,16 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
             "input_sequence_sha256": sha256_text(source_sequence),
         },
         "additional_forbidden_motifs": extras,
-        "enforced_checks": ["encoding_identity", "start_stop_unchanged", "global_gc"],
-        "gc_validation": {"minimum_count": lower, "maximum_count": upper, "observed_count": _gc_count(final)},
+        "gc_settings": settings,
+        "enforced_checks": ["encoding_identity", "start_stop_unchanged"] + [f"{scope}_gc" for scope in settings],
         "raw_cds": raw_meta,
         "raw": baseline, "input": input_audit, "final": final_audit,
         "changes": changes, "changes_from_input": _changes(source_sequence, final),
     }
+    if global_validation is not None:
+        report["gc_validation"] = global_validation
+    if final_local is not None:
+        report["local_gc_validation"] = {"input": input_local, "final": final_local}
     report_bytes = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     fasta = (f">{accession} gc_optimized\n" + "\n".join(final[i:i + 80] for i in range(0, length, 80)) + "\n").encode("utf-8")
     updated = copy.deepcopy(selection)
@@ -256,9 +269,13 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         "report": {"path": report_path.relative_to(root).as_posix(), "file_sha256": hashlib.sha256(report_bytes).hexdigest()},
         "processing_mode": GC_MODE, "constraint_repair_applied": True,
         "optimization_skipped": False, "enforced_checks": report["enforced_checks"],
-        "quality_checks_enforced": False, "gc_range_percent": [str(low), str(high)],
+        "quality_checks_enforced": False, "gc_settings": settings,
         "metrics": {"final": final_audit, "changes": changes},
     }
+    if "global" in settings:
+        updated_item["optimized_cds"]["gc_range_percent"] = settings["global"]["range_percent"]
+    if final_local is not None:
+        updated_item["optimized_cds"]["metrics"]["local_gc"] = local_gc_summary(input_local, final_local)
     files = {output: fasta, report_path: report_bytes}
     for row in updated["proteins"]:
         current = row["optimized_cds"]

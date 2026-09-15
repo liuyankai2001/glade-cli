@@ -1001,8 +1001,9 @@ python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
 原有 `P21683.optimized.fasta` 文件保留。当前文件缺失、外部修改或 raw 来源变化时会报错，
 不会静默从 raw 重建；重新执行 `protein-to-cds` 可覆盖重建工作文件。
 
-DNA Chisel 只调整整体 GC，保持长度、编码蛋白、起始及终止密码子不变，并尽量减少改动。
-当前 GC 已达标时直接保留序列；不自动执行局部 GC、CAI、位点消除或同聚物修正。
+不传 `--window` 时，本次上下限用于整体 GC；DNA Chisel 保持长度、编码蛋白、起始及终止密码子
+不变，并尽量减少改动。若此前已经配置局部 GC，本次整体调整也必须同时满足该局部要求。
+全部有效 GC 约束已达标时直接保留序列；不自动执行 CAI、位点消除或同聚物修正。
 优化后独立复核精确 GC 数量，不用四舍五入后的显示值判定。不可满足时不放宽范围。
 CAI 和位点数等仍按现有口径统计，因此可能出现 CAI 下降或位点数非零。
 
@@ -1012,6 +1013,32 @@ CAI 和位点数等仍按现有口径统计，因此可能出现 CAI 下降或�
 `protein_to_cds/reports/P21683.gc_optimization.json`，记录本轮输入、raw 基准、范围及修改量。
 相同请求且来源和产物一致时复用，不重复更新 manifest。提交失败会回滚文件和报告，失败退出码为 2。
 若进程被强制终止而遗留 `.gc_optimization.lock`，确认没有优化进程运行后再人工清理该锁文件。
+
+### 11.3 调整局部 GC
+
+```powershell
+python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50
+```
+
+传入 `--window` 后，本次上下限用于每个连续窗口。例中依次检查第 1～50、2～51、3～52 nt，
+直到最后一个完整窗口；每次移动 1 nt，不按互不重叠的块划分。30～70 和 50 仅为示例，
+程序不会在未传入 `--window` 时默认启用局部优化。
+
+窗口必须为正整数且不超过当前 CDS 长度，可以等于 CDS 长度，不要求是 3 的倍数。
+每个窗口的 GC 数量必须满足精确整数上下限；范围内没有可取整数或求解器未找到满足要求的序列时，
+命令失败并保留原工作文件、报告和 manifest，不缩短窗口、不放宽范围。
+
+整体和局部设置分别保存在当前 `optimized_cds.gc_settings`。再次调整同一类型会替换该类型的
+参数，并保留另一类型；已有整体 GC 范围时，局部优化同时满足它。范围 0～100 可以放宽对应类型
+的限制；重新成功执行 `protein-to-cds` 会覆盖工作副本并重置这些 GC 设置，不自动运行 DNA Chisel。
+
+报告仍保存为 `<accession>.gc_optimization.json`，新报告为 v2，兼容读取旧 v1 整体结果。
+记录有效范围、窗口、优化前后局部 GC 最小/最大值、越界窗口数量与从 1 开始的闭区间位置。
+请求的窗口检查与原有固定 50 nt 的质量指标分开，不用默认质量指标判定本次请求成功。
+
+优化命令和 `info --cds` 保留六列 CDS 表，追加已配置局部 GC 的窗口、范围、越界窗口前后数量，
+以及当前局部 GC 最小/最大值。raw 视图只显示原始指标，不显示当前局部编辑摘要。
+局部编辑成功后，同样保留有效表达盒分组和上传元件，清除旧预测并使下游构建记录失效。
 
 ## 12. 表达盒分组
 
@@ -1318,6 +1345,7 @@ outputs/C00811/final_assembly/
 | 为蛋白 P21683 上传 RBS | `python main.py expression -i demo01.json --rbs P21683 rbs_1.txt` |
 | 为表达盒 1 上传终止子 | `python main.py expression -i demo01.json --terminator 1 terminator_1.txt` |
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
+| 调整单条 CDS 局部 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
 候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号
