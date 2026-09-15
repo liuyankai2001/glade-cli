@@ -30,6 +30,7 @@ def commit_cds_optimization(
     *, manifest_path: Path, project_root: Path, target: str, revision: int,
     selection: dict[str, Any], discard_sections: tuple[str, ...],
     files: dict[Path, bytes], guards: dict[Path, bytes | None],
+    dependent_sections: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stage outputs, check input snapshots, install files, then update manifest."""
     root = project_root.resolve()
@@ -60,7 +61,7 @@ def commit_cds_optimization(
             installed.append(path)
         return update_design_manifest(
             manifest_path, target_compound_id=target,
-            sections={"cds_selection": selection}, discard_sections=discard_sections,
+            sections={"cds_selection": selection, **(dependent_sections or {})}, discard_sections=discard_sections,
             expected_revision=revision,
         )
     except BaseException:

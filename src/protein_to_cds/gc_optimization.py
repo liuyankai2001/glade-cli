@@ -22,7 +22,7 @@ from dnachisel import AvoidChanges, DnaOptimizationProblem, EnforceGCContent, En
 from src.protein_to_cds.sequence_constraints import (
     DEFAULT_FORBIDDEN_MOTIFS, _OPTIMIZER_LOCK, assess_generated_cds, sha256_text,
 )
-from src.protein_to_cds.write_protein_to_manifest import CDS_SELECTION_DOWNSTREAM_SECTIONS
+from src.write_manifest.cds_dependencies import cds_dependency_update
 from src.write_manifest.cds_optimization import commit_cds_optimization
 from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.artifacts import raw_cds_metadata
@@ -291,10 +291,11 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         row.pop("raw_cds", None)
         current.get("metrics", {}).pop("raw", None)
         current.pop("source_raw_sequence_sha256", None)
+    retained_sections, discard_sections = cds_dependency_update(manifest, updated)
     commit_cds_optimization(
         manifest_path=manifest_path, project_root=root, target=config.target_name,
         revision=int(manifest.get("revision", 0)), selection=updated,
-        discard_sections=CDS_SELECTION_DOWNSTREAM_SECTIONS,
+        discard_sections=discard_sections, dependent_sections=retained_sections,
         files=files, guards=guards,
     )
     return {"accession": accession, "reused_existing": False, "output_path": str(output)}

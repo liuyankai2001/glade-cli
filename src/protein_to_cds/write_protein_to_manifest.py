@@ -24,19 +24,9 @@ from src.protein_to_cds.get_protein_selection_context import (
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
+from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS, cds_dependency_update
 
 CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v2"
-CDS_SELECTION_DOWNSTREAM_SECTIONS = (
-    "expression_box_selection",
-    "expression_cassette_assembly",
-    "expression_parts_draft",
-    "parts_selection",
-    "assembled_expression_cassettes",
-    "assembled_expression_constructs",
-    "plasmid_selection",
-    "final_assembly_plan",
-    "final_assembly",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,11 +426,12 @@ def _write_cds_selection_to_manifest(
             "path": _relative_path(project_root, summary_path),
         },
     }
+    retained_sections, discard_sections = cds_dependency_update(manifest, payload)
     updated = update_design_manifest(
         context.manifest_path,
         target_compound_id=context.target_compound_id,
-        sections={"cds_selection": payload},
-        discard_sections=CDS_SELECTION_DOWNSTREAM_SECTIONS,
+        sections={"cds_selection": payload, **retained_sections},
+        discard_sections=discard_sections,
         expected_revision=context.manifest_revision,
     )
     return {

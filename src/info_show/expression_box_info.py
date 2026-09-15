@@ -200,7 +200,13 @@ def _part_summary(part: Any, expected_role: str) -> dict[str, Any]:
     }
 
 
-def _ostir_summary(value: Any) -> dict[str, Any]:
+def _ostir_summary(value: Any, *, stale: bool = False) -> dict[str, Any]:
+    if stale:
+        return {
+            "状态": "需重新评估", "翻译起始率": None,
+            "总自由能": None, "预期起始位置": None,
+            "非预期起始位点数": None, "上下文SHA256": "",
+        }
     item = _mapping(value, "ostir")
     try:
         expression = float(item.get("translation_initiation_rate"))
@@ -484,7 +490,9 @@ def _apply_draft(
                     project_root,
                     "rbs",
                 )
-                gene["OSTIR"] = _ostir_summary(rbs_item.get("ostir"))
+                gene["OSTIR"] = _ostir_summary(
+                    rbs_item.get("ostir"), stale=rbs_item.get("ostir_status") == "stale",
+                )
                 rbs_count += 1
             terminator = raw.get("terminator")
             if terminator is not None:
@@ -712,6 +720,8 @@ def _part_row(
 
 
 def _format_translation_rate(value: Any) -> str:
+    if value == "需重新评估":
+        return value
     if value is None:
         return "-"
     try:
@@ -779,6 +789,8 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
                 if isinstance(gene["OSTIR"], Mapping)
                 else None
             )
+            if isinstance(gene["OSTIR"], Mapping) and gene["OSTIR"].get("状态") == "需重新评估":
+                translation_rate = "需重新评估"
             rows.append(
                 _part_row(
                     order,
@@ -814,6 +826,7 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
             ]
             for gene in cassette["基因列表"]
             if gene["RBS"] is not None and gene["OSTIR"] is not None
+            and gene["OSTIR"].get("翻译起始率") is not None
         ]
         if rbs_rows:
             lines.extend(["", "RBS 检查"])
