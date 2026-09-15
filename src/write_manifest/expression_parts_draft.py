@@ -30,6 +30,7 @@ from src.protein_to_cds.sequence_constraints import (
     motif_hits,
 )
 from src.write_manifest.store import read_design_manifest, update_design_manifest
+from src.protein_to_cds.restriction_sites import normalize_enzymes, restriction_site_audit
 
 
 EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION = "expression_parts_draft.v1"
@@ -348,6 +349,51 @@ def _draft_payload(
     }
 
 
+def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, new_part, new_sequence):
+    enzymes = normalize_enzymes(manifest.get("cds_selection", {}).get("restriction_enzymes"))
+    if not enzymes:
+        return
+    complete = [cassette for cassette in cassettes
+                if cassette.get("promoter") and cassette.get("terminator")
+                and all(accession in cassette["rbs_by_accession"] for accession in cassette["protein_accessions"])]
+    if not complete:
+        return
+    context = load_expression_parts_context(manifest_path, project_root)
+    cds_by_accession = {cds.accession: cds for cassette in context.cassettes for cds in cassette.cds}
+    for cassette in complete:
+        chunks, spans = [], []
+        def append(sequence, label):
+            start = sum(len(chunk) for chunk in chunks) + 1
+            chunks.append(sequence)
+            spans.append((start, start + len(sequence) - 1, label))
+        def part_sequence(part):
+            if part is new_part:
+                return new_sequence
+            reference = part["sequence_file"]
+            path = (project_root / reference["path"]).resolve()
+            _relative(project_root, path)
+            content = path.read_bytes()
+            if _sha256_bytes(content) != reference["file_sha256"]:
+                raise ValueError("上传元件快照已变化，无法检查完整表达盒")
+            sequence = str(SeqIO.read(StringIO(content.decode("utf-8")), "fasta").seq).upper()
+            if _sha256_bytes(sequence.encode("utf-8")) != part["sequence_sha256"]:
+                raise ValueError("上传元件序列与草稿记录不一致")
+            return sequence
+        append(part_sequence(cassette["promoter"]), "promoter")
+        for accession in cassette["protein_accessions"]:
+            append(part_sequence(cassette["rbs_by_accession"][accession]), f"rbs:{accession}")
+            append(cds_by_accession[accession].sequence, f"cds:{accession}")
+        append(part_sequence(cassette["terminator"]), "terminator")
+        sequence = "".join(chunks)
+        audit = restriction_site_audit(sequence, enzymes)
+        audit["sequence_sha256"] = _sha256_bytes(sequence.encode("utf-8"))
+        audit["length_nt"] = len(sequence)
+        for site in audit["sites"]:
+            site["components"] = [label for start, end, label in spans
+                                   if start <= site["end_1based"] and end >= site["start_1based"]]
+        cassette["restriction_site_audit"] = audit
+
+
 def _commit_uploaded_part(
     *,
     manifest_path: Path,
@@ -408,6 +454,7 @@ def _commit_uploaded_part(
             "gc_percent": round(100.0 * gc_fraction(sequence), 8),
             "forbidden_site_hits": motif_hits(sequence, DEFAULT_FORBIDDEN_MOTIFS),
             "max_homopolymer": max_homopolymer_length(sequence),
+            "restriction_site_audit": restriction_site_audit(sequence, manifest.get("cds_selection", {}).get("restriction_enzymes", [])),
         },
         **dict(extra_fields or {}),
     }
@@ -419,6 +466,7 @@ def _commit_uploaded_part(
         previous_part = cassettes[cassette_index - 1].get(role)
         cassettes[cassette_index - 1][role] = part
 
+    _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, part, sequence)
     payload = _draft_payload(
         target_compound_id=target_compound_id,
         box_fingerprint=box_fingerprint,
@@ -497,6 +545,11 @@ def _commit_uploaded_part(
     }
     if accession is not None:
         result["蛋白ID"] = accession
+    conflicts = [{"cassette_index": cassette["cassette_index"], **site}
+                 for cassette in cassettes
+                 for site in cassette.get("restriction_site_audit", {}).get("sites", [])]
+    if conflicts:
+        result["限制酶位点冲突"] = conflicts
     ostir = part.get("ostir")
     if isinstance(ostir, Mapping):
         result["翻译起始率"] = ostir.get("translation_initiation_rate")

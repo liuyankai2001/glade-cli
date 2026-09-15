@@ -8,11 +8,10 @@ import itertools
 import math
 from collections import Counter
 from collections.abc import Callable
-from importlib.metadata import version
 from typing import Any
 
-from dnachisel import AvoidPattern, DnaOptimizationProblem, EnforceGCContent
 
+from src.expression_box.sequence_audit import audit_expression_sequence
 from src.expression_box.config import (
     EXPRESSION_PARTS_CANDIDATE_POOL_MAX,
     EXPRESSION_PARTS_CANDIDATE_POOL_MIN,
@@ -45,14 +44,8 @@ from src.protein_to_cds.sequence_constraints import (
     DEFAULT_FORBIDDEN_MOTIFS,
     DNA_ALPHABET,
     HOMOPOLYMER_LIMIT,
-    LOCAL_GC_MAX,
-    LOCAL_GC_MIN,
-    LOCAL_GC_WINDOW_NT,
-    gc_fraction,
-    local_gc_values,
     max_homopolymer_length,
     motif_hits,
-    reverse_complement,
 )
 
 
@@ -310,70 +303,8 @@ def _rbs_options(
     return options[:6]
 
 
-def _audit_sequence(sequence: str) -> dict[str, Any]:
-    normalized = str(sequence or "").strip().upper()
-    valid_alphabet = bool(normalized) and set(normalized).issubset(DNA_ALPHABET)
-    if not valid_alphabet:
-        return {
-            "engine": "DNA Chisel",
-            "engine_version": version("dnachisel"),
-            "gate_status": "FAIL",
-            "checks": {"valid_alphabet": False},
-            "failed_checks": ["valid_alphabet"],
-        }
-    constrained_motifs: set[str] = set()
-    for motif in DEFAULT_FORBIDDEN_MOTIFS.values():
-        constrained_motifs.add(motif)
-        constrained_motifs.add(reverse_complement(motif))
-    constraints: list[Any] = [
-        EnforceGCContent(mini=0.30, maxi=0.70),
-        EnforceGCContent(
-            mini=LOCAL_GC_MIN,
-            maxi=LOCAL_GC_MAX,
-            window=LOCAL_GC_WINDOW_NT,
-        ),
-        *(AvoidPattern(motif) for motif in sorted(constrained_motifs)),
-        *(AvoidPattern(base * HOMOPOLYMER_LIMIT) for base in "ACGT"),
-    ]
-    problem = DnaOptimizationProblem(
-        normalized,
-        constraints=constraints,
-        objectives=[],
-        logger=None,
-    )
-    dnachisel_pass = problem.all_constraints_pass()
-    local_values = local_gc_values(normalized)
-    hits = motif_hits(normalized, DEFAULT_FORBIDDEN_MOTIFS)
-    checks = {
-        "valid_alphabet": True,
-        "global_gc_pass": 0.30 <= gc_fraction(normalized) <= 0.70,
-        "local_gc_pass": all(
-            LOCAL_GC_MIN <= value <= LOCAL_GC_MAX for value in local_values
-        ),
-        "forbidden_motif_pass": not hits,
-        "homopolymer_pass": (
-            max_homopolymer_length(normalized) < HOMOPOLYMER_LIMIT
-        ),
-        "dnachisel_constraints_pass": dnachisel_pass,
-    }
-    return {
-        "engine": "DNA Chisel",
-        "engine_version": version("dnachisel"),
-        "gate_status": "PASS" if all(checks.values()) else "FAIL",
-        "sequence_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
-        "length_nt": len(normalized),
-        "gc_percent": round(100.0 * gc_fraction(normalized), 8),
-        "local_gc_min_percent": (
-            round(100.0 * min(local_values), 8) if local_values else None
-        ),
-        "local_gc_max_percent": (
-            round(100.0 * max(local_values), 8) if local_values else None
-        ),
-        "forbidden_site_hits": hits,
-        "max_homopolymer": max_homopolymer_length(normalized),
-        "checks": checks,
-        "failed_checks": [name for name, passed in checks.items() if not passed],
-    }
+def _audit_sequence(sequence: str, enzymes=()) -> dict[str, Any]:
+    return audit_expression_sequence(sequence, enzymes)
 
 
 def _rank_role_candidates(
@@ -438,6 +369,7 @@ def _cassette_candidates(
     shortlists: dict[str, list[PartCandidate]],
     predictions: dict[tuple[int, str, str], RbsPrediction],
     limit: int,
+    enzymes=(),
 ) -> list[dict[str, Any]]:
     promoter_options = _rank_role_candidates(
         candidates,
@@ -538,7 +470,7 @@ def _cassette_candidates(
         if raw_signature in seen_final:
             continue
         seen_final.add(raw_signature)
-        audit = _audit_sequence(selected["sequence"] + terminator.sequence)
+        audit = _audit_sequence(selected["sequence"] + terminator.sequence, enzymes)
         if audit["gate_status"] != "PASS":
             continue
         part_hashes = (
@@ -631,6 +563,7 @@ def _whole_design_candidates(
             shortlists=shortlists,
             predictions=predictions,
             limit=cassette_limit,
+            enzymes=context.restriction_enzymes,
         )
         expanded = (
             _combine_design_candidate(beam, cassette_candidate)

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from src.protein_to_cds.restriction_sites import normalize_enzymes
 from src.write_manifest.store import read_design_manifest
 
 
@@ -504,6 +505,14 @@ def _apply_draft(
                 terminator_count += 1
             if promoter is not None or raw_rbs or terminator is not None:
                 cassette["状态"] = "表达元件部分设置"
+            enzymes = normalize_enzymes(manifest.get("cds_selection", {}).get("restriction_enzymes"))
+            audit = raw.get("restriction_site_audit")
+            if isinstance(audit, Mapping) and audit.get("enzymes") == enzymes and enzymes:
+                cassette["限制酶检查"] = {"状态": "通过" if audit.get("passed") else "发现冲突",
+                                       "禁止位点数": audit.get("site_count"), "位点": audit.get("sites", [])}
+            elif enzymes:
+                complete = promoter is not None and terminator is not None and set(raw_rbs) == set(expected_accessions)
+                cassette["限制酶检查"] = {"状态": "需重新检查" if complete else "元件未齐全", "位点": []}
         result["表达元件草稿"] = {
             "状态": str(draft.get("status") or "partial"),
             "已上传启动子数": promoter_count,
@@ -843,6 +852,12 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
                 f"{audit.get('状态')}｜长度 {_length(audit.get('长度_nt'), 'bp')}｜"
                 f"GC {audit.get('GC百分比') if audit.get('GC百分比') is not None else '-'}%"
             )
+        restriction = cassette.get("限制酶检查")
+        if isinstance(restriction, Mapping):
+            lines.append(f"完整表达盒限制酶检查：{restriction['状态']}")
+            for site in restriction.get("位点", []):
+                components = "、".join(site.get("components", []))
+                lines.append(f"- {site['enzyme']} {site['start_1based']}:{site['end_1based']}｜涉及元件 {components}")
 
     construct = result.get("完整表达构建")
     if isinstance(construct, Mapping):

@@ -344,8 +344,8 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
             )
             if direct_cds_accessions:
                 warnings.append(
-                    "user-uploaded CDS sequences skipped codon optimization and "
-                    "CDS validation: " + ", ".join(direct_cds_accessions)
+                    "user-uploaded CDS sequences are preserved as raw and optimized working copies; "
+                    "no automatic optimization, encoding validation is required before editing: " + ", ".join(direct_cds_accessions)
                 )
         else:
             source = auxiliary.get("source")

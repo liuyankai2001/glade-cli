@@ -12,6 +12,7 @@ from typing import Any
 
 from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.artifacts import raw_cds_metadata
+from src.protein_to_cds.restriction_sites import normalize_enzymes
 
 
 _HEADERS = ("蛋白 ID", "CDS 长度（nt）", "GC（%）", "CAI", "禁止位点数", "修改密码子数量")
@@ -44,6 +45,9 @@ def _directory(root: Path, path_value: Any) -> str | None:
 
 
 def _selected_site_count(metrics: Mapping[str, Any]) -> tuple[bool, int | None]:
+    audit = metrics.get("restriction_site_audit")
+    if isinstance(audit, Mapping) and audit.get("enzymes"):
+        return True, _number(audit.get("site_count"), integer=True)
     # Legacy forbidden_site_count includes built-in defaults, not a user selection.
     hits = metrics.get("user_forbidden_site_hits")
     if not isinstance(hits, Mapping) or not hits:
@@ -104,6 +108,8 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
     selection = _mapping(manifest["cds_selection"], "cds_selection")
     if selection.get("schema_version") != "protein_to_cds.selection.v2":
         raise ValueError("不支持的 cds_selection schema_version，请重新运行 protein-to-cds")
+    enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
+    result["限制酶"] = enzymes
     status = selection.get("status")
     if status not in _STATUS_LABELS:
         raise ValueError("cds_selection.status 无效")
@@ -142,7 +148,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             directory = _directory(root, optimized.get("path"))
             mode = optimized.get("processing_mode")
             is_optimized = (
-                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only"}
+                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only", "user_uploaded_cds", "dna_chisel_restriction_sites"}
                 and directory == str(root / "protein_to_cds" / "optimized_cds")
             )
             if not is_optimized:
@@ -152,6 +158,9 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             final = _mapping(metrics.get("final", {}), "optimized_cds.metrics.final")
         changes = _mapping(metrics.get("changes", {}), "optimized_cds.metrics.changes")
         sites_configured, site_count = _selected_site_count(final)
+        pending = bool(enzymes) and final.get("restriction_site_audit", {}).get("enzymes") != enzymes
+        if pending:
+            sites_configured, site_count = True, None
         result["CDS列表"].append({
             "蛋白ID": item["accession"],
             "直接使用": False,
@@ -162,6 +171,8 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             "禁止位点数": site_count,
             "修改密码子数量": None if show_raw else _number(changes.get("codon_change_count"), integer=True),
             "局部GC": metrics.get("local_gc") if not show_raw else None,
+            "限制酶待检查": pending,
+            "限制酶消除": metrics.get("restriction_sites") if not show_raw else None,
         })
         result["优化成功数"] += 1
         directory = _directory(root, selected.get("path"))
@@ -209,7 +220,7 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
         return str(result["提示"])
     show_raw = result.get("视图") == "raw"
     summary = (
-        f"原始 CDS（CodonTransformer，未经修正）：共 {result['总数']} 条"
+        f"原始 CDS（生成或上传，未经修正）：共 {result['总数']} 条"
         if show_raw else f"当前 CDS（optimized）：共 {result['总数']} 条｜无工作文件 {result['未优化数']} 条"
     )
     if result["失败数"]:
@@ -217,6 +228,8 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
     if result["跳过数"]:
         summary += f"｜跳过无对应阶段结果 {result['跳过数']} 条"
     lines = [summary]
+    if result.get("限制酶"):
+        lines.append("内部禁止限制酶：" + "、".join(result["限制酶"]))
     headers = _HEADERS[:5] if show_raw else _HEADERS
     rows = [
         [
@@ -238,6 +251,12 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
         lines.extend(["", render(headers), "-+-".join("-" * width for width in widths)])
         lines.extend(render(row) for row in rows)
     if not show_raw:
+        for item in result["CDS列表"]:
+            if item.get("限制酶待检查"):
+                lines.append(f"{_cell(item['蛋白ID'])} 限制酶位点：需重新检查，请执行 optimize --enzyme 指定酶名")
+            repair = item.get("限制酶消除")
+            if isinstance(repair, Mapping):
+                lines.append(f"{_cell(item['蛋白ID'])} 限制酶位点：{_metric(repair.get('input_count'))} → {_metric(repair.get('final_count'))}")
         for item in result["CDS列表"]:
             local = item.get("局部GC")
             if not isinstance(local, Mapping):

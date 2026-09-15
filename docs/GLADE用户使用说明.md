@@ -923,7 +923,7 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 
 - 主酶根据 manifest 中的 accession 读取本地缓存或从 UniProt 下载氨基酸序列；
 - 手动上传的氨基酸直接从项目快照读取，由 CodonTransformer 生成 CDS；
-- 手动上传的 CDS 保留上传快照，另存 optimized 工作副本并写入选择结果，标记跳过密码子优化；
+- 手动上传的 CDS 保留上传快照，同时保存 raw 原始副本、optimized 工作副本及来源报告；
 - 未添加辅助蛋白时，只处理主酶；
 - `protein-to-cds` 只运行 CodonTransformer，不自动运行 DNA Chisel 或额外的宿主密码子修正；
 - 模型生成的 CDS 必须保持翻译一致，并通过字符、长度、起止密码子和内部终止密码子检查；
@@ -931,7 +931,7 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 - 用户直接上传的 CDS 不经过密码子优化门禁。
 
 原有 `optimize_protein_cds` / `repair_cds` 修正能力仍保留，供后续独立编辑流程调用。
-独立的 `optimize` 命令用于用户指定的整体 GC 调整，不改变下游表达盒和组装阶段已有的序列检查规则。
+独立的 `optimize` 命令支持整体/局部 GC 调整和按用户选择的限制酶批量消除 CDS 内部识别位点。
 
 输出目录：
 
@@ -942,6 +942,8 @@ outputs/C00811/protein_to_cds/
 ├── raw_cds/<accession>.raw.fasta
 ├── optimized_cds/<accession>.fasta            # 当前工作文件，初始与 raw 序列相同
 ├── reports/<accession>.generation.json       # 当前生成报告
+├── reports/<accession>.uploaded.json         # 上传 CDS 来源及 raw 记录
+├── reports/<accession>.restriction_optimization.json # 禁止酶位点消除报告
 ├── reports/<accession>.optimization.json     # 以前的修正报告如已存在则保留
 └── run_summary.json
 ```
@@ -953,7 +955,9 @@ manifest 只登记当前 `optimized_cds` 的路径、哈希、长度、指标及
 raw 的路径、哈希及原始指标保存在报告中。初始工作副本标记
 `processing_mode=codon_transformer_only`、`constraint_repair_applied=false`，修改密码子数量为 0。
 再次成功执行 `protein-to-cds` 会以原始生成结果覆盖 optimized，即使命中模型生成缓存也会重置工作副本。
-手动上传的 CDS 同样保留上传原件并生成工作副本，不自动执行密码子或 GC 优化。
+手动上传的 CDS 同样保留上传原件，生成独立 raw、工作副本及来源报告，不自动执行 DNA Chisel。
+上传报告的 `status=IMPORTED` 表示保存成功；不完整或含非法字符的上传序列仍可保存，
+但执行编辑前必须通过完整 CDS 校验。上传和生成的有效 CDS 都支持 GC 与禁止酶位点编辑。
 报告顶层 `status=PASS` 表示生成及编码检查成功；指标中的 `gate_status` 仍是已有质量阈值的
 评估结果，即使为 `FAIL` 也不代表本次生成失败。重新生成成功且蛋白名单不变时，保留已选表达盒
 分组和上传元件，更新其 CDS 来源；旧 OSTIR 预测、表达盒检查、GenBank、质粒和组装记录失效。
@@ -972,7 +976,7 @@ python main.py info -i demo01.json --cds --raw
 
 `--cds` 显示已登记的 optimized 工作结果，包括模型生成后的初始副本；不要求先执行 GC 优化。
 六列为：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、修改密码子数量。
-`--cds --raw` 只显示 CodonTransformer 原始结果，保留前五列，不显示修改密码子数量。
+`--cds --raw` 显示生成或上传的原始 CDS，保留前五列，不显示修改密码子数量。
 `--raw` 不能与其他信息查看类型配合使用。表格下列出对应文件目录，GC 保留两位小数，CAI 保留四位小数。
 
 当前视图读取 manifest 中的当前指标，raw 视图读取报告中的原始指标；兼容旧 manifest 中的原始记录。
@@ -980,9 +984,11 @@ python main.py info -i demo01.json --cds --raw
 “禁止位点数”在用户尚未显式配置时显示“未配置”，旧报告中的默认 7 种酶不视为用户选择。
 当前通过 `protein-to-cds --forbidden-motif <序列>` 显式指定的 motif 会单独统计，后续 GC 优化沿用该选择；
 只统计所选 motif（含反向互补），已配置且未检出时显示 `0`，已配置但统计缺失时显示“未评估”。
+配置 `optimize --enzyme` 后，该列优先展示用户所选酶的独立位点数量；没有对应检查记录时显示
+“未评估”，并提示需重新检查。旧 `--forbidden-motif` 仍仅统计，不作为位点消除约束。
 旧结果没有明确选择记录时显示“未配置”，不从默认位点总数推断用户选择。
 修改密码子数量始终是当前优化序列与原始 raw 的净差异，不是各轮编辑次数之和。
-直接上传、没有模型原始输出或优化记录的 CDS 不混入相应表格；旧的已登记修正结果仍可查看。
+上传 CDS 同样进入 raw 和当前工作副本视图；缺少报告的旧上传结果需要重新运行 `protein-to-cds`。
 raw 视图会列出生成失败原因；没有工作文件时提示运行 `protein-to-cds`。
 该命令只展示 manifest 和报告中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
 
@@ -1003,9 +1009,10 @@ python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
 
 不传 `--window` 时，本次上下限用于整体 GC；DNA Chisel 保持长度、编码蛋白、起始及终止密码子
 不变，并尽量减少改动。若此前已经配置局部 GC，本次整体调整也必须同时满足该局部要求。
-全部有效 GC 约束已达标时直接保留序列；不自动执行 CAI、位点消除或同聚物修正。
+GC 调整同时满足 manifest 中已选择的限制酶禁止要求；只有 GC 和酶位点约束都达标才直接保留序列。
+不自动执行 CAI 或同聚物修正，未选择限制酶时不启用默认禁止酶。
 优化后独立复核精确 GC 数量，不用四舍五入后的显示值判定。不可满足时不放宽范围。
-CAI 和位点数等仍按现有口径统计，因此可能出现 CAI 下降或位点数非零。
+CAI 等指标继续统计，因此可能出现 CAI 下降；用户已选择酶的内部识别位点必须为零。
 
 成功后将该编号的当前 CDS 引用更新到新文件，保留表达盒分组及用户上传的启动子、RBS、终止子，
 清除旧 OSTIR 预测，并使依赖 CDS 的检查、元件组合和下游构建记录失效；上传快照不删除。
@@ -1039,6 +1046,43 @@ python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --wi
 优化命令和 `info --cds` 保留六列 CDS 表，追加已配置局部 GC 的窗口、范围、越界窗口前后数量，
 以及当前局部 GC 最小/最大值。raw 视图只显示原始指标，不显示当前局部编辑摘要。
 局部编辑成功后，同样保留有效表达盒分组和上传元件，清除旧预测并使下游构建记录失效。
+
+### 11.4 消除用户指定的限制酶识别位点
+
+```powershell
+python main.py optimize -i demo01.json --enzyme EcoRI HindIII
+```
+
+一次处理 manifest 当前全部待表达蛋白的 `optimized_cds`，包括上传 CDS，不固定条数。
+该批量模式不能与 `--cds`、`--gc-min`、`--gc-max` 或 `--window` 同次使用；已有整体、局部 GC 设置仍保留并满足。
+参数和库名均通过小写匹配，`ecori`、`ECORI` 和 `EcoRI` 等价，最终保存库中的标准名称。
+重复酶名自动去重，未知或没有可用识别序列的酶会报错。
+
+选择写入 `cds_selection.restriction_enzymes`，首次未选时为空，不启用默认七种酶。
+再次指定用新列表替换旧列表；后续单条 GC 调整沿用当前酶选择，防止重新引入禁止位点。
+以下命令取消酶禁止要求，不还原已经修改的 CDS：
+
+```powershell
+python main.py optimize -i demo01.json --enzyme none
+```
+
+DNA Chisel 通过同义替换保持长度、蛋白质和原始起止密码子，并尽量少改当前工作序列。
+上传 CDS 按遗传密码表 11 校验，允许该表合法起始密码子且保持原密码子不变；不完整、含内部终止
+或非法字符的 CDS 无法编辑。全部结果独立复核双链、简并和重叠识别位点以及精确 GC 要求。
+任何一条失败都不保存本次结果或酶选择；提交失败、来源或 manifest 变化也会回滚整批。
+
+每条报告保存为 `reports/<accession>.restriction_optimization.json`，包含各酶识别位点数量、
+从 1 开始的闭区间位置、方向、输入与输出校验值，以及相对 raw 和本次输入的修改量。
+CLI 共用 CDS 信息表，并展示位点数量前后变化；相同选择且全部当前产物仍满足要求时直接复用。
+成功更新保留表达盒分组与上传 parts，让旧预测和下游构建记录失效。
+
+重新运行 `protein-to-cds` 仍覆盖 optimized 并清除旧 GC 设置；保留酶选择，但消除状态需重新检查。
+后续完整表达盒检查读取同一份酶选择，检查启动子、RBS、CDS、终止子及元件连接处，冲突报告酶名、
+位置和相关元件，不自动修改上传 parts。克隆两端的有意位点在最终组装阶段处理；本命令不添加两端或改变克隆方法。
+
+手动上传元件齐全后，上传命令将该表达盒的禁止酶位点检查写入草稿，返回冲突位置；
+即使存在冲突，也保留本次上传结果。`info --expression-box` 显示酶名、位置及涉及的元件。
+CDS 编辑使草稿检查失效；再次上传对应元件时会使用当前 CDS 重新检查。
 
 ## 12. 表达盒分组
 
@@ -1346,6 +1390,7 @@ outputs/C00811/final_assembly/
 | 为表达盒 1 上传终止子 | `python main.py expression -i demo01.json --terminator 1 terminator_1.txt` |
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 | 调整单条 CDS 局部 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
+| 批量消除指定限制酶位点 | `python main.py optimize -i demo01.json --enzyme EcoRI HindIII` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
 候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号

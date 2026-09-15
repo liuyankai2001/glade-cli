@@ -34,6 +34,7 @@ class ExpressionPartsContext:
     host_labels: tuple[str, ...]
     input_fingerprint: str
     cassettes: tuple[ExpressionPartsCassette, ...]
+    restriction_enzymes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -146,6 +146,7 @@ def run_protein_to_cds(
             output_root / "optimized_cds" / f"{accession}.fasta",
             output_root / "protein_sequences" / f"{accession}.fasta",
             output_root / "reports" / f"{accession}.generation.json",
+            output_root / "reports" / f"{accession}.uploaded.json",
         ))
     with ArtifactTransaction(paths, lock_path=output_root / ".gc_optimization.lock") as transaction:
         return _run_batch(context, host, project_root, requested_device, motifs, transaction)

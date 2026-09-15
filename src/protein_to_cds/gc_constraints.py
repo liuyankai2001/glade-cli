@@ -48,11 +48,10 @@ def _range(value: Any) -> list[str]:
     return [percent_text(low), percent_text(high)]
 
 
-def effective_gc_settings(
-    previous: Mapping[str, Any], report: Mapping[str, Any],
-    low: Decimal, high: Decimal, window: int | None, length: int,
+def saved_gc_settings(
+    previous: Mapping[str, Any], report: Mapping[str, Any], length: int,
 ) -> dict[str, Any]:
-    """Replace one kind of constraint while keeping the other kind active."""
+    """Read explicit saved settings, without inventing a new GC constraint."""
     saved = previous.get("gc_settings", report.get("gc_settings"))
     settings = {}
     if saved is not None:
@@ -71,6 +70,17 @@ def effective_gc_settings(
             legacy = [request.get("gc_min"), request.get("gc_max")]
         if legacy is not None:
             settings["global"] = {"range_percent": _range(legacy)}
+    for name, setting in settings.items():
+        count_bounds(setting["range_percent"], length if name == "global" else setting["window_nt"])
+    return settings
+
+
+def effective_gc_settings(
+    previous: Mapping[str, Any], report: Mapping[str, Any],
+    low: Decimal, high: Decimal, window: int | None, length: int,
+) -> dict[str, Any]:
+    """Replace one kind of constraint while keeping the other kind active."""
+    settings = saved_gc_settings(previous, report, length)
     scope = "global" if window is None else "local"
     # Canonical decimal strings make 30 and 30.0 the same request.
     settings[scope] = {"range_percent": [percent_text(low), percent_text(high)]}

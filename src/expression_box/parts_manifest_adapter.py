@@ -18,6 +18,7 @@ from src.expression_box.parts_models import (
     ExpressionPartsContext,
 )
 from src.write_manifest.store import read_design_manifest
+from src.protein_to_cds.restriction_sites import normalize_enzymes
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -241,6 +242,9 @@ def load_expression_parts_context(
             for cassette in cassettes
         ],
     }
+    enzymes = normalize_enzymes(cds_selection.get("restriction_enzymes"))
+    if enzymes:
+        fingerprint_payload["restriction_enzymes"] = enzymes
     return ExpressionPartsContext(
         manifest_path=path,
         manifest_revision=revision,
@@ -253,6 +257,7 @@ def load_expression_parts_context(
         host_labels=host.milvus_host_labels,
         input_fingerprint=_stable_hash(fingerprint_payload),
         cassettes=cassettes,
+        restriction_enzymes=tuple(enzymes),
     )
 
 

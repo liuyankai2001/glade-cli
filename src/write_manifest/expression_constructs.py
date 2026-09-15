@@ -8,7 +8,6 @@ import tempfile
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -16,22 +15,10 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqFeature import FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
-from dnachisel import AvoidPattern, DnaOptimizationProblem, EnforceGCContent
 
+from src.expression_box.sequence_audit import audit_expression_sequence
 from src.expression_box.parts_models import ExpressionPartsContext
-from src.protein_to_cds.sequence_constraints import (
-    DEFAULT_FORBIDDEN_MOTIFS,
-    DNA_ALPHABET,
-    HOMOPOLYMER_LIMIT,
-    LOCAL_GC_MAX,
-    LOCAL_GC_MIN,
-    LOCAL_GC_WINDOW_NT,
-    gc_fraction,
-    local_gc_values,
-    max_homopolymer_length,
-    motif_hits,
-    reverse_complement,
-)
+from src.protein_to_cds.sequence_constraints import DNA_ALPHABET
 
 
 ASSEMBLED_EXPRESSION_CONSTRUCTS_SCHEMA_VERSION = (
@@ -53,72 +40,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def audit_expression_construct_sequence(sequence: str) -> dict[str, Any]:
-    """Apply the same hard sequence gates used by expression-parts design."""
-
-    normalized = str(sequence or "").strip().upper()
-    valid_alphabet = bool(normalized) and set(normalized).issubset(DNA_ALPHABET)
-    if not valid_alphabet:
-        return {
-            "engine": "DNA Chisel",
-            "engine_version": version("dnachisel"),
-            "gate_status": "FAIL",
-            "checks": {"valid_alphabet": False},
-            "failed_checks": ["valid_alphabet"],
-        }
-
-    constrained_motifs: set[str] = set()
-    for motif in DEFAULT_FORBIDDEN_MOTIFS.values():
-        constrained_motifs.add(motif)
-        constrained_motifs.add(reverse_complement(motif))
-    constraints: list[Any] = [
-        EnforceGCContent(mini=0.30, maxi=0.70),
-        EnforceGCContent(
-            mini=LOCAL_GC_MIN,
-            maxi=LOCAL_GC_MAX,
-            window=LOCAL_GC_WINDOW_NT,
-        ),
-        *(AvoidPattern(motif) for motif in sorted(constrained_motifs)),
-        *(AvoidPattern(base * HOMOPOLYMER_LIMIT) for base in "ACGT"),
-    ]
-    problem = DnaOptimizationProblem(
-        normalized,
-        constraints=constraints,
-        objectives=[],
-        logger=None,
-    )
-    local_values = local_gc_values(normalized)
-    hits = motif_hits(normalized, DEFAULT_FORBIDDEN_MOTIFS)
-    checks = {
-        "valid_alphabet": True,
-        "global_gc_pass": 0.30 <= gc_fraction(normalized) <= 0.70,
-        "local_gc_pass": all(
-            LOCAL_GC_MIN <= value <= LOCAL_GC_MAX for value in local_values
-        ),
-        "forbidden_motif_pass": not hits,
-        "homopolymer_pass": (
-            max_homopolymer_length(normalized) < HOMOPOLYMER_LIMIT
-        ),
-        "dnachisel_constraints_pass": problem.all_constraints_pass(),
-    }
-    return {
-        "engine": "DNA Chisel",
-        "engine_version": version("dnachisel"),
-        "gate_status": "PASS" if all(checks.values()) else "FAIL",
-        "sequence_sha256": _sha256_text(normalized),
-        "length_nt": len(normalized),
-        "gc_percent": round(100.0 * gc_fraction(normalized), 8),
-        "local_gc_min_percent": (
-            round(100.0 * min(local_values), 8) if local_values else None
-        ),
-        "local_gc_max_percent": (
-            round(100.0 * max(local_values), 8) if local_values else None
-        ),
-        "forbidden_site_hits": hits,
-        "max_homopolymer": max_homopolymer_length(normalized),
-        "checks": checks,
-        "failed_checks": [name for name, passed in checks.items() if not passed],
-    }
+def audit_expression_construct_sequence(sequence: str, enzymes=()) -> dict[str, Any]:
+    return audit_expression_sequence(sequence, enzymes)
 
 
 def _part_sequence(part: Mapping[str, Any], role: str) -> str:
@@ -372,12 +295,19 @@ def _build_record(
         )
 
     whole_sequence = "".join(sequence_chunks)
-    audit = audit_expression_construct_sequence(whole_sequence)
+    audit = audit_expression_construct_sequence(whole_sequence, context.restriction_enzymes)
     if audit.get("gate_status") != "PASS":
         failed = ", ".join(str(item) for item in audit.get("failed_checks", []))
+        conflicts = []
+        for site in audit.get("restriction_site_audit", {}).get("sites", []):
+            components = sorted({label for feature in features
+                                 if int(feature.location.start) < site["end_1based"]
+                                 and int(feature.location.end) >= site["start_1based"]
+                                 for label in feature.qualifiers.get("label", [])})
+            conflicts.append(f"{site['enzyme']} {site['start_1based']}:{site['end_1based']} ({', '.join(components)})")
         raise ValueError(
             f"expression-parts design {design_id} complete construct failed "
-            f"sequence safety checks: {failed or 'unknown'}"
+            f"sequence safety checks: {failed or 'unknown'}; " + "; ".join(conflicts)
         )
 
     record_id = f"{context.target_compound_id}_D{design_id:03d}"[:16]

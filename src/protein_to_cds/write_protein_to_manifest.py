@@ -24,6 +24,7 @@ from src.protein_to_cds.get_protein_selection_context import (
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
+from src.protein_to_cds.sequence_constraints import assess_uploaded_cds, uploaded_cds_protein
 from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS, cds_dependency_update
 
 CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v2"
@@ -40,7 +41,7 @@ class CompletedProteinCds:
 
 @dataclass(frozen=True, slots=True)
 class CompletedDirectCds:
-    """One user-supplied CDS that intentionally skipped optimization."""
+    """One user-supplied CDS to preserve as a baseline and editable working copy."""
 
     selected: SelectedProteinForCds
     cds_path: Path
@@ -291,6 +292,7 @@ def _validated_direct_cds_payload(
     direct: CompletedDirectCds,
     *,
     project_output_path: Path,
+    host: HostProfile,
 ) -> dict[str, Any]:
     selected = direct.selected
     path = direct.cds_path.resolve()
@@ -300,7 +302,25 @@ def _validated_direct_cds_payload(
             f"uploaded CDS changed during protein-to-CDS processing: {selected.accession}"
         )
     working_path = project_output_path / "protein_to_cds" / "optimized_cds" / f"{selected.accession}.fasta"
-    write_bytes_atomic(working_path, _dna_fasta(selected.accession, "user_uploaded_cds", sequence).encode("utf-8"))
+    raw_path = project_output_path / "protein_to_cds" / "raw_cds" / f"{selected.accession}.raw.fasta"
+    report_path = project_output_path / "protein_to_cds" / "reports" / f"{selected.accession}.uploaded.json"
+    fasta = _dna_fasta(selected.accession, "user_uploaded_cds", sequence).encode("utf-8")
+    metrics = {"sequence_sha256": _sha256_text(sequence), "length_nt": len(sequence)}
+    try:
+        metrics = assess_uploaded_cds(sequence, uploaded_cds_protein(sequence), host.codon_transformer_organism_id)
+    except ValueError as exc:
+        metrics["encoding_validation_error"] = str(exc)
+    write_bytes_atomic(raw_path, fasta)
+    write_bytes_atomic(working_path, fasta)
+    report = {
+        "schema_version": "protein_to_cds.uploaded_cds.v1", "status": "IMPORTED",
+        "processing_mode": "user_uploaded_cds", "additional_forbidden_motifs": [],
+        "source": {"path": _relative_path(project_output_path, path), "file_sha256": _sha256_file(path)},
+        "raw_cds": {"path": _relative_path(project_output_path, raw_path),
+                    "file_sha256": _sha256_file(raw_path), "sequence_sha256": _sha256_text(sequence), "length_nt": len(sequence)},
+        "raw": metrics, "final": metrics, "changes": {"codon_change_count": 0, "nucleotide_change_count": 0},
+    }
+    write_bytes_atomic(report_path, (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return {
         "accession": selected.accession,
         "roles": list(selected.roles),
@@ -320,7 +340,10 @@ def _validated_direct_cds_payload(
             "sequence_sha256": _sha256_text(sequence),
             "length_nt": len(sequence),
             "source_type": "user_uploaded",
-            "optimization_skipped": True,
+            "processing_mode": "user_uploaded_cds", "optimization_skipped": False,
+            "constraint_repair_applied": False, "quality_checks_enforced": False,
+            "report": {"path": _relative_path(project_output_path, report_path), "file_sha256": _sha256_file(report_path)},
+            "metrics": {"final": metrics, "changes": report["changes"]},
         },
     }
 
@@ -378,6 +401,7 @@ def _write_cds_selection_to_manifest(
         _validated_direct_cds_payload(
             item,
             project_output_path=project_root,
+            host=host,
         )
         for item in direct_cds
     ]
@@ -405,6 +429,7 @@ def _write_cds_selection_to_manifest(
         "generated_at": _utc_now(),
         "source_manifest_revision": context.manifest_revision,
         "source_fingerprint": context.source_fingerprint,
+        "restriction_enzymes": manifest.get("cds_selection", {}).get("restriction_enzymes", []),
         "source_selection": {
             "selected_solution_id": context.selected_solution_id,
             "selected_set_id": context.selected_set_id,
@@ -450,7 +475,11 @@ def write_cds_selection_to_manifest(
     """Publish current CDS references, restoring uploaded copies on failure."""
     direct_cds = tuple(direct_cds)
     root = Path(project_output_path).expanduser().resolve()
-    paths = [root / "protein_to_cds/optimized_cds" / f"{item.selected.accession}.fasta" for item in direct_cds]
+    paths = [root / "protein_to_cds" / directory / filename
+             for item in direct_cds
+             for directory, filename in (("optimized_cds", f"{item.selected.accession}.fasta"),
+                                         ("raw_cds", f"{item.selected.accession}.raw.fasta"),
+                                         ("reports", f"{item.selected.accession}.uploaded.json"))]
     with ArtifactTransaction(paths) as transaction:
         result = _write_cds_selection_to_manifest(
             context=context, host=host, project_output_path=root,
