@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -22,6 +23,7 @@ from src.protein_to_cds.codon_optimization import (
 from src.protein_to_cds.config import CDS_CONSTRAINT_CONFIG, HostProfile
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.protein_to_cds.sequence_constraints import CdsConstraintError, assess_generated_cds, sha256_text
+from src.protein_to_cds.artifacts import ArtifactTransaction
 
 GENERATION_SCHEMA_VERSION = "protein_to_cds.generation.v1"
 GENERATION_MODE = "codon_transformer_only"
@@ -37,9 +39,8 @@ def generate_protein_cds(
 ) -> CdsOptimizationResult:
     """Generate an unchanged CDS; quality metrics are advisory, not acceptance gates.
 
-    The legacy result's ``final``/``optimized`` fields point to the raw output so
-    downstream readers can continue using the current CDS-selection schema.
-    Existing repair reports and optimized FASTA files are left untouched.
+    Every successful call resets a separate optimized working file, including
+    calls which reuse the immutable model-generation cache.
     """
     if protein.primary_accession != protein.requested_accession:
         raise CdsOptimizationError("UniProt redirected the manifest accession")
@@ -60,6 +61,7 @@ def generate_protein_cds(
     })
     root = Path(output_dir).expanduser().resolve()
     raw_path = root / "raw_cds" / f"{protein.primary_accession}.raw.fasta"
+    optimized_path = root / "optimized_cds" / f"{protein.primary_accession}.fasta"
     report_path = root / "reports" / f"{protein.primary_accession}.generation.json"
     report: dict[str, Any] | None = None
     sequence = ""
@@ -82,6 +84,10 @@ def generate_protein_cds(
                 and candidate.get("changes", {}).get("nucleotide_change_count") == 0
                 and candidate.get("protein", {}).get("sequence_sha256") == protein.sequence_sha256
                 and candidate.get("host", {}).get("codon_transformer_organism_id") == host.codon_transformer_organism_id
+                and (
+                    not candidate.get("raw_cds", {}).get("file_sha256")
+                    or candidate["raw_cds"]["file_sha256"] == hashlib.sha256(raw_path.read_bytes()).hexdigest()
+                )
                 and all(
                     candidate.get(stage, {}).get(key) == value
                     for stage in ("raw", "final") for key, value in audit.items()
@@ -95,14 +101,12 @@ def generate_protein_cds(
     if report is None:
         try:
             sequence, device_name = predict_cds_sequence(protein, host, device)
-            _write_atomic(
-                raw_path, _dna_fasta(protein.primary_accession, "codon_transformer_raw", sequence)
-            )
             audit = assess_generated_cds(
                 sequence, protein.sequence, host.codon_transformer_organism_id, motifs
             )
         except Exception as exc:
-            _write_json_atomic(report_path, {
+            failure_path = report_path.with_name(f"{protein.primary_accession}.generation.failed.json") if report_path.exists() else report_path
+            _write_json_atomic(failure_path, {
                 "schema_version": GENERATION_SCHEMA_VERSION,
                 "processing_mode": GENERATION_MODE,
                 "status": "FAIL",
@@ -142,7 +146,19 @@ def generate_protein_cds(
                 "codon_change_count": 0, "codon_change_fraction": 0.0,
             },
         }
+    with ArtifactTransaction((raw_path, optimized_path, report_path)) as transaction:
+        if not reused:
+            _write_atomic(raw_path, _dna_fasta(protein.primary_accession, "codon_transformer_raw", sequence))
+        report["raw_cds"] = {
+            "path": f"protein_to_cds/raw_cds/{protein.primary_accession}.raw.fasta",
+            "file_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "sequence_sha256": sha256_text(sequence),
+            "length_nt": len(sequence),
+        }
+        report["final"]["sequence_path"] = optimized_path.relative_to(root).as_posix()
+        _write_atomic(optimized_path, _dna_fasta(protein.primary_accession, "optimized_cds", sequence))
         _write_json_atomic(report_path, report)
+        transaction.commit()
     return CdsOptimizationResult(
         accession=protein.primary_accession,
         protein_sequence_sha256=protein.sequence_sha256,
@@ -154,7 +170,7 @@ def generate_protein_cds(
         raw_sequence_sha256=sha256_text(sequence),
         final_sequence_sha256=sha256_text(sequence),
         raw_fasta_path=raw_path,
-        optimized_fasta_path=raw_path,
+        optimized_fasta_path=optimized_path,
         report_path=report_path,
         report=report,
         reused_existing=reused,

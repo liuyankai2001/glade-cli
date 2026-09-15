@@ -25,6 +25,7 @@ from src.protein_to_cds.sequence_constraints import (
 from src.protein_to_cds.write_protein_to_manifest import CDS_SELECTION_DOWNSTREAM_SECTIONS
 from src.write_manifest.cds_optimization import commit_cds_optimization
 from src.write_manifest.store import read_design_manifest
+from src.protein_to_cds.artifacts import raw_cds_metadata
 
 GC_MODE = "dna_chisel_gc_only"
 GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v1"
@@ -144,10 +145,14 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     if len(matches) != 1:
         raise ValueError(f"当前 CDS 结果中未找到唯一编号 {accession}")
     item = matches[0]
-    raw_meta = item.get("raw_cds")
-    if not isinstance(raw_meta, dict) or not raw_meta.get("sequence_sha256"):
+    previous = item.get("optimized_cds", {})
+    if previous.get("optimization_skipped") is True:
         raise ValueError(f"{accession} 没有 CodonTransformer 原始 CDS；直接上传 CDS 暂不支持此命令")
     guards: dict[Path, bytes | None] = {manifest_path: manifest_path.read_bytes()}
+    source_report = _read_report(root, previous.get("report", {}), guards)
+    raw_meta = raw_cds_metadata(item, source_report)
+    if not isinstance(raw_meta, dict) or not raw_meta.get("sequence_sha256"):
+        raise ValueError(f"{accession} 没有 CodonTransformer 原始 CDS；直接上传 CDS 暂不支持此命令")
     raw_path, raw = _read_record(root, raw_meta, accession, guards)
     if not raw_path.is_relative_to(root / "protein_to_cds/raw_cds"):
         raise ValueError("原始 CDS 必须位于当前项目的 raw_cds 目录")
@@ -155,8 +160,6 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     organism_id = int(selection.get("host", {}).get("codon_transformer_organism_id", 0))
     if not organism_id:
         raise ValueError("CDS 结果缺少宿主信息")
-    previous = item.get("optimized_cds", {})
-    source_report = _read_report(root, previous.get("report", {}), guards)
     extras = source_report.get("additional_forbidden_motifs")
     if extras is None:
         extras = [v for k, v in source_report.get("constraints", {}).get("forbidden_motifs", {}).items() if k not in DEFAULT_FORBIDDEN_MOTIFS]
@@ -169,11 +172,20 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     report_path = _path(root, f"protein_to_cds/reports/{accession}.gc_optimization.json")
     guards.setdefault(output, output.read_bytes() if output.exists() else None)
     guards.setdefault(report_path, report_path.read_bytes() if report_path.exists() else None)
-    source_path, source_sequence = raw_path, raw
-    if output.exists():
-        if previous.get("processing_mode") != GC_MODE or _path(root, previous.get("path")) != output:
-            raise ValueError("已有优化文件来源不明或不是当前版本，不能覆盖；请检查文件与 manifest")
-        source_path, source_sequence = _read_record(root, previous, accession, guards)
+    current_path = _path(root, previous.get("path"))
+    if not current_path.is_file():
+        raise ValueError("已登记的优化文件缺失，请重新运行 protein-to-cds")
+    source_path, source_sequence = _read_record(root, previous, accession, guards)
+    mode = previous.get("processing_mode")
+    if not source_path.is_relative_to(root / "protein_to_cds/optimized_cds"):
+        # Only legacy generation records may still point at raw. Never edit it.
+        if mode != "codon_transformer_only" or source_path != raw_path:
+            raise ValueError("当前 CDS 不在 optimized_cds 目录，请重新运行 protein-to-cds")
+    if output.exists() and source_path != output:
+        raise ValueError("已有优化文件来源不明，不能覆盖；请检查文件与 manifest")
+    if source_report.get("final", {}).get("sequence_sha256") != sha256_text(source_sequence):
+        raise ValueError("当前优化文件与来源报告不一致，不能继续编辑")
+    if mode == GC_MODE:
         if (
             source_report.get("schema_version") != GC_REPORT_SCHEMA
             or _path(root, previous.get("report", {}).get("path")) != report_path
@@ -182,8 +194,8 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
             or source_report.get("final", {}).get("sequence_sha256") != sha256_text(source_sequence)
         ):
             raise ValueError("已有优化文件与当前 raw 来源不一致，不能继续编辑")
-    elif report_path.exists() or previous.get("processing_mode") == GC_MODE:
-        raise ValueError("已登记的优化文件缺失或优化报告孤立，不能自动从 raw 重建")
+    elif mode not in {None, "codon_transformer_only", "codon_transformer_and_repair"}:
+        raise ValueError("不支持当前 CDS 的处理方式")
     input_audit = assess_generated_cds(source_sequence, protein, organism_id, extras)
     if len(source_sequence) != len(raw) or source_sequence[:3] != raw[:3] or source_sequence[-3:] != raw[-3:]:
         raise ValueError("已有优化序列的长度或起止密码子与 raw 不一致")
@@ -203,6 +215,8 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         and lower <= _gc_count(source_sequence) <= upper
         and source_report.get("raw", {}).get("user_forbidden_site_hits") == raw_audit["user_forbidden_site_hits"]
         and source_report.get("final", {}).get("user_forbidden_site_hits") == input_audit["user_forbidden_site_hits"]
+        and source_path == output
+        and not any("raw_cds" in row or "raw" in row.get("optimized_cds", {}).get("metrics", {}) for row in selection["proteins"])
     ):
         return {"accession": accession, "reused_existing": True, "output_path": str(output)}
     seed = int(sha256_text(json.dumps(request, sort_keys=True) + sha256_text(source_sequence))[:8], 16)
@@ -214,6 +228,8 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         raise ValueError("优化结果的精确 GC 含量未达到用户范围，未保存")
     changes = _changes(raw, final)
     output_relative = output.relative_to(root).as_posix()
+    baseline = copy.deepcopy(previous.get("metrics", {}).get("raw") or source_report.get("raw") or raw_audit)
+    baseline["user_forbidden_site_hits"] = raw_audit["user_forbidden_site_hits"]
     report = {
         "schema_version": GC_REPORT_SCHEMA, "processing_mode": GC_MODE, "status": "PASS",
         "request": request, "deterministic_seed": seed,
@@ -226,16 +242,14 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         "additional_forbidden_motifs": extras,
         "enforced_checks": ["encoding_identity", "start_stop_unchanged", "global_gc"],
         "gc_validation": {"minimum_count": lower, "maximum_count": upper, "observed_count": _gc_count(final)},
-        "raw": raw_audit, "input": input_audit, "final": final_audit,
+        "raw_cds": raw_meta,
+        "raw": baseline, "input": input_audit, "final": final_audit,
         "changes": changes, "changes_from_input": _changes(source_sequence, final),
     }
     report_bytes = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     fasta = (f">{accession} gc_optimized\n" + "\n".join(final[i:i + 80] for i in range(0, length, 80)) + "\n").encode("utf-8")
     updated = copy.deepcopy(selection)
     updated_item = next(row for row in updated["proteins"] if row["accession"].upper() == accession)
-    # The raw metrics are a stable baseline for --raw, even after repeated edits.
-    baseline = copy.deepcopy(previous.get("metrics", {}).get("raw") or raw_audit)
-    baseline["user_forbidden_site_hits"] = raw_audit["user_forbidden_site_hits"]
     updated_item["optimized_cds"] = {
         "path": output_relative, "file_sha256": hashlib.sha256(fasta).hexdigest(),
         "sequence_sha256": sha256_text(final), "length_nt": length,
@@ -243,14 +257,45 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         "processing_mode": GC_MODE, "constraint_repair_applied": True,
         "optimization_skipped": False, "enforced_checks": report["enforced_checks"],
         "quality_checks_enforced": False, "gc_range_percent": [str(low), str(high)],
-        "source_raw_sequence_sha256": sha256_text(raw),
-        "metrics": {"raw": baseline, "final": final_audit, "changes": changes},
+        "metrics": {"final": final_audit, "changes": changes},
     }
+    files = {output: fasta, report_path: report_bytes}
+    for row in updated["proteins"]:
+        current = row["optimized_cds"]
+        # Moving legacy raw metadata out of the manifest must also preserve
+        # other proteins' baselines and give every current reference a copy.
+        if row is not updated_item:
+            reference = current.get("report", {})
+            if "raw_cds" in row and reference.get("path"):
+                legacy_report = _read_report(root, reference, guards)
+                if "raw_cds" not in legacy_report:
+                    legacy_report["raw_cds"] = row["raw_cds"]
+                    content = (json.dumps(legacy_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                    files[_path(root, reference["path"])] = content
+                    reference["file_sha256"] = hashlib.sha256(content).hexdigest()
+            path = _path(root, current.get("path"))
+            if not path.is_relative_to(root / "protein_to_cds/optimized_cds"):
+                if current.get("optimization_skipped") is not True and (
+                    current.get("processing_mode") != "codon_transformer_only"
+                    or path != root / "protein_to_cds/raw_cds" / f"{row['accession']}.raw.fasta"
+                ):
+                    raise ValueError("旧 CDS 当前引用来源不明，请重新运行 protein-to-cds")
+                _read_record(root, current, row["accession"], guards)
+                working = _path(root, f"protein_to_cds/optimized_cds/{row['accession']}.fasta")
+                if working.exists():
+                    raise ValueError("已有优化文件来源不明，不能覆盖；请检查文件与 manifest")
+                guards[working] = None
+                files[working] = guards[path]
+                current["path"] = working.relative_to(root).as_posix()
+                current["file_sha256"] = hashlib.sha256(files[working]).hexdigest()
+        row.pop("raw_cds", None)
+        current.get("metrics", {}).pop("raw", None)
+        current.pop("source_raw_sequence_sha256", None)
     commit_cds_optimization(
         manifest_path=manifest_path, project_root=root, target=config.target_name,
         revision=int(manifest.get("revision", 0)), selection=updated,
         discard_sections=CDS_SELECTION_DOWNSTREAM_SECTIONS,
-        files={output: fasta, report_path: report_bytes}, guards=guards,
+        files=files, guards=guards,
     )
     return {"accession": accession, "reused_existing": False, "output_path": str(output)}
 

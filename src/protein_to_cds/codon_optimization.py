@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from src.protein_to_cds.artifacts import ArtifactTransaction
 
 from src.protein_to_cds.config import (
     CDS_CONSTRAINT_CONFIG,
@@ -287,7 +288,7 @@ def predict_cds_sequence(
     return normalize_dna(output.predicted_dna), device_name
 
 
-def optimize_protein_cds(
+def _optimize_protein_cds(
     protein: ProteinSequenceRecord,
     host: HostProfile,
     output_dir: str | Path,
@@ -322,7 +323,7 @@ def optimize_protein_cds(
     )
     root = Path(output_dir).expanduser().resolve()
     raw_path = root / "raw_cds" / f"{protein.primary_accession}.raw.fasta"
-    final_path = root / "optimized_cds" / f"{protein.primary_accession}.optimized.fasta"
+    final_path = root / "optimized_cds" / f"{protein.primary_accession}.fasta"
     report_path = root / "reports" / f"{protein.primary_accession}.optimization.json"
     cached = _load_cached_result(
         protein=protein,
@@ -343,8 +344,9 @@ def optimize_protein_cds(
                 protein.primary_accession, "codon_transformer_raw", raw_sequence
             ),
         )
+        _write_atomic(final_path, _dna_fasta(protein.primary_accession, "optimized_cds", raw_sequence))
         repair = repair_cds(
-            initial_sequence=raw_sequence,
+            initial_sequence=_read_dna_fasta(final_path),
             protein_sequence=protein.sequence,
             organism_id=host.codon_transformer_organism_id,
             accession=protein.primary_accession,
@@ -404,6 +406,12 @@ def optimize_protein_cds(
             "device": device_name,
         },
         "constraint_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
+        "raw_cds": {
+            "path": f"protein_to_cds/raw_cds/{protein.primary_accession}.raw.fasta",
+            "file_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "sequence_sha256": sha256_text(raw_sequence),
+            "length_nt": len(raw_sequence),
+        },
         "raw": {
             **repair["initial"],
             "sequence_path": raw_path.relative_to(root).as_posix(),
@@ -438,6 +446,27 @@ def optimize_protein_cds(
         report=report,
         reused_existing=False,
     )
+
+
+def optimize_protein_cds(
+    protein: ProteinSequenceRecord, host: HostProfile, output_dir: str | Path,
+    *, device: str = "auto", additional_forbidden_motifs: Iterable[str] = (),
+) -> CdsOptimizationResult:
+    """Generate a baseline and repair its working copy, restoring on failure."""
+    root = Path(output_dir).expanduser().resolve()
+    accession = protein.primary_accession
+    paths = (
+        root / "raw_cds" / f"{accession}.raw.fasta",
+        root / "optimized_cds" / f"{accession}.fasta",
+        root / "reports" / f"{accession}.optimization.json",
+    )
+    with ArtifactTransaction(paths) as transaction:
+        result = _optimize_protein_cds(
+            protein, host, root, device=device,
+            additional_forbidden_motifs=additional_forbidden_motifs,
+        )
+        transaction.commit()
+        return result
 
 
 def clear_model_cache() -> None:

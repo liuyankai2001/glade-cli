@@ -923,7 +923,7 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 
 - 主酶根据 manifest 中的 accession 读取本地缓存或从 UniProt 下载氨基酸序列；
 - 手动上传的氨基酸直接从项目快照读取，由 CodonTransformer 生成 CDS；
-- 手动上传的 CDS 直接写入选择结果，并标记跳过优化；
+- 手动上传的 CDS 保留上传快照，另存 optimized 工作副本并写入选择结果，标记跳过密码子优化；
 - 未添加辅助蛋白时，只处理主酶；
 - `protein-to-cds` 只运行 CodonTransformer，不自动运行 DNA Chisel 或额外的宿主密码子修正；
 - 模型生成的 CDS 必须保持翻译一致，并通过字符、长度、起止密码子和内部终止密码子检查；
@@ -940,7 +940,7 @@ outputs/C00811/protein_to_cds/
 ├── uploaded_sequences/manifest_revision_*/<id>.<type>.fasta
 ├── protein_sequences/<accession>.fasta
 ├── raw_cds/<accession>.raw.fasta
-├── optimized_cds/<accession>.optimized.fasta  # 以前的修正产物如已存在则保留
+├── optimized_cds/<accession>.fasta            # 当前工作文件，初始与 raw 序列相同
 ├── reports/<accession>.generation.json       # 当前生成报告
 ├── reports/<accession>.optimization.json     # 以前的修正报告如已存在则保留
 └── run_summary.json
@@ -948,9 +948,12 @@ outputs/C00811/protein_to_cds/
 
 运行结果整体写入 manifest 的 `cds_selection`：
 
-为兼容现有读取接口，`optimized_cds` 字段指向当前使用的模型原始 FASTA（`raw_cds` 目录），
-并标记 `processing_mode=codon_transformer_only`、`constraint_repair_applied=false`。
-原始序列与当前序列相同，修改密码子数量为 0。生成缓存与修正缓存分开，不复用旧的修正结果。
+模型生成成功后同时保存独立的 raw 和 optimized 两份 FASTA，所有后续编辑只操作 optimized。
+manifest 只登记当前 `optimized_cds` 的路径、哈希、长度、指标及报告引用，不再保存 `raw_cds` 字段；
+raw 的路径、哈希及原始指标保存在报告中。初始工作副本标记
+`processing_mode=codon_transformer_only`、`constraint_repair_applied=false`，修改密码子数量为 0。
+再次成功执行 `protein-to-cds` 会以原始生成结果覆盖 optimized，即使命中模型生成缓存也会重置工作副本。
+手动上传的 CDS 同样保留上传原件并生成工作副本，不自动执行密码子或 GC 优化。
 报告顶层 `status=PASS` 表示生成及编码检查成功；指标中的 `gate_status` 仍是已有质量阈值的
 评估结果，即使为 `FAIL` 也不代表本次生成失败。重新生成成功后，现有下游结果按原规则失效。
 
@@ -965,20 +968,21 @@ python main.py info -i demo01.json --cds
 python main.py info -i demo01.json --cds --raw
 ```
 
-`--cds` 只显示已登记的优化结果，不回退显示模型原始序列。六列为：蛋白 ID、CDS 长度（nt）、
-GC（%）、CAI、禁止位点数、修改密码子数量。只有部分蛋白已优化时，只列出这些蛋白并显示未优化数量。
+`--cds` 显示已登记的 optimized 工作结果，包括模型生成后的初始副本；不要求先执行 GC 优化。
+六列为：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、修改密码子数量。
 `--cds --raw` 只显示 CodonTransformer 原始结果，保留前五列，不显示修改密码子数量。
 `--raw` 不能与其他信息查看类型配合使用。表格下列出对应文件目录，GC 保留两位小数，CAI 保留四位小数。
 
-两种视图分别读取原始和优化后指标，缺失指标显示“未评估”，不使用另一阶段的数值代替。
+当前视图读取 manifest 中的当前指标，raw 视图读取报告中的原始指标；兼容旧 manifest 中的原始记录。
+缺失指标显示“未评估”，不使用另一阶段的数值代替。
 “禁止位点数”在用户尚未显式配置时显示“未配置”，旧报告中的默认 7 种酶不视为用户选择。
 当前通过 `protein-to-cds --forbidden-motif <序列>` 显式指定的 motif 会单独统计，后续 GC 优化沿用该选择；
 只统计所选 motif（含反向互补），已配置且未检出时显示 `0`，已配置但统计缺失时显示“未评估”。
 旧结果没有明确选择记录时显示“未配置”，不从默认位点总数推断用户选择。
 修改密码子数量始终是当前优化序列与原始 raw 的净差异，不是各轮编辑次数之和。
 直接上传、没有模型原始输出或优化记录的 CDS 不混入相应表格；旧的已登记修正结果仍可查看。
-raw 视图会列出生成失败原因；没有优化结果时提示运行 `optimize`。
-该命令只展示 manifest 中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
+raw 视图会列出生成失败原因；没有工作文件时提示运行 `protein-to-cds`。
+该命令只展示 manifest 和报告中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
 
 ### 11.2 单独调整整体 GC
 
@@ -989,10 +993,11 @@ python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
 一次处理一个蛋白编号；上下限均必填，单位是百分比，要求 `0 <= gc-min <= gc-max <= 100`。
 40～60 仅为使用示例，不是程序默认范围或大肠杆菌的统一最佳范围。
 
-首次从 `protein_to_cds/raw_cds/P21683.raw.fasta` 建立副本，优化结果固定保存为
-`protein_to_cds/optimized_cds/P21683.fasta`。之后每次从这份优化文件继续编辑，raw 始终不变。
-原有 `P21683.optimized.fasta` 不自动迁移或覆盖，新固定文件不存在时从 raw 开始。
-已有固定优化文件必须与 manifest、原始序列及报告来源匹配；文件缺失、外部修改或 raw 来源变化时会报错。
+每次从 manifest 登记的当前 optimized 工作文件继续编辑，结果保存为
+`protein_to_cds/optimized_cds/P21683.fasta`，raw 始终不变。
+旧 manifest 尚指向 raw 时，在首次编辑时建立独立工作副本；已登记的旧优化序列继续作为输入，
+原有 `P21683.optimized.fasta` 文件保留。当前文件缺失、外部修改或 raw 来源变化时会报错，
+不会静默从 raw 重建；重新执行 `protein-to-cds` 可覆盖重建工作文件。
 
 DNA Chisel 只调整整体 GC，保持长度、编码蛋白、起始及终止密码子不变，并尽量减少改动。
 当前 GC 已达标时直接保留序列；不自动执行局部 GC、CAI、位点消除或同聚物修正。

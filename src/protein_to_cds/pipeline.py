@@ -15,8 +15,9 @@ from src.protein_to_cds.codon_optimization import (
     normalize_forbidden_motifs,
 )
 from src.protein_to_cds.codon_generation import GENERATION_MODE, generate_protein_cds
-from src.protein_to_cds.config import host_profile_for_chassis
-from src.protein_to_cds.get_protein_selection_context import get_proteins_for_cds
+from src.protein_to_cds.artifacts import ArtifactTransaction
+from src.protein_to_cds.config import HostProfile, host_profile_for_chassis
+from src.protein_to_cds.get_protein_selection_context import ProteinToCdsContext, get_proteins_for_cds
 from src.protein_to_cds.search_protein_sequence import (
     load_uploaded_protein_sequence,
     search_protein_sequence,
@@ -135,6 +136,25 @@ def run_protein_to_cds(
         (motif_values,) if isinstance(motif_values, str) else tuple(motif_values)
     )
     motifs = normalize_forbidden_motifs(motif_items)
+
+    output_root = project_root / "protein_to_cds"
+    paths = [output_root / "run_summary.json"]
+    for selected in context.proteins:
+        accession = selected.accession
+        paths.extend((
+            output_root / "raw_cds" / f"{accession}.raw.fasta",
+            output_root / "optimized_cds" / f"{accession}.fasta",
+            output_root / "protein_sequences" / f"{accession}.fasta",
+            output_root / "reports" / f"{accession}.generation.json",
+        ))
+    with ArtifactTransaction(paths, lock_path=output_root / ".gc_optimization.lock") as transaction:
+        return _run_batch(context, host, project_root, requested_device, motifs, transaction)
+
+
+def _run_batch(
+    context: ProteinToCdsContext, host: HostProfile, project_root: Path,
+    requested_device: str, motifs: tuple[str, ...], transaction: ArtifactTransaction,
+) -> dict[str, Any]:
 
     output_root = project_root / "protein_to_cds"
     protein_sequence_dir = output_root / "protein_sequences"
@@ -293,6 +313,7 @@ def run_protein_to_cds(
         _write_json_atomic(summary_path, summary)
         raise
 
+    transaction.commit()
     summary["manifest_written"] = True
     summary["manifest_revision"] = manifest_result["manifest_revision"]
     _write_json_atomic(summary_path, summary)

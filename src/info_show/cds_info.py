@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import unicodedata
 from collections.abc import Mapping
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.write_manifest.store import read_design_manifest
+from src.protein_to_cds.artifacts import raw_cds_metadata
 
 
 _HEADERS = ("蛋白 ID", "CDS 长度（nt）", "GC（%）", "CAI", "禁止位点数", "修改密码子数量")
@@ -51,6 +54,24 @@ def _selected_site_count(metrics: Mapping[str, Any]) -> tuple[bool, int | None]:
     return True, sum(counts)
 
 
+def _raw_view(root: Path, item: Mapping[str, Any], optimized: Mapping[str, Any]):
+    """Read baseline metadata/metrics without recalculating or editing DNA."""
+    reference = optimized.get("report", {})
+    report = {}
+    if isinstance(reference, Mapping) and reference.get("path"):
+        _directory(root, reference["path"])
+        path = (root / reference["path"]).resolve()
+        if path.is_file():
+            content = path.read_bytes()
+            if reference.get("file_sha256") and hashlib.sha256(content).hexdigest() != reference["file_sha256"]:
+                raise ValueError("CDS 报告与来源记录不一致")
+            report = _mapping(json.loads(content), "CDS 报告")
+    metadata = raw_cds_metadata(item, report)
+    # Legacy manifests contained baseline metrics rather than report metadata.
+    metrics = report.get("raw", optimized.get("metrics", {}).get("raw", {}))
+    return metadata, _mapping(metrics, "raw 指标")
+
+
 def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]:
     """Read one stage only, without falling back to the other stage."""
     show_raw = bool(getattr(config, "raw", False))
@@ -75,7 +96,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
     if "cds_selection" not in manifest:
         result["提示"] = (
             "当前无原始 CDS 结果，请先运行 protein-to-cds。" if show_raw else
-            "当前无优化后 CDS，请先运行 protein-to-cds 生成原始序列，再运行 optimize。"
+            "当前无 CDS 工作文件，请先运行 protein-to-cds。"
         )
         return result
     if not target:
@@ -111,26 +132,24 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
         if skipped:
             result["跳过数"] += 1
             continue
-        raw = item.get("raw_cds")
+        metrics = _mapping(optimized.get("metrics", {}), "optimized_cds.metrics")
         if show_raw:
-            if not isinstance(raw, Mapping) or not raw.get("path"):
+            selected, final = _raw_view(root, item, optimized)
+            if selected is None:
                 result["跳过数"] += 1
                 continue
-            selected = raw
         else:
             directory = _directory(root, optimized.get("path"))
             mode = optimized.get("processing_mode")
             is_optimized = (
-                mode in {None, "codon_transformer_and_repair", "dna_chisel_gc_only"}
+                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only"}
                 and directory == str(root / "protein_to_cds" / "optimized_cds")
             )
             if not is_optimized:
                 result["未优化数"] += 1
                 continue
             selected = optimized
-        metrics = _mapping(optimized.get("metrics", {}), "optimized_cds.metrics")
-        metric_key = "raw" if show_raw else "final"
-        final = _mapping(metrics.get(metric_key, {}), f"optimized_cds.metrics.{metric_key}")
+            final = _mapping(metrics.get("final", {}), "optimized_cds.metrics.final")
         changes = _mapping(metrics.get("changes", {}), "optimized_cds.metrics.changes")
         sites_configured, site_count = _selected_site_count(final)
         result["CDS列表"].append({
@@ -157,14 +176,14 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
         for item in sorted(failures, key=lambda row: row["accession"])
         if show_raw and (accession is None or item["accession"].upper() == accession.upper())
     ]
-    result["状态"] = _STATUS_LABELS[status] if show_raw else "已优化"
+    result["状态"] = _STATUS_LABELS[status] if show_raw else "当前工作文件"
     result["总数"] = len(result["CDS列表"])
     result["失败数"] = len(result["失败信息"])
     result["CDS文件目录"] = sorted(directories)
     if not result["CDS列表"] and not result["失败信息"]:
         result["提示"] = (
             "当前无原始 CDS 结果，请先运行 protein-to-cds。" if show_raw else
-            "当前无优化后 CDS，请先运行 optimize；可用 info --cds --raw 查看原始结果。"
+            "当前无 CDS 工作文件，请先运行 protein-to-cds；旧结果可用 info --cds --raw 查看。"
         )
     return result
 
@@ -190,7 +209,7 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
     show_raw = result.get("视图") == "raw"
     summary = (
         f"原始 CDS（CodonTransformer，未经修正）：共 {result['总数']} 条"
-        if show_raw else f"优化后 CDS：共 {result['总数']} 条｜未优化 {result['未优化数']} 条"
+        if show_raw else f"当前 CDS（optimized）：共 {result['总数']} 条｜无工作文件 {result['未优化数']} 条"
     )
     if result["失败数"]:
         summary += f"｜生成失败 {result['失败数']} 条"
