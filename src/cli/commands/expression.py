@@ -15,6 +15,7 @@ from src.expression_box import (
     run_expression_parts_design,
 )
 from src.write_manifest.expression_box import write_custom_expression_box_selection
+from src.write_manifest.expression_assembly import assemble_expression_constructs
 from src.write_manifest.expression_parts_draft import (
     upload_expression_promoter,
     upload_expression_rbs,
@@ -41,7 +42,14 @@ def _run(config: Any) -> dict[str, Any]:
     rbs = getattr(config, "rbs", None)
     terminator = getattr(config, "terminator", None)
     custom = getattr(config, "custom", None)
-    if promoter is not None or rbs is not None or terminator is not None:
+    if bool(getattr(config, "assemble", False)):
+        if (
+            any(bool(getattr(config, name, False)) for name in ("box", "parts"))
+            or custom is not None or getattr(config, "n_designs", None) is not None
+        ):
+            raise ValueError("--assemble 不能与 --box、--parts、--custom 或 --n-designs 同时使用")
+        result = assemble_expression_constructs(config)
+    elif promoter is not None or rbs is not None or terminator is not None:
         if bool(getattr(config, "box", False)) or bool(
             getattr(config, "parts", False)
         ):
@@ -77,6 +85,11 @@ def register(subparsers):
         help="设计表达盒或表达元件方案",
     )
     action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument(
+        "--assemble",
+        action="store_true",
+        help="使用已确认或上传的元件拼接完整表达构建并导出 GenBank",
+    )
     action.add_argument(
         "--design",
         action="store_true",

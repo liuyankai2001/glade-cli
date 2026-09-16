@@ -8,6 +8,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from src.expression_box.parts_preparation import (
+    bind_cds, make_parts_draft, normalize_parts_draft, stale_parts_designs,
+)
+
 
 CDS_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_box_selection",
@@ -92,50 +96,32 @@ def cds_dependency_update(
     retained = {"expression_box_selection": box}
     original_draft = manifest.get("expression_parts_draft")
     if original_draft is not None:
-        if not isinstance(original_draft, Mapping) or original_draft.get("schema_version") != "expression_parts_draft.v1":
+        if not isinstance(original_draft, Mapping):
             raise ValueError("上传元件草稿格式无效，CDS 更新未提交")
-        content = {
-            "target_compound_id": original_draft.get("target_compound_id"),
-            "source": original_draft.get("source"),
-            "cassettes": original_draft.get("cassettes"),
-        }
-        if original_draft.get("draft_fingerprint") != _fingerprint(content):
-            raise ValueError("上传元件草稿 fingerprint 校验失败，CDS 更新未提交")
-        source = original_draft.get("source")
+        draft = normalize_parts_draft(original_draft)
+        source = draft["source"]
         if (
-            original_draft.get("target_compound_id") != manifest.get("target_compound_id")
-            or not isinstance(source, Mapping)
+            draft["target_compound_id"] != manifest.get("target_compound_id")
             or source.get("expression_box_selection_fingerprint") != original_box.get("selected_design_fingerprint")
             or source.get("cds_selection_source_fingerprint") != old_source
         ):
-            raise ValueError("上传元件草稿与当前分组或 CDS 来源不一致")
-        draft = copy.deepcopy(original_draft)
-        draft_cassettes = draft.get("cassettes")
-        if not isinstance(draft_cassettes, list) or len(draft_cassettes) != len(cassettes):
-            raise ValueError("上传元件草稿与当前表达盒数量不一致")
-        for expected, cassette in zip(cassettes, draft_cassettes, strict=True):
-            if (
-                not isinstance(cassette, Mapping)
-                or cassette.get("cassette_index") != expected["cassette_index"]
-                or cassette.get("protein_accessions") != expected["protein_accessions"]
-            ):
-                raise ValueError("上传元件草稿与当前表达盒分组不一致")
-            if cassette.pop("restriction_site_audit", None) is not None:
-                cassette["restriction_audit_status"] = "stale"
-            if cassette.pop("homopolymer_audit", None) is not None:
-                cassette["homopolymer_audit_status"] = "stale"
-            rbs_parts = cassette.get("rbs_by_accession", {})
-            if not isinstance(rbs_parts, Mapping) or set(rbs_parts) - set(expected["protein_accessions"]):
-                raise ValueError("上传元件草稿包含未知 RBS 蛋白")
-            for part in rbs_parts.values():
-                if not isinstance(part, dict):
-                    raise ValueError("上传 RBS 记录格式无效")
-                part.pop("ostir", None)
-                part["ostir_status"] = "stale"
+            raise ValueError("元件准备记录与当前分组或 CDS 来源不一致")
+        for design in draft["designs"]:
+            draft_cassettes = design["cassettes"]
+            if len(draft_cassettes) != len(cassettes):
+                raise ValueError("元件准备记录与当前表达盒数量不一致")
+            for expected, cassette in zip(cassettes, draft_cassettes, strict=True):
+                if (
+                    cassette.get("cassette_index") != expected["cassette_index"]
+                    or cassette.get("protein_accessions") != expected["protein_accessions"]
+                ):
+                    raise ValueError("元件准备记录与当前表达盒分组不一致")
+            bind_cds(draft_cassettes, current)
+        stale_parts_designs(draft["designs"])
         draft["source"]["cds_selection_source_fingerprint"] = new_source
-        draft["draft_fingerprint"] = _fingerprint({
-            "target_compound_id": draft["target_compound_id"],
-            "source": draft["source"], "cassettes": draft_cassettes,
-        })
+        draft = make_parts_draft(
+            target=draft["target_compound_id"], source=draft["source"],
+            source_type=draft["source_type"], designs=draft["designs"],
+        )
         retained["expression_parts_draft"] = draft
     return retained, tuple(field for field in CDS_SELECTION_DOWNSTREAM_SECTIONS if field not in retained)

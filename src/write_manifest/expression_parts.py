@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -15,14 +17,14 @@ from src.expression_box.config import (
     PARTS_RECOMMENDATION_ALGORITHM_VERSION,
 )
 from src.expression_box.expression_burden import (
-    expression_burden_summary,
     validate_expression_burden,
 )
 from src.expression_box.parts_manifest_adapter import load_expression_parts_context
 from src.expression_box.parts_models import ExpressionPartsContext
 from src.expression_box.parts_pipeline import EXPRESSION_PARTS_DESIGNS_FILENAME
 from src.pathway_analyze.target_id import validate_target_compound_id
-from src.write_manifest.expression_constructs import prepare_expression_constructs
+from src.expression_box.parts_preparation import bind_cds, make_parts_draft, snapshot_part
+from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 
@@ -36,17 +38,6 @@ PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "final_assembly",
 )
 _SELECTION_TOKEN = re.compile(r"^[0-9]+(?::[0-9]+)?$")
-
-
-def _stable_json_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def parse_expression_parts_design_ids(value: Any) -> tuple[int, ...]:
@@ -149,7 +140,7 @@ def _validate_design_structure(
         raise ValueError("表达元件方案包含无效的编号、排名或评分") from exc
     if design_id < 1 or rank < 1:
         raise ValueError("表达元件方案编号和排名必须是正整数")
-    if design.get("passes_success_threshold") is not True or score < minimum_score:
+    if not math.isfinite(score) or design.get("passes_success_threshold") is not True or score < minimum_score:
         raise ValueError(f"表达元件方案 {design_id} 未达到成功评分门槛")
 
     raw_cassettes = design.get("cassettes")
@@ -297,193 +288,99 @@ def _select_designs(
     return sorted((by_id[item] for item in set(requested_ids)), key=lambda item: int(item["rank"]))
 
 
-def _selection_payload(
-    selected: list[dict[str, Any]],
-    artifact: Mapping[str, Any],
-    context: ExpressionPartsContext,
-) -> dict[str, Any]:
-    source = artifact["source"]
-    references = [
-        {
-            "design_id": int(design["design_id"]),
-            "rank": int(design["rank"]),
-            "expression_success_score": float(design["expression_success_score"]),
-            "expression_regime": str(design["expression_regime"]),
-            "expression_burden": expression_burden_summary(
-                design["expression_burden"]
-            ),
-            "system_recommended": bool(design.get("recommended")),
-            "design_fingerprint": _stable_json_hash(design),
-        }
-        for design in selected
-    ]
-    selected_content_fingerprint = _stable_json_hash(
-        {
-            "schema_version": artifact["schema_version"],
-            "algorithm_version": artifact["algorithm_version"],
-            "artifact_input_fingerprint": source["input_fingerprint"],
-            "designs": selected,
-        }
-    )
-    selection_fingerprint = _stable_json_hash(
-        {
-            "context_input_fingerprint": context.input_fingerprint,
-            "selected_content_fingerprint": selected_content_fingerprint,
-            "design_references": references,
-        }
-    )
-    scores = [item["expression_success_score"] for item in references]
-    burden_scores = [
-        float(item["expression_burden"]["score"]) for item in references
-    ]
-    burden_levels = sorted(
-        {str(item["expression_burden"]["level"]) for item in references}
-    )
-    warnings = list(
-        dict.fromkeys(
-            str(warning)
-            for design in selected
-            for warning in design.get("warnings", [])
-            if str(warning)
-        )
-    )
-    return {
-        "schema_version": PARTS_SELECTION_SCHEMA_VERSION,
-        "status": "selected",
-        "selection_status": "user_selected",
-        "selected_design_ids": [item["design_id"] for item in references],
-        "primary_design_id": references[0]["design_id"],
-        "design_count": len(references),
-        "selection_fingerprint": selection_fingerprint,
-        "design_references": references,
-        "source": {
-            "artifact": "expression_box/expression_parts_designs.json",
-            "designs_schema_version": artifact["schema_version"],
-            "algorithm_version": artifact["algorithm_version"],
-            "artifact_status": artifact["status"],
-            "artifact_manifest_revision": source.get("manifest_revision"),
-            "artifact_input_fingerprint": source["input_fingerprint"],
-            "selected_content_fingerprint": selected_content_fingerprint,
-            "expression_box_selection_fingerprint": (
-                context.expression_box_selection_fingerprint
-            ),
-            "cds_selection_source_fingerprint": (
-                context.cds_selection_source_fingerprint
-            ),
-            "context_input_fingerprint": context.input_fingerprint,
-            "candidate_snapshot_fingerprint": source.get(
-                "candidate_snapshot_fingerprint"
-            ),
-        },
-        "summary": {
-            "highest_score": max(scores),
-            "lowest_score": min(scores),
-            "minimum_success_score": EXPRESSION_SUCCESS_MIN_SCORE,
-            "expression_burden_score_range": {
-                "minimum": min(burden_scores),
-                "maximum": max(burden_scores),
-            },
-            "expression_burden_levels": burden_levels,
-        },
-        "warnings": warnings,
+def _recommended_draft(selected, artifact, context, manifest):
+    files = {}
+    designs = []
+    proteins = {row["accession"]: row for row in manifest["cds_selection"]["proteins"]}
+    for design in selected:
+        cassettes = []
+        for raw in design["cassettes"]:
+            cassette = {
+                "cassette_index": raw["cassette_index"],
+                "protein_accessions": [gene["accession"] for gene in raw["genes"]],
+                "rbs_by_accession": {},
+                "sequence_audit": copy.deepcopy(raw["sequence_audit"]),
+                "restriction_site_audit": copy.deepcopy(raw["sequence_audit"]["restriction_site_audit"]),
+                "homopolymer_audit": copy.deepcopy(raw["sequence_audit"]["homopolymer_audit"]),
+            }
+            for role in ("promoter", "terminator"):
+                part, path, content = snapshot_part(raw[role], context.project_root)
+                files[path] = content
+                cassette[role] = part
+            for gene in raw["genes"]:
+                part, path, content = snapshot_part(gene["rbs"], context.project_root)
+                files[path] = content
+                part["ostir"] = copy.deepcopy(gene["ostir"])
+                cassette["rbs_by_accession"][gene["accession"]] = part
+            cassettes.append(cassette)
+        bind_cds(cassettes, proteins)
+        recommendation = {key: copy.deepcopy(value) for key, value in design.items()
+                          if key not in {"cassettes", "design_id", "rank"}}
+        recommendation["status"] = "current"
+        designs.append({"design_id": design["design_id"], "rank": design["rank"],
+                        "name": design.get("name", ""), "recommendation": recommendation,
+                        "cassettes": cassettes})
+    source = {
+        "expression_box_selection_fingerprint": context.expression_box_selection_fingerprint,
+        "cds_selection_source_fingerprint": context.cds_selection_source_fingerprint,
+        "recommendation_artifact": "expression_box/expression_parts_designs.json",
+        "recommendation_input_fingerprint": artifact["source"]["input_fingerprint"],
+        "recommendation_algorithm_version": artifact["algorithm_version"],
     }
+    return make_parts_draft(target=context.target_compound_id, source=source,
+                            source_type="recommended", designs=designs), files
 
 
 def write_expression_parts_selection(config: Any) -> dict[str, Any]:
-    """Commit selected designs and their complete concatenated GenBank files."""
+    """Confirm recommended parts; construction is a separate explicit action."""
+    root = Path(config.project_output_path).expanduser().resolve()
+    lock = root / "protein_to_cds" / ".gc_optimization.lock"
+    with ArtifactTransaction([], lock_path=lock):
+        return _write_prepared_selection(config)
 
-    requested_ids = parse_expression_parts_design_ids(
-        getattr(config, "expression_parts", None)
-    )
-    target_compound_id = validate_target_compound_id(config.target_name)
-    manifest_path = Path(config.manifest_output_path).expanduser().resolve()
-    manifest = read_design_manifest(manifest_path)
-    recorded_target = str(manifest.get("target_compound_id") or "").strip()
-    if not recorded_target:
-        raise ValueError("manifest 尚未写入表达盒方案")
-    if recorded_target != target_compound_id:
-        raise ValueError(
-            f"manifest 目标化合物为 {recorded_target}，"
-            f"与当前输入目标 {target_compound_id} 不一致"
-        )
 
-    context = load_expression_parts_context(
-        manifest_path,
-        Path(config.project_output_path).expanduser().resolve(),
-    )
-    manifest = read_design_manifest(manifest_path)
-    if int(manifest.get("revision", 0)) != context.manifest_revision:
-        raise ValueError("manifest revision 在读取表达元件上下文时发生变化，请重试")
-    artifact = _read_artifact(_artifact_path(config))
-    designs = _validate_artifact(artifact, context=context)
-    selected = _select_designs(designs, requested_ids)
-    payload = _selection_payload(selected, artifact, context)
-
-    current_selection = manifest.get("parts_selection")
-    current_constructs = manifest.get("assembled_expression_constructs")
-    transaction = prepare_expression_constructs(
-        selected_designs=selected,
-        selection_payload=payload,
-        context=context,
-        current_section=current_constructs,
-    )
-    manifest_changed = not (
-        isinstance(current_selection, Mapping)
-        and dict(current_selection) == payload
-        and isinstance(current_constructs, Mapping)
-        and dict(current_constructs) == transaction.section
-    )
-    try:
-        transaction.install()
-        if manifest_changed:
-            updated_manifest = update_design_manifest(
-                manifest_path,
-                target_compound_id=target_compound_id,
-                sections={
-                    "parts_selection": payload,
-                    "assembled_expression_constructs": transaction.section,
-                },
-                discard_sections=PARTS_SELECTION_DOWNSTREAM_SECTIONS,
-                expected_revision=context.manifest_revision,
-            )
-        else:
-            updated_manifest = manifest
-    except Exception:
-        try:
-            transaction.rollback()
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "表达构建文件写入失败，且自动回滚未能完成；"
-                "请检查 expression_constructs 目录"
-            ) from rollback_error
-        raise
-    cleanup_warning = transaction.finalize()
-
-    warnings = list(payload["warnings"])
-    if cleanup_warning:
-        warnings.append(cleanup_warning)
-
-    construct_dir = (
-        Path(config.project_output_path).expanduser().resolve()
-        / "expression_constructs"
-    )
-
+def _write_prepared_selection(config):
+    requested_ids = parse_expression_parts_design_ids(getattr(config, "expression_parts", None))
+    target = validate_target_compound_id(config.target_name)
+    path = Path(config.manifest_output_path).expanduser().resolve()
+    context = load_expression_parts_context(path, Path(config.project_output_path).expanduser().resolve())
+    manifest = read_design_manifest(path)
+    original_manifest = path.read_bytes()
+    if manifest.get("target_compound_id") != target:
+        raise ValueError("manifest 与当前目标化合物不一致")
+    if int(manifest["revision"]) != context.manifest_revision:
+        raise ValueError("manifest revision 已变化，请重试")
+    artifact_path = _artifact_path(config)
+    artifact_bytes = artifact_path.read_bytes() if artifact_path.is_file() else None
+    artifact = _read_artifact(artifact_path)
+    selected = _select_designs(_validate_artifact(artifact, context=context), requested_ids)
+    draft, files = _recommended_draft(selected, artifact, context, manifest)
+    changed = manifest.get("expression_parts_draft") != draft
+    # Re-confirming the same selection must preserve an already assembled result.
+    discard = tuple(field for field in PARTS_SELECTION_DOWNSTREAM_SECTIONS
+                    if field != "expression_parts_draft") + ("parts_selection",)
+    with ArtifactTransaction(files) as transaction:
+        for snapshot, content in files.items():
+            if not snapshot.is_file() or snapshot.read_bytes() != content:
+                write_bytes_atomic(snapshot, content)
+        if path.read_bytes() != original_manifest or artifact_path.read_bytes() != artifact_bytes:
+            raise ValueError("manifest 或推荐候选文件在确认时发生变化，请重试")
+        if load_expression_parts_context(path, context.project_root).input_fingerprint != context.input_fingerprint:
+            raise ValueError("CDS 在确认元件时发生变化，请重试")
+        updated = update_design_manifest(
+            path, target_compound_id=target, sections={"expression_parts_draft": draft},
+            discard_sections=discard, expected_revision=context.manifest_revision,
+        ) if changed else manifest
+        transaction.commit()
     return {
-        "运行成功": True,
-        "目标化合物": target_compound_id,
-        "表达元件方案编号": payload["selected_design_ids"],
-        "主方案编号": payload["primary_design_id"],
-        "方案数量": payload["design_count"],
-        "完整表达构建数量": transaction.section["design_count"],
-        "最高成功评分": payload["summary"]["highest_score"],
-        "最低成功评分": payload["summary"]["lowest_score"],
-        "GenBank目录": str(construct_dir),
-        "GenBank是否复用": not transaction.needs_install,
-        "GenBank是否修复": transaction.is_repair,
-        "清单是否更新": manifest_changed,
-        "清单文件": str(manifest_path),
-        "清单版本": updated_manifest["revision"],
-        "警告": warnings,
+        "运行成功": True, "目标化合物": target,
+        "表达元件方案编号": [d["design_id"] for d in draft["designs"]],
+        "主方案编号": draft["designs"][0]["design_id"], "方案数量": len(selected),
+        "元件来源": "recommended", "准备状态": draft["status"],
+        "完整表达构建数量": 0, "清单是否更新": changed,
+        "清单文件": str(path), "清单版本": updated["revision"],
+        "下一步": "expression --assemble -i <输入文件>",
+        "警告": list(dict.fromkeys(w for d in selected for w in d.get("warnings", []))),
     }
 
 

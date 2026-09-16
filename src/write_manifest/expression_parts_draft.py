@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import re
@@ -14,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from Bio import SeqIO
+
+from src.expression_box.parts_preparation import (
+    PARTS_DRAFT_SCHEMA, bind_cds, make_parts_draft, normalize_parts_draft,
+)
 
 from src.expression_box.config import (
     RBS_CONTEXT_CDS_PREFIX_NT,
@@ -30,12 +33,13 @@ from src.protein_to_cds.sequence_constraints import (
     max_homopolymer_length,
     motif_hits,
 )
+from src.protein_to_cds.artifacts import ArtifactTransaction
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.protein_to_cds.restriction_sites import normalize_enzymes, restriction_site_audit
 from src.protein_to_cds.homopolymers import homopolymer_audit, saved_homopolymer_max
 
 
-EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION = "expression_parts_draft.v1"
+EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION = PARTS_DRAFT_SCHEMA
 EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS = (
     "parts_selection",
     "assembled_expression_cassettes",
@@ -53,16 +57,6 @@ _ROLE_LABELS = {
     "rbs": "RBS",
     "terminator": "终止子",
 }
-
-
-def _stable_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -249,15 +243,16 @@ def _merge_existing_draft(
     raw_draft = manifest.get("expression_parts_draft")
     if not isinstance(raw_draft, Mapping):
         return
-    if raw_draft.get("schema_version") != EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION:
+    draft = normalize_parts_draft(raw_draft)
+    if draft["source_type"] != "user_uploaded":
         return
-    source = raw_draft.get("source")
+    source = draft.get("source")
     if not isinstance(source, Mapping) or (
         source.get("expression_box_selection_fingerprint") != box_fingerprint
         or source.get("cds_selection_source_fingerprint") != cds_fingerprint
     ):
         return
-    raw_cassettes = raw_draft.get("cassettes")
+    raw_cassettes = draft["designs"][0]["cassettes"]
     if not isinstance(raw_cassettes, list):
         return
     existing = {
@@ -322,33 +317,19 @@ def _draft_payload(
     box_fingerprint: str,
     cds_fingerprint: str,
     cassettes: list[dict[str, Any]],
+    manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    promoter_count = sum(item.get("promoter") is not None for item in cassettes)
-    content = {
-        "target_compound_id": target_compound_id,
-        "source": {
+    proteins = {row["accession"]: row for row in manifest["cds_selection"]["proteins"]}
+    bind_cds(cassettes, proteins)
+    return make_parts_draft(
+        target=target_compound_id,
+        source={
             "expression_box_selection_fingerprint": box_fingerprint,
             "cds_selection_source_fingerprint": cds_fingerprint,
         },
-        "cassettes": cassettes,
-    }
-    return {
-        "schema_version": EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION,
-        "status": "partial",
-        **content,
-        "summary": {
-            "cassette_count": len(cassettes),
-            "promoter_count": promoter_count,
-            "required_promoter_count": len(cassettes),
-            "rbs_count": sum(
-                len(item.get("rbs_by_accession") or {}) for item in cassettes
-            ),
-            "terminator_count": sum(
-                item.get("terminator") is not None for item in cassettes
-            ),
-        },
-        "draft_fingerprint": _stable_hash(content),
-    }
+        source_type="user_uploaded",
+        designs=[{"design_id": 1, "rank": 1, "name": "用户上传元件方案", "cassettes": cassettes}],
+    )
 
 
 def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, new_part, new_sequence):
@@ -481,6 +462,7 @@ def _commit_uploaded_part(
         box_fingerprint=box_fingerprint,
         cds_fingerprint=cds_fingerprint,
         cassettes=cassettes,
+        manifest=manifest,
     )
     current_draft = manifest.get("expression_parts_draft")
     draft_changed = not (
@@ -718,7 +700,7 @@ def _predict_uploaded_rbs(
     }
 
 
-def upload_expression_rbs(
+def _upload_expression_rbs(
     config: Any,
     *,
     predictor: Callable[..., RbsPrediction] = predict_rbs_context,
@@ -787,16 +769,26 @@ def upload_expression_rbs(
     )
 
 
+def upload_expression_rbs(config: Any, *, predictor=predict_rbs_context) -> dict[str, Any]:
+    root = Path(config.project_output_path).expanduser().resolve()
+    with ArtifactTransaction([], lock_path=root / "protein_to_cds" / ".gc_optimization.lock"):
+        return _upload_expression_rbs(config, predictor=predictor)
+
+
 def upload_expression_promoter(config: Any) -> dict[str, Any]:
     """Upload or replace the promoter for one selected expression cassette."""
 
-    return _upload_expression_boundary_part(config, "promoter")
+    root = Path(config.project_output_path).expanduser().resolve()
+    with ArtifactTransaction([], lock_path=root / "protein_to_cds" / ".gc_optimization.lock"):
+        return _upload_expression_boundary_part(config, "promoter")
 
 
 def upload_expression_terminator(config: Any) -> dict[str, Any]:
     """Upload or replace the terminator for one selected expression cassette."""
 
-    return _upload_expression_boundary_part(config, "terminator")
+    root = Path(config.project_output_path).expanduser().resolve()
+    with ArtifactTransaction([], lock_path=root / "protein_to_cds" / ".gc_optimization.lock"):
+        return _upload_expression_boundary_part(config, "terminator")
 
 
 __all__ = [

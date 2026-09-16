@@ -1117,7 +1117,7 @@ python main.py optimize -i demo01.json --homopolymer-max 6
 成功更新保留表达盒分组和上传 parts，让旧检查、预测及构建失效。元件齐全后，上传命令检查完整草稿的
 同聚物，包括元件连接处，即使未选择限制酶也执行。表达盒使用已选最大长度，未配置时保持原有最多 6 个的
 门槛。冲突保留上传结果并记录位置和相关元件，`info --expression-box` 可查看；CDS 更新后旧检查失效，
-再次上传对应元件时重新检查，不自动修改或挑选 parts。
+再次上传对应元件或执行 `expression --assemble` 时重新检查，不自动修改或挑选 parts。
 
 ## 12. 表达盒分组
 
@@ -1170,7 +1170,7 @@ RBS 和 terminator；CDS 及蛋白顺序仍会完整显示。选择表达元件�
 python main.py info -i demo01.json --expression-box --parts-design 3
 ```
 
-`--parts-design` 只能查看已经通过 `write --expression-parts` 写入的方案。命令不会输出
+`--parts-design` 可查看已经确认的推荐方案，以及统一构建后登记的已选方案。命令不会输出
 完整 DNA 序列；若方案文件丢失、被修改或与当前表达盒不一致，会保留表达盒分组视图，
 并将表达元件状态显示为“信息不可用”。
 
@@ -1271,8 +1271,31 @@ python main.py write -i demo01.json --expression-parts 1:12
 python main.py write -i demo01.json --expression-parts 1:4 7 9:12
 ```
 
-`start:end` 包含两端，重复编号自动去重。写入选择时，系统会同时为每个方案生成完整
-串联 GenBank：
+`start:end` 包含两端，重复编号自动去重。确认推荐方案只保存元件准备记录和独立的
+元件快照，不再立即拼接或生成 GenBank；重新推荐不会覆盖已经确认的元件。
+
+### 13.4 统一构建完整表达序列
+
+手动上传齐全，或确认一个/多个推荐方案后，都使用同一个入口：
+
+```powershell
+python main.py expression -i demo01.json --assemble
+```
+
+命令不需要指定元件来源。它读取当前准备记录和当前 `optimized_cds`，每个表达盒按
+“启动子 + 各基因的 RBS、CDS + 终止子”排列，再将同一方案的全部表达盒按编号直接串联；
+选择多个推荐方案时，每个方案分别生成一个线性完整构建。
+
+构建前检查元件完整性、快照校验值及 CDS 是否为完整有效编码序列；旧 OSTIR 上下文
+失效时自动重新预测，无需重新上传 RBS，也不重新推荐或替换元件。构建检查完整序列，包括片段和表达盒连接处的所选限制酶
+禁止位点与同聚物。整体/局部 GC 只统计。缺少元件、预测失败或序列冲突时不提交正式
+构建；冲突信息包含位置及涉及元件，用户可修改相应输入后重试。
+
+上传方案不计算推荐成功评分。后续质粒模块需要的表达负担沿用现有估算模型：缺少
+启动子活性和 OSTIR 参考分布时使用中性百分位 50，并记录估算来源、参考数量及置信度。
+推荐方案保留原始推荐信息；CDS 编辑后旧评分标记失效，按当前序列刷新预测和负担信息。
+
+导出目录：
 
 ```text
 outputs/C00811/expression_constructs/
@@ -1281,8 +1304,20 @@ outputs/C00811/expression_constructs/
 └── ...
 ```
 
-manifest 的 `parts_selection` 保存选定方案摘要，`assembled_expression_constructs` 保存
-完整构建的文件、哈希、坐标和安全审计。
+共同准备数据保存为 `expression_parts_draft.v2`，其中 `source_type` 区分
+`recommended` 和 `user_uploaded`，`designs` 保存一个或多个方案；上传未齐全为 `partial`，
+齐全或推荐已确认为 `ready`。`ready` 表示元件齐全，不代表完整序列检查已经通过。
+兼容旧的 `expression_parts_draft.v1`，成功上传、CDS 编辑或构建时转换为新结构。
+
+只有统一构建成功后，manifest 的 `parts_selection.v2` 才登记正式方案摘要，
+`assembled_expression_constructs.v1` 登记文件、哈希、元件坐标及完整序列检查。
+已选方案内容单独保存为 `expression_box/selected_expression_parts.json`，信息展示与
+后续质粒模块读取这些正式结果。共同准备记录仍保留，CDS 编辑时保留所选元件和分组，
+让旧预测、构建及后续质粒结果失效，再运行 `expression --assemble` 即可重建。
+
+GenBank 导出后会回读验证序列和特征坐标。文件和 manifest 提交失败时恢复原有结果；
+重复执行且输入未变化时复用，导出文件缺失或损坏时修复。构建不添加克隆末端，接入
+质粒的处理仍由后续质粒与最终组装流程决定。
 
 ## 14. 质粒骨架推荐与选择
 
@@ -1482,6 +1517,8 @@ python main.py write -i demo01.json --expression-box 1
 python main.py info -i demo01.json --expression-box
 python main.py expression --design --parts -i demo01.json --n-designs 12
 python main.py write -i demo01.json --expression-parts 1:12
+# 上传路线无需以上推荐与确认两行；全部元件上传齐全后执行同一命令
+python main.py expression -i demo01.json --assemble
 
 # 6. 质粒和最终组装
 python main.py plasmid --recommend -i demo01.json

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from src.expression_box.parts_preparation import normalize_parts_draft
 from src.protein_to_cds.restriction_sites import normalize_enzymes
 from src.protein_to_cds.homopolymers import saved_homopolymer_max
 from src.protein_to_cds.sequence_constraints import HOMOPOLYMER_LIMIT
@@ -248,7 +249,11 @@ def _read_artifact(project_root: Path, source: Mapping[str, Any]) -> dict[str, A
     if not path.is_file():
         raise FileNotFoundError(f"表达元件方案文件不存在：{path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        content = path.read_bytes()
+        expected_hash = source.get("artifact_file_sha256")
+        if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
+            raise ValueError("表达元件方案文件哈希不匹配")
+        payload = json.loads(content.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"表达元件方案文件不是有效 JSON：{path}") from exc
     if not isinstance(payload, dict):
@@ -418,14 +423,13 @@ def _apply_draft(
     result: dict[str, Any],
     manifest: Mapping[str, Any],
     project_root: Path,
+    requested_design_id: int | None = None,
 ) -> None:
     raw_draft = manifest.get("expression_parts_draft")
     if raw_draft is None:
         return
     try:
-        draft = _mapping(raw_draft, "expression_parts_draft")
-        if draft.get("schema_version") != "expression_parts_draft.v1":
-            raise ValueError("不支持的 expression_parts_draft schema_version")
+        draft = normalize_parts_draft(_mapping(raw_draft, "expression_parts_draft"))
         if str(draft.get("target_compound_id") or "") != result["目标化合物"]:
             raise ValueError("表达元件草稿与当前目标化合物不一致")
         source = _mapping(draft.get("source"), "expression_parts_draft.source")
@@ -433,14 +437,26 @@ def _apply_draft(
             "表达盒方案"
         ]["方案Fingerprint"]:
             raise ValueError("表达元件草稿与当前表达盒方案不一致")
-        content = {
-            "target_compound_id": draft.get("target_compound_id"),
-            "source": dict(source),
-            "cassettes": draft.get("cassettes"),
-        }
-        if draft.get("draft_fingerprint") != _stable_json_hash(content):
-            raise ValueError("表达元件草稿 fingerprint 校验失败")
-        raw_cassettes = draft.get("cassettes")
+        selected_ids = [d["design_id"] for d in draft["designs"]]
+        primary_id = selected_ids[0]
+        display_id = requested_design_id if requested_design_id is not None else primary_id
+        if display_id not in selected_ids:
+            raise ValueError(f"表达元件方案 {display_id} 未被选中；可查看方案：{selected_ids}")
+        design = next(d for d in draft["designs"] if d["design_id"] == display_id)
+        if draft["source_type"] == "recommended":
+            result["已选表达元件方案"] = selected_ids
+            result["主表达元件方案"] = primary_id
+            result["当前显示方案"] = display_id
+            recommendation = design.get("recommendation", {})
+            result["表达元件方案"] = {
+                "方案编号": display_id, "名称": design.get("name", ""),
+                "排名": design["rank"], "表达模式": recommendation.get("expression_regime", ""),
+                "成功评分": recommendation.get("expression_success_score") if recommendation.get("status") == "current" else None,
+                "表达负担": recommendation.get("expression_burden") if recommendation.get("status") == "current" else None,
+                "是否系统推荐": True, "来源": "recommended",
+            }
+            result["完整表达构建"] = {"状态": "未生成", "路径": "", "文件哈希匹配": False}
+        raw_cassettes = design["cassettes"]
         if not isinstance(raw_cassettes, list):
             raise ValueError("expression_parts_draft.cassettes 必须是列表")
         by_index = {
@@ -528,6 +544,7 @@ def _apply_draft(
                                       "最大长度": maximum, "超长片段": []}
         result["表达元件草稿"] = {
             "状态": str(draft.get("status") or "partial"),
+            "来源": draft["source_type"],
             "已上传启动子数": promoter_count,
             "已上传RBS数": rbs_count,
             "已上传终止子数": terminator_count,
@@ -535,7 +552,7 @@ def _apply_draft(
             "草稿Fingerprint": str(draft.get("draft_fingerprint") or ""),
         }
         if promoter_count or rbs_count or terminator_count:
-            result["表达元件状态"] = "部分设置"
+            result["表达元件状态"] = "已设置" if draft["status"] == "ready" else "部分设置"
     except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
         _parts_unavailable(result, str(exc))
 
@@ -548,9 +565,14 @@ def _apply_parts(
 ) -> None:
     raw_selection = manifest.get("parts_selection")
     if raw_selection is None:
+        raw_draft = manifest.get("expression_parts_draft", {})
         if requested_design_id is not None:
-            raise ValueError("尚未选择表达元件方案，不能使用 --parts-design")
-        _apply_draft(result, manifest, project_root)
+            if raw_draft.get("source_type") != "recommended":
+                raise ValueError("尚未选择表达元件方案，不能使用 --parts-design")
+            ids = [d["design_id"] for d in normalize_parts_draft(raw_draft)["designs"]]
+            if requested_design_id not in ids:
+                raise ValueError(f"表达元件方案 {requested_design_id} 未被选中；可查看方案：{ids}")
+        _apply_draft(result, manifest, project_root, requested_design_id)
         return
     try:
         selection = _mapping(raw_selection, "parts_selection")
@@ -776,16 +798,17 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
     part_design = result.get("表达元件方案")
     if isinstance(part_design, Mapping):
         lines.append(
-            f"成功评分：{part_design.get('成功评分')}｜"
+            f"成功评分：{_format_translation_rate(part_design.get('成功评分'))}｜"
             f"表达模式：{part_design.get('表达模式') or '未记录'}"
         )
     draft = result.get("表达元件草稿")
     if isinstance(draft, Mapping):
+        prefix = "已确定" if draft.get("来源") == "recommended" else "已上传"
         lines.append(
-            f"已上传启动子：{draft.get('已上传启动子数', 0)}/"
+            f"{prefix}启动子：{draft.get('已上传启动子数', 0)}/"
             f"{draft.get('表达盒总数', 0)}｜"
-            f"已上传 RBS：{draft.get('已上传RBS数', 0)}｜"
-            f"已上传终止子：{draft.get('已上传终止子数', 0)}/"
+            f"{prefix} RBS：{draft.get('已上传RBS数', 0)}｜"
+            f"{prefix}终止子：{draft.get('已上传终止子数', 0)}/"
             f"{draft.get('表达盒总数', 0)}"
         )
 

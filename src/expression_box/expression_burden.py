@@ -118,6 +118,7 @@ def calculate_expression_burden(
     translation_reference: Mapping[tuple[int, str], tuple[float, ...]],
     *,
     fallback_promoter_percentile: float,
+    fallback_promoter_source: str = "strategy_target_fallback",
 ) -> dict[str, Any]:
     """Calculate a complete, auditable burden record for one design."""
 
@@ -126,6 +127,10 @@ def calculate_expression_burden(
     fallback = _optional_percentile(fallback_promoter_percentile)
     if fallback is None:
         raise ValueError("fallback promoter percentile is required")
+    if fallback_promoter_source not in {"strategy_target_fallback", "neutral_percentile_fallback"}:
+        raise ValueError("unsupported promoter percentile fallback source")
+    if fallback_promoter_source == "neutral_percentile_fallback" and fallback != 50.0:
+        raise ValueError("neutral promoter percentile must be 50")
 
     warnings: list[str] = []
     gene_metrics: list[dict[str, Any]] = []
@@ -145,10 +150,12 @@ def calculate_expression_burden(
         promoter_source = "measured"
         if promoter_percentile is None:
             promoter_percentile = fallback
-            promoter_source = "strategy_target_fallback"
+            promoter_source = fallback_promoter_source
             used_fallback = True
             warnings.append(
                 f"cassette {cassette_index} promoter percentile used the strategy target fallback"
+                if fallback_promoter_source == "strategy_target_fallback"
+                else f"cassette {cassette_index} used the neutral promoter percentile 50 fallback"
             )
         genes = cassette.get("genes")
         if not isinstance(genes, list) or not genes:
@@ -369,10 +376,12 @@ def validate_expression_burden(
                 promoter_percentile, measured_promoter, abs_tol=1e-8
             ):
                 raise ValueError("expression burden promoter percentile is invalid")
-        elif promoter_source != "strategy_target_fallback":
+        elif promoter_source not in {"strategy_target_fallback", "neutral_percentile_fallback"}:
             raise ValueError("expression burden promoter source is invalid")
         else:
             used_fallback = True
+            if promoter_source == "neutral_percentile_fallback" and promoter_percentile != 50.0:
+                raise ValueError("expression burden neutral promoter percentile is invalid")
             if fallback_promoter_percentile is not None and not math.isclose(
                 promoter_percentile,
                 float(fallback_promoter_percentile),

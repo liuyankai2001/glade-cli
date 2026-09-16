@@ -71,6 +71,7 @@ def _part_qualifiers(
     parts_design_id: int,
     cassette_index: int,
 ) -> dict[str, list[str]]:
+    reference = part.get("sequence_file")
     return _qualifiers(
         label=label,
         part_id=part.get("part_id"),
@@ -81,6 +82,9 @@ def _part_qualifiers(
         host_match_kind=part.get("host_match_kind"),
         evidence_grade=part.get("evidence_grade"),
         sequence_sha256=part.get("sequence_sha256"),
+        source=part.get("source"),
+        source_input_file=part.get("source_input_file"),
+        sequence_file_sha256=reference.get("file_sha256") if isinstance(reference, Mapping) else None,
         parts_design_id=parts_design_id,
         cassette_index=cassette_index,
     )
@@ -125,12 +129,11 @@ def _expected_cassette_sequence(
     audit = raw_cassette.get("sequence_audit")
     if (
         not isinstance(audit, Mapping)
-        or audit.get("gate_status") != "PASS"
         or audit.get("sequence_sha256") != expected_hash
     ):
         raise ValueError(
             f"expression-parts design {design_id} cassette {cassette_index} "
-            "does not have a matching PASS sequence audit"
+            "does not have a matching sequence audit"
         )
 
 
@@ -141,7 +144,8 @@ def _build_record(
 ) -> tuple[SeqRecord, dict[str, Any]]:
     design_id = int(design["design_id"])
     rank = int(design["rank"])
-    score = float(design["expression_success_score"])
+    score = design.get("expression_success_score")
+    source_type = str(design.get("source_type") or "recommended")
     raw_cassettes = design.get("cassettes")
     if not isinstance(raw_cassettes, list):
         raise ValueError(f"expression-parts design {design_id} is missing cassettes")
@@ -335,8 +339,9 @@ def _build_record(
         "keywords": ["synthetic biology", "expression construct"],
         "comment": (
             f"parts_design_id={design_id}; rank={rank}; "
-            f"expression_success_score={score}; junction_policy={JUNCTION_POLICY}; "
-            "components are concatenated without linker sequence"
+            f"source_type={source_type}; junction_policy={JUNCTION_POLICY}; "
+            + (f"expression_success_score={score}; " if score is not None else "")
+            + "components are concatenated without linker sequence"
         ),
     }
     source_feature = SeqFeature(
@@ -347,6 +352,7 @@ def _build_record(
             mol_type="other DNA",
             target_compound_id=context.target_compound_id,
             parts_design_id=design_id,
+            source_type=source_type,
             expression_score=score,
             selection_sha256=selection_fingerprint,
             junction_policy=JUNCTION_POLICY,
@@ -374,6 +380,7 @@ def _build_record(
 
     metadata = {
         "parts_design_id": design_id,
+        "source_type": source_type,
         "rank": rank,
         "expression_success_score": score,
         "expression_regime": str(design.get("expression_regime") or ""),
@@ -585,7 +592,7 @@ def prepare_expression_constructs(
         section = {
             "schema_version": ASSEMBLED_EXPRESSION_CONSTRUCTS_SCHEMA_VERSION,
             "status": "assembled",
-            "source": "write_expression_parts_selection",
+            "source": "expression_assemble",
             "source_parts_selection_fingerprint": selection_payload[
                 "selection_fingerprint"
             ],
