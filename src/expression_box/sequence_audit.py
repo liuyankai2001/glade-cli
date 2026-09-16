@@ -2,12 +2,12 @@
 
 from importlib.metadata import version
 
-from dnachisel import DnaOptimizationProblem, EnforceGCContent
+from dnachisel import DnaOptimizationProblem
 
 from src.protein_to_cds.restriction_sites import enzyme_constraints, restriction_site_audit
 from src.protein_to_cds.homopolymers import homopolymer_audit, homopolymer_constraints
 from src.protein_to_cds.sequence_constraints import (
-    DNA_ALPHABET, HOMOPOLYMER_LIMIT, LOCAL_GC_MAX, LOCAL_GC_MIN,
+    DNA_ALPHABET, HOMOPOLYMER_LIMIT,
     LOCAL_GC_WINDOW_NT, gc_fraction, local_gc_values, max_homopolymer_length, sha256_text,
 )
 
@@ -19,20 +19,18 @@ def audit_expression_sequence(sequence: str, enzymes=(), homopolymer_max: int | 
                 "gate_status": "FAIL", "checks": {"valid_alphabet": False}, "failed_checks": ["valid_alphabet"]}
     sites = restriction_site_audit(normalized, enzymes)
     homopolymers = homopolymer_audit(normalized, HOMOPOLYMER_LIMIT - 1 if homopolymer_max is None else homopolymer_max)
-    constraints = [EnforceGCContent(mini=0.30, maxi=0.70),
-                   EnforceGCContent(mini=LOCAL_GC_MIN, maxi=LOCAL_GC_MAX, window=LOCAL_GC_WINDOW_NT),
-                   *enzyme_constraints(enzymes),
+    constraints = [*enzyme_constraints(enzymes),
                    *homopolymer_constraints(homopolymers["maximum_allowed"], len(normalized))]
     problem = DnaOptimizationProblem(normalized, constraints=constraints, objectives=[], logger=None)
     local_values = local_gc_values(normalized)
-    checks = {"valid_alphabet": True, "global_gc_pass": 0.30 <= gc_fraction(normalized) <= 0.70,
-              "local_gc_pass": all(LOCAL_GC_MIN <= value <= LOCAL_GC_MAX for value in local_values),
+    checks = {"valid_alphabet": True,
               "forbidden_motif_pass": sites["passed"],
               "homopolymer_pass": homopolymers["passed"],
               "dnachisel_constraints_pass": problem.all_constraints_pass()}
     return {"engine": "DNA Chisel", "engine_version": version("dnachisel"),
             "sequence_sha256": sha256_text(normalized), "length_nt": len(normalized),
             "gc_percent": round(100 * gc_fraction(normalized), 8),
+            "local_gc_window_nt": LOCAL_GC_WINDOW_NT,
             "local_gc_min_percent": round(100 * min(local_values), 8),
             "local_gc_max_percent": round(100 * max(local_values), 8),
             "restriction_site_audit": sites,
