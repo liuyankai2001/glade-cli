@@ -170,7 +170,15 @@ describe("Workbench", () => {
       );
       const request = mock.mock.calls.find(([url]) => url.includes("preview"));
       expect(JSON.parse(String(request?.[1]?.body))).toEqual({
-        component_order: ["resistance", "replication", "expression"],
+        component_order: [
+          "resistance",
+          "replication",
+          "t1",
+          "expression",
+          "t0",
+        ],
+        t0_id: null,
+        t1_id: null,
         resistance_id: "amp",
         replication_id: "puc",
         expected_revision: 3,

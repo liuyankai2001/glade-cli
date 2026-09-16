@@ -15,9 +15,17 @@ import type { Preview, ComponentOrder } from "../src/types";
 const defaultOrder: ComponentOrder = [
   "resistance",
   "replication",
+  "t1",
   "expression",
+  "t0",
 ];
-const movedOrder: ComponentOrder = ["replication", "expression", "resistance"];
+const movedOrder: ComponentOrder = [
+  "replication",
+  "t1",
+  "expression",
+  "t0",
+  "resistance",
+];
 const modules = {
   resistance: [
     {
@@ -239,6 +247,8 @@ describe("component reordering", () => {
     expect(JSON.parse(localStorage.getItem("plasmid:drag-demo")!)).toEqual({
       resistance_id: "amp",
       replication_id: "ori",
+      t0_id: null,
+      t1_id: null,
       component_order: movedOrder,
     });
     await act(async () =>

@@ -1,10 +1,14 @@
+import hashlib
 import importlib
 import importlib.util
+import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+from Bio import SeqIO
+from Bio.Seq import Seq
 from fastapi.testclient import TestClient
 from plasmid_fixtures import make_project
 
@@ -37,11 +41,16 @@ class LocalApiTests(unittest.TestCase):
         modules = self.client.get("/api/modules").json()
         self.assertEqual(len(modules["resistance"]), 7)
         self.assertEqual(len(modules["replication"]), 5)
+        self.assertEqual(
+            {m["role"]: m["length_bp"] for m in modules["terminator"]},
+            {"t0": 103, "t1": 105},
+        )
         self.assertIsInstance(modules["resistance"][0]["notes"], list)
         request = self.request()
         preview = self.client.post("/api/preview", json=request)
         self.assertEqual(preview.status_code, 200)
         self.assertTrue(preview.json()["valid"])
+        self.assertEqual(len(preview.json()["terminator_warnings"]), 2)
         response = self.client.post("/api/generate", json=request)
         self.assertEqual(response.status_code, 202)
         job_id = response.json()["id"]
@@ -52,6 +61,11 @@ class LocalApiTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(job["status"], "succeeded", job)
         result = job["result"]
+        self.assertIsNone(result["t0_id"])
+        self.assertIsNone(result["t1_id"])
+        self.assertTrue(
+            all(w in result["warnings"] for w in preview.json()["terminator_warnings"])
+        )
         file = next(f for f in result["files"] if f["id"] == "final_genbank")
         downloaded = self.client.get(file["url"])
         self.assertEqual(downloaded.status_code, 200)
@@ -91,7 +105,10 @@ class LocalApiTests(unittest.TestCase):
         }
         preview = self.client.post("/api/preview", json=request)
         self.assertEqual(preview.status_code, 200)
-        self.assertEqual(preview.json()["component_order"], request["component_order"])
+        self.assertEqual(
+            preview.json()["component_order"],
+            ["t1", "expression", "t0", "replication", "resistance"],
+        )
         self.assertEqual(preview.json()["segments"][0]["kind"], "restriction")
         before = self.config.manifest_output_path.read_bytes()
         for order in (
@@ -109,6 +126,28 @@ class LocalApiTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 422)
         self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
 
+    def test_terminator_warnings_do_not_allow_restriction_conflicts_or_invalid_roles(
+        self,
+    ):
+        request = {**self.request(), "t0_id": "basic_seva_t1"}
+        self.assertEqual(
+            self.client.post("/api/preview", json=request).status_code, 422
+        )
+        request = {
+            **self.request(),
+            "t0_id": "basic_seva_t0",
+            "t1_id": "basic_seva_t1",
+            "component_order": ["resistance", "replication", "t0", "expression", "t1"],
+        }
+        preview = self.client.post("/api/preview", json=request)
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.json()["valid"])
+        self.assertEqual(len(preview.json()["terminator_warnings"]), 2)
+        request["t1_id"] = "unknown"
+        self.assertEqual(
+            self.client.post("/api/generate", json=request).status_code, 422
+        )
+
     def test_unknown_artifact_and_api_path_never_fall_back_to_frontend_html(self):
         response = self.client.get("/api/files/" + "a" * 32 + "/manifest")
         self.assertNotEqual(response.status_code, 200)
@@ -120,6 +159,43 @@ class LocalApiTests(unittest.TestCase):
         self.assertEqual(index.status_code, 200)
         self.assertIn('<div id="root"></div>', index.text)
         self.assertNotEqual(self.client.get("/design_manifest.json").status_code, 200)
+
+    def test_internal_site_still_blocks_with_missing_terminators(self):
+        path = self.config.project_output_path / "expression_1.gb"
+        record = SeqIO.read(path, "genbank")
+        record.seq = Seq("GAATTC" + str(record.seq))
+        for feature in record.features:
+            feature.location += 6
+        SeqIO.write(record, path, "genbank")
+        manifest = json.loads(
+            self.config.manifest_output_path.read_text(encoding="utf-8")
+        )
+        construct = manifest["assembled_expression_constructs"]["constructs"][0]
+        construct.update(
+            length_bp=len(record),
+            sequence_sha256=hashlib.sha256(str(record.seq).encode()).hexdigest(),
+            file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        self.config.manifest_output_path.write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        before = self.config.manifest_output_path.read_bytes()
+        request = self.request()
+        preview = self.client.post("/api/preview", json=request)
+        self.assertEqual(preview.status_code, 200)
+        self.assertFalse(preview.json()["valid"])
+        self.assertEqual(len(preview.json()["terminator_warnings"]), 2)
+        self.assertTrue(
+            any(
+                issue["code"] == "restriction_conflict"
+                for issue in preview.json()["issues"]
+            )
+        )
+        self.assertEqual(
+            self.client.post("/api/generate", json=request).status_code, 422
+        )
+        self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
+        self.assertFalse((self.config.project_output_path / "plasmid_designs").exists())
 
 
 if __name__ == "__main__":

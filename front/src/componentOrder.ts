@@ -9,18 +9,33 @@ import type {
 export const DEFAULT_ORDER: ComponentOrder = [
   "resistance",
   "replication",
+  "t1",
   "expression",
+  "t0",
 ];
 export function isComponentOrder(value: unknown): value is ComponentOrder {
   return (
     Array.isArray(value) &&
-    value.length === 3 &&
-    new Set(value).size === 3 &&
+    value.length === 5 &&
+    new Set(value).size === 5 &&
     value.every((type) => DEFAULT_ORDER.includes(type))
   );
 }
 export function normalizeOrder(value: unknown): ComponentOrder {
-  return isComponentOrder(value) ? [...value] : [...DEFAULT_ORDER];
+  if (isComponentOrder(value)) return [...value];
+  if (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    new Set(value).size === 3 &&
+    value.every((type) =>
+      ["resistance", "replication", "expression"].includes(type),
+    )
+  ) {
+    return value.flatMap((type) =>
+      type === "expression" ? ["t1", "expression", "t0"] : [type],
+    ) as ComponentOrder;
+  }
+  return [...DEFAULT_ORDER];
 }
 export function sameOrder(a: unknown, b: unknown) {
   return normalizeOrder(a).join(",") === normalizeOrder(b).join(",");
@@ -37,7 +52,12 @@ export function insertComponent(
 export function segmentComponent(segment: {
   id: string;
   kind: string;
+  component_type?: ComponentType;
 }): ComponentType | null {
+  if (segment.component_type && DEFAULT_ORDER.includes(segment.component_type))
+    return segment.component_type;
+  if (segment.id === "basic_seva_t0") return "t0";
+  if (segment.id === "basic_seva_t1") return "t1";
   if (DEFAULT_ORDER.includes(segment.kind as ComponentType))
     return segment.kind as ComponentType;
   if (segment.id === "module_interval") return "resistance";
@@ -108,10 +128,15 @@ export function reorderGeometry(
 
 export function selectionGeometry(
   construct: Context["construct"],
-  selected: { resistance?: Module; replication?: Module },
+  selected: {
+    resistance?: Module;
+    replication?: Module;
+    t0?: Module;
+    t1?: Module;
+  },
   order: ComponentOrder,
 ): Preview | null {
-  if (!construct && !selected.resistance && !selected.replication) return null;
+  if (!construct && !Object.values(selected).some(Boolean)) return null;
   let cursor = 1;
   let sourceOffset = 0;
   const segments: Preview["segments"] = [];
@@ -122,7 +147,8 @@ export function selectionGeometry(
     segments.push({
       id: String(part.id),
       label: part.name,
-      kind: type,
+      kind: type === "t0" || type === "t1" ? "terminator" : type,
+      component_type: type,
       start_bp: cursor,
       end_bp: cursor + part.length_bp - 1,
       length_bp: part.length_bp,
@@ -133,6 +159,7 @@ export function selectionGeometry(
     valid: false,
     issues: [],
     warnings: [],
+    terminator_warnings: [],
     sequence: "",
     length_bp: cursor - 1,
     gc_percent: 0,

@@ -22,18 +22,32 @@ from src.final_assemble_execute.models import SequenceAssemblyResult
 from src.final_assemble_plan.common import enzyme_cut_positions, gc_percent
 from src.plasmid_design.errors import DesignError
 
-DEFAULT_COMPONENT_ORDER = ("resistance", "replication", "expression")
+LEGACY_COMPONENT_ORDER = ("resistance", "replication", "expression")
+DEFAULT_COMPONENT_ORDER = ("resistance", "replication", "t1", "expression", "t0")
 
 
 def normalize_component_order(order=DEFAULT_COMPONENT_ORDER) -> list[str]:
     if (
+        isinstance(order, (list, tuple))
+        and len(order) == 3
+        and all(isinstance(item, str) for item in order)
+        and set(order) == set(LEGACY_COMPONENT_ORDER)
+    ):
+        return [
+            piece
+            for kind in order
+            for piece in (
+                ("t1", "expression", "t0") if kind == "expression" else (kind,)
+            )
+        ]
+    if (
         not isinstance(order, (list, tuple))
-        or len(order) != 3
+        or len(order) != 5
         or any(not isinstance(item, str) for item in order)
         or set(order) != set(DEFAULT_COMPONENT_ORDER)
     ):
         raise DesignError(
-            "组件顺序必须恰好包含抗性模块、复制模块和完整表达构建各一次。",
+            "组件顺序必须包含抗性、复制、完整表达构建、T0、T1 各一次。",
             code="invalid_component_order",
         )
     return list(order)
@@ -306,6 +320,8 @@ def build_design(
     replication_id: str,
     design_id: int,
     component_order=DEFAULT_COMPONENT_ORDER,
+    t0_id: str | None = None,
+    t1_id: str | None = None,
 ) -> MolecularDesign:
     order = normalize_component_order(component_order)
     enzymes = resolve_enzymes(enzyme_names)
@@ -318,6 +334,37 @@ def build_design(
         raise DesignError(
             "所选模块 ID 不在当前组件库中。", code="unknown_module"
         ) from exc
+    terminators = {}
+    for role, identifier in (("t0", t0_id), ("t1", t1_id)):
+        if identifier is None:
+            continue
+        try:
+            module = catalog.get_terminator(identifier)
+        except (KeyError, ValueError) as exc:
+            raise DesignError(
+                "所选终止子 ID 不在当前组件库中。", code="unknown_module"
+            ) from exc
+        if module.role != role:
+            raise DesignError(
+                f"{module.name} 不能作为 {role.upper()} 使用。",
+                code="invalid_terminator_role",
+            )
+        terminators[role] = module
+    terminator_warnings = []
+    actual_order = [
+        kind for kind in order if kind not in ("t0", "t1") or kind in terminators
+    ]
+    expression_index = actual_order.index("expression")
+    for role, relative in (("t1", -1), ("t0", 1)):
+        boundary = "上游" if relative < 0 else "下游"
+        if role not in terminators:
+            terminator_warnings.append(
+                f"当前设计缺少 {role.upper()} 终止子，仍可继续生成。"
+            )
+        elif actual_order[(expression_index + relative) % len(actual_order)] != role:
+            terminator_warnings.append(
+                f"{role.upper()} 未位于完整表达构建的{boundary}边界，仍可继续生成。"
+            )
     insert = str(insert_record.seq).upper()
     if not insert or set(insert) - set("ACGT"):
         raise DesignError(
@@ -337,11 +384,10 @@ def build_design(
         (replication_id, replication.name, "replication", replication.sequence),
         (
             "t1_interval",
-            "T1 前原有间隔",
+            "复制模块尾部间隔",
             "linker",
             catalog.scaffold["replication_to_t1"],
         ),
-        ("t1", "T1", "terminator", catalog.scaffold["t1"]),
     ]
     spacer = catalog.scaffold["landing_pad_spacer"]
 
@@ -349,6 +395,10 @@ def build_design(
         blocks = {
             "resistance": resistance_pieces,
             "replication": replication_pieces,
+            **{
+                role: [(module.id, module.name, "terminator", module.sequence)]
+                for role, module in terminators.items()
+            },
             "expression": [
                 ("left_site", left.name, "restriction", left.site),
                 (
@@ -360,14 +410,15 @@ def build_design(
                 ("right_site", right.name, "restriction", right.site),
             ],
         }
-        pieces = [piece for kind in order for piece in blocks[kind]]
+        pieces = [(owner, *piece) for owner in order for piece in blocks.get(owner, [])]
         segments, features, cursor = [], [], 0
-        for identifier, label, kind, dna in pieces:
+        for owner, identifier, label, kind, dna in pieces:
             segments.append(
                 {
                     "id": identifier,
                     "label": label,
                     "kind": kind,
+                    "component_type": owner,
                     "start_bp": cursor + 1,
                     "end_bp": cursor + len(dna),
                     "length_bp": len(dna),
@@ -379,6 +430,10 @@ def build_design(
                         resistance if kind == "resistance" else replication, cursor
                     )
                 )
+            elif kind == "terminator":
+                # One source annotation per standalone terminator; no duplicate wrapper.
+                module = terminators[owner]
+                features.extend(_module_features(module, cursor)[1:])
             elif kind not in ("restriction", "expression"):
                 features.append(
                     _annotation(
@@ -392,7 +447,7 @@ def build_design(
                     )
                 )
             cursor += len(dna)
-        return "".join(p[3] for p in pieces), segments, features
+        return "".join(p[4] for p in pieces), segments, features
 
     backbone_sequence, bone_segments, features = layout(spacer, placeholder=True)
     final_sequence, segments, _ = layout(insert)
@@ -420,6 +475,8 @@ def build_design(
         "parts_design_id": design_id,
         "assembly_method": "restriction",
         "component_order": order,
+        "t0_id": t0_id,
+        "t1_id": t1_id,
         "estimated_final_length_bp": len(final_sequence),
         "target": {
             "mode": "replace",
@@ -526,7 +583,8 @@ def build_design(
         result=assembled,
         plan=plan,
     )
-    warnings = [*resistance.notes, *replication.notes]
+    warnings = [*resistance.notes, *replication.notes, *terminator_warnings]
+    warnings.extend(w for module in terminators.values() for w in module.notes)
     warnings.extend(w for w in mapping_warnings if "landing_pad_spacer" not in w)
     preparations = {}
     if not issues:
@@ -555,6 +613,9 @@ def build_design(
             issues.append({"code": exc.code, "message": str(exc)})
     preview = {
         "component_order": order,
+        "t0_id": t0_id,
+        "t1_id": t1_id,
+        "terminator_warnings": terminator_warnings,
         "valid": not issues,
         "issues": issues,
         "warnings": warnings,

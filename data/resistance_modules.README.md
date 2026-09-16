@@ -2,7 +2,7 @@
 
 `resistance_modules.csv` 收录 BASIC SEVA 的 6 类抗性、7 个模块版本。字段仅包含 `id,name,antibiotic,resistance_gene,sequence`。
 
-`sequence` 是从原始 GenBank 中提取的连续片段：T0 终止子起点至完整抗性模块末端。保留中间原有调控和间隔序列，不包含外围 LMP/LMS 接头、BSEVA_L1、复制模块或 mScarlet 筛选盒。DNA 使用连续的大写 A/C/G/T 字符串，CSV 使用 UTF-8 编码。
+`sequence` 是从原始 GenBank 中提取的连续片段：T0 终止子末端之后至完整抗性模块末端。原七条记录共同的 103 bp T0 已拆入 `terminator_modules.csv`；保留剩余原有调控和间隔序列，不包含外围 LMP/LMS 接头、BSEVA_L1、复制模块或 mScarlet 筛选盒。DNA 使用连续的大写 A/C/G/T 字符串，CSV 使用 UTF-8 编码。加载时不会再按长度裁剪。
 
 `antibiotic` 使用英文小写名称；链霉素／壮观霉素共用一个模块，写为 `streptomycin;spectinomycin`。
 
@@ -19,13 +19,13 @@
 
 | id | 来源记录 | 提取范围 | 长度（bp） |
 | --- | --- | --- | ---: |
-| basic_seva_ap | BASIC_SEVA_15a.10 | 64–1231 | 1168 |
-| basic_seva_km | BASIC_SEVA_25a.10 | 64–1119 | 1056 |
-| basic_seva_cm | BASIC_SEVA_35a.10 | 64–975 | 912 |
-| basic_seva_sm_sp | BASIC_SEVA_45a.10 | 64–1189 | 1126 |
-| basic_seva_tet_5a | BASIC_SEVA_5a5a.10 | 64–1467 | 1404 |
-| basic_seva_gm | BASIC_SEVA_65a.10 | 64–997 | 934 |
-| basic_seva_gm_11 | BASIC_SEVA_66.11 | 62–1014 | 953 |
+| basic_seva_ap | BASIC_SEVA_15a.10 | 167–1231 | 1065 |
+| basic_seva_km | BASIC_SEVA_25a.10 | 167–1119 | 953 |
+| basic_seva_cm | BASIC_SEVA_35a.10 | 167–975 | 809 |
+| basic_seva_sm_sp | BASIC_SEVA_45a.10 | 167–1189 | 1023 |
+| basic_seva_tet_5a | BASIC_SEVA_5a5a.10 | 167–1467 | 1301 |
+| basic_seva_gm | BASIC_SEVA_65a.10 | 167–997 | 831 |
+| basic_seva_gm_11 | BASIC_SEVA_66.11 | 165–1014 | 850 |
 
 ## 庆大霉素版本
 
@@ -35,7 +35,9 @@
 
 已检查 CSV 的字段、行数、唯一编号、DNA 字符、模块边界及全部序列与来源片段的一致性。
 
-CSV SHA-256：`c6aed8ee3a2992975160dcc8d75598449145961d7f4c1fef9e0c3ab4b73327fb`。
+CSV SHA-256：`3961dbf50c3cfbb5d5a4597d3eaa9b8f4f6619122775af776788951341e96941`。
+
+拆分前 CSV SHA-256：`c6aed8ee3a2992975160dcc8d75598449145961d7f4c1fef9e0c3ab4b73327fb`。
 
 来源文件 SHA-256：
 

@@ -20,6 +20,7 @@ type Segment = {
   id: string;
   label: string;
   kind: string;
+  component_type?: ComponentType;
   start_bp: number;
   end_bp: number;
 };
@@ -89,7 +90,13 @@ export function PlasmidRing({
     componentOrder,
     view,
     preview?.source_fingerprint || construct?.sequence_sha256,
-    outer.map((part) => [part.id, part.kind, part.start_bp, part.end_bp]),
+    outer.map((part) => [
+      part.id,
+      part.kind,
+      part.component_type,
+      part.start_bp,
+      part.end_bp,
+    ]),
   ]);
   useEffect(() => {
     // Polling may deliver new objects with identical coordinates. Cancel only
@@ -189,12 +196,50 @@ export function PlasmidRing({
     setDrag(next);
   };
 
+  // Keep short independent terminators named even with gene annotations hidden.
+  // Place leaders in side columns and keep their labels away from enzyme labels.
+  const callouts = outer
+    .filter((part) => ["t0", "t1"].includes(segmentComponent(part) || ""))
+    .map((part) => {
+      const a = (angle(part.start_bp) + angle(part.end_bp + 1)) / 2;
+      const side = Math.cos(a) >= 0 ? 1 : -1;
+      return {
+        part,
+        a,
+        side,
+        x: side > 0 ? 412 : 28,
+        y: Math.max(44, Math.min(396, 220 + 176 * Math.sin(a))),
+      };
+    })
+    .sort((a, b) => a.y - b.y);
+  const occupied = sites.map((site) => ({
+    x: 220 + 187 * Math.cos(angle(site.start_bp)),
+    y: 220 + 187 * Math.sin(angle(site.start_bp)),
+  }));
+  callouts.forEach((callout) => {
+    const free = (y: number) =>
+      occupied.every(
+        (label) =>
+          Math.abs(label.x - callout.x) > 76 || Math.abs(label.y - y) >= 24,
+      );
+    const candidates = Array.from({ length: 16 }, (_, i) => [
+      callout.y + i * 24,
+      callout.y - i * 24,
+    ]).flat();
+    callout.y =
+      candidates.find((y) => y >= 44 && y <= 396 && free(y)) ?? callout.y;
+    occupied.push({ x: callout.x, y: callout.y });
+  });
   const draw = (part: Segment, radius: number, width: number, label = true) => {
     const start = angle(part.start_bp),
       end = angle(part.end_bp + 1);
+    const independentTerminator = ["t0", "t1"].includes(
+      segmentComponent(part) || "",
+    );
     const middle = (start + end) / 2;
     const visible =
       label &&
+      !independentTerminator &&
       !["linker", "restriction"].includes(part.kind) &&
       ((part.end_bp - part.start_bp + 1) / Math.max(1, length)) * 360 > 22;
     return (
@@ -226,10 +271,15 @@ export function PlasmidRing({
           <path
             data-start-bp={part.start_bp}
             data-end-bp={part.end_bp}
-            d={arc(radius, start, end, width)}
+            d={arc(
+              radius,
+              start,
+              independentTerminator ? Math.max(end, start + 0.015) : end,
+              width,
+            )}
             fill={palette[part.kind] || "#77839a"}
             stroke="#0d1117"
-            strokeWidth="1.5"
+            strokeWidth={independentTerminator ? "0.4" : "1.5"}
           />
         )}
         <title>
@@ -269,6 +319,28 @@ export function PlasmidRing({
             strokeWidth="28"
           />
           {outer.map((part) => draw(part, 138, 28))}
+          {callouts.map(({ part, a, side, x, y }) => (
+            <g
+              key={`callout-${part.id}`}
+              className="terminator-leader"
+              onMouseDown={(event) => startDrag(event, part)}
+            >
+              <path
+                d={`M ${220 + 153 * Math.cos(a)} ${220 + 153 * Math.sin(a)} L ${x - side * 40} ${y - 4} L ${x - side * 4} ${y - 4}`}
+                fill="none"
+                stroke={palette.terminator}
+                strokeWidth="1"
+              />
+              <text
+                className="terminator-callout"
+                x={x}
+                y={y - 8}
+                textAnchor={side > 0 ? "end" : "start"}
+              >
+                {segmentName(part)}
+              </text>
+            </g>
+          ))}
           {drag?.moved &&
             (() => {
               const block = blocks.find((block) => block.type === drag.type)!;

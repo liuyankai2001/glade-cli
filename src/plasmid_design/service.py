@@ -38,6 +38,7 @@ class DesignService:
         return {
             "resistance": [m.to_payload() for m in catalog.resistance.values()],
             "replication": [m.to_payload() for m in catalog.replication.values()],
+            "terminator": [m.to_payload() for m in catalog.terminator.values()],
         }
 
     def context(self) -> dict:
@@ -126,6 +127,15 @@ class DesignService:
                     "resistance_id": component["resistance_id"],
                     "replication_id": component["replication_id"],
                     "component_order": order,
+                    **{
+                        f"{role}_id": component.get(f"{role}_id")
+                        if isinstance(component.get(f"{role}_id"), str)
+                        and component.get(f"{role}_id") in snapshot.catalog.terminator
+                        and snapshot.catalog.terminator[component[f"{role}_id"]].role
+                        == role
+                        else None
+                        for role in ("t0", "t1")
+                    },
                 }
         try:
             response["result"] = self._result(snapshot)
@@ -144,6 +154,8 @@ class DesignService:
             request.get("replication_id"),
             snapshot.source.constructs[0].design_id,
             component_order=request.get("component_order", DEFAULT_COMPONENT_ORDER),
+            t0_id=request.get("t0_id"),
+            t1_id=request.get("t1_id"),
         )
         design.preview.update(
             {
@@ -162,8 +174,8 @@ class DesignService:
         snapshot, design = self._prepare(request)
         if not design.preview["valid"]:
             raise DesignError(
-                "酶切检查未通过，请更换酶或模块后重新生成。",
-                code="restriction_conflict",
+                "设计检查未通过，请按提示调整组件或限制酶。",
+                code="design_invalid",
                 issues=design.preview["issues"],
             )
         project = snapshot.source.project_output_path.resolve()
@@ -252,6 +264,16 @@ class DesignService:
         if len(constructs) != 1:
             return None
         generation_id = component["generation_id"]
+        for role in ("t0", "t1"):
+            identifier = component.get(f"{role}_id")
+            if identifier is not None and (
+                not isinstance(identifier, str)
+                or identifier not in snapshot.catalog.terminator
+                or snapshot.catalog.terminator[identifier].role != role
+            ):
+                raise DesignError(
+                    "已登记终止子引用无效，请重新生成。", code="artifact_invalid"
+                )
         if not re.fullmatch(r"[0-9a-f]{32}", generation_id):
             raise DesignError("已登记结果编号无效。", code="artifact_invalid")
         files = []
@@ -289,6 +311,8 @@ class DesignService:
             "id": generation_id,
             "resistance_id": component["resistance_id"],
             "replication_id": component["replication_id"],
+            "t0_id": component.get("t0_id"),
+            "t1_id": component.get("t1_id"),
             "component_order": normalize_component_order(
                 component.get("component_order", DEFAULT_COMPONENT_ORDER)
             ),

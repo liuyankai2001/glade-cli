@@ -41,8 +41,8 @@ class JobManager:
             preview = self.service.preview(request)
             if not preview["valid"]:
                 raise DesignError(
-                    "酶切检查未通过，请更换酶或模块。",
-                    code="restriction_conflict",
+                    "设计检查未通过，请按提示调整组件或限制酶。",
+                    code="design_invalid",
                     issues=preview["issues"],
                 )
             self._executor.submit(self._run, job_id, deepcopy(request))

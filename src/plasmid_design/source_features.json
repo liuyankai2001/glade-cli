@@ -1,14 +1,530 @@
 {
-  "basic_seva_ap": {"sha256":"e589d17e939c40824023f92436804adf95f353c91ccf30eb9780155b470bc57f","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":129,"end":1168,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Ap"]}}]},
-  "basic_seva_km": {"sha256":"ba94804c214aff91d0ba37d9e986569d58fe514e4d2abe9732766ec66f92a026","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":129,"end":1056,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Km"]}}]},
-  "basic_seva_cm": {"sha256":"d828a3cb5cf7eee9e64292b7ca6ce0331ec8edcc9059bae0030eaf9247fae588","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":129,"end":912,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Cm"]}}]},
-  "basic_seva_sm_sp": {"sha256":"80ca647ebd5f4bb318d56c116f647bb80a63c08b9577af864bdfbc792ef34f9a","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":137,"end":1126,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Sm/Sp"]}}]},
-  "basic_seva_tet_5a": {"sha256":"84c764ccf85a46acfd548abf4ff76ffc6f191bcf09e61b37f0523510faa37a4f","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":137,"end":1404,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Tet(5axx)"]}}]},
-  "basic_seva_gm": {"sha256":"1c23b4979add17b384977980684c801431a9763cab93fb9d7424d654715cdb33","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":129,"end":934,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Gm"]}}]},
-  "basic_seva_gm_11": {"sha256":"431fc598ac83caf7cf4c7942e331e93025cebaef797fd9833dc2ed2c13c9f2b8","features":[{"type":"misc_feature","parts":[{"start":0,"end":103,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_T0"]}},{"type":"misc_feature","parts":[{"start":129,"end":953,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_Gm"]}}]},
-  "basic_seva_rsf1010": {"sha256":"72299a2593ac515cc6b6f906100c492dd7c9b034e0a18a09fd13eca30065e104","features":[{"type":"misc_feature","parts":[{"start":0,"end":3671,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_RSF1010(x5ax)"]}}]},
-  "basic_seva_p15a": {"sha256":"628e9c362fae347fc6f00e3e108380dd6090cceaf879f8a1153df07fb44a44dc","features":[{"type":"misc_feature","parts":[{"start":0,"end":732,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_p15A"]}}]},
-  "basic_seva_psc101": {"sha256":"33cc72a4fb41192deadf2827361cf0969a21c45e6db9fa99ed9d779f92aea0b8","features":[{"type":"misc_feature","parts":[{"start":0,"end":1460,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_pSC101"]}}]},
-  "basic_seva_pbr322_rop": {"sha256":"710ce464546a14b5817746881b6121f950e9a66c2978f1ad4614b60c7d246276","features":[{"type":"misc_feature","parts":[{"start":0,"end":1385,"strand":1}],"operator":null,"qualifiers":{"label":["SEVA_pBR322-ROP"]}}]},
-  "basic_seva_psc101_pkd46_ts": {"sha256":"e30f01e55d59589a306a1c9da60244a23b02b91cc38f1fe646d3187d033e3368","features":[{"type":"CDS","parts":[{"start":61,"end":1012,"strand":1}],"operator":null,"qualifiers":{"label":["Rep101(pKD46)"]}},{"type":"rep_origin","parts":[{"start":1059,"end":1282,"strand":1}],"operator":null,"qualifiers":{"label":["pSC101 ori"]}}]}
+  "_schema_version": 2,
+  "_sources": {
+    "collection": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e"
+    },
+    "gm_11": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_66-11_%26_69-11.gb",
+      "source_sha256": "6d5e5b1cafbc688a0f4fa3cf2a9eb16482bf39b89afd9970022ae11e4dade90f",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e"
+    }
+  },
+  "basic_seva_ap": {
+    "sha256": "508ab58b2c8b5252d93d06f7164734806c8caedefb438eaeeb8277615bedce93",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 26,
+            "end": 1065,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Ap"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "e589d17e939c40824023f92436804adf95f353c91ccf30eb9780155b470bc57f",
+      "parent_start_1based": 64,
+      "parent_end_1based": 1231,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 167,
+      "end_1based": 1231
+    }
+  },
+  "basic_seva_km": {
+    "sha256": "88af20597c943df693f4ab4beb9cb8eed8812b642f1c169137ab9938d8a2fce8",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 26,
+            "end": 953,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Km"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "ba94804c214aff91d0ba37d9e986569d58fe514e4d2abe9732766ec66f92a026",
+      "parent_start_1based": 64,
+      "parent_end_1based": 1119,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_25a.10",
+      "start_1based": 167,
+      "end_1based": 1119
+    }
+  },
+  "basic_seva_cm": {
+    "sha256": "5fa70394dafd7472b83b1f6928650d20519125a468ad6493203e0534b08ba28e",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 26,
+            "end": 809,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Cm"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "d828a3cb5cf7eee9e64292b7ca6ce0331ec8edcc9059bae0030eaf9247fae588",
+      "parent_start_1based": 64,
+      "parent_end_1based": 975,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_35a.10",
+      "start_1based": 167,
+      "end_1based": 975
+    }
+  },
+  "basic_seva_sm_sp": {
+    "sha256": "2899d3ba2dadc5c2099449231b7cc64b5741ab59be496673e48f16a7111ee9d4",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 34,
+            "end": 1023,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Sm/Sp"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "80ca647ebd5f4bb318d56c116f647bb80a63c08b9577af864bdfbc792ef34f9a",
+      "parent_start_1based": 64,
+      "parent_end_1based": 1189,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_45a.10",
+      "start_1based": 167,
+      "end_1based": 1189
+    }
+  },
+  "basic_seva_tet_5a": {
+    "sha256": "3c4d1d221af727ccc8f2451bce6a8da94e749ee2799f775d2218fb617d750995",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 34,
+            "end": 1301,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Tet(5axx)"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "84c764ccf85a46acfd548abf4ff76ffc6f191bcf09e61b37f0523510faa37a4f",
+      "parent_start_1based": 64,
+      "parent_end_1based": 1467,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_5a5a.10",
+      "start_1based": 167,
+      "end_1based": 1467
+    }
+  },
+  "basic_seva_gm": {
+    "sha256": "b6d48f406f3461399ae3cee9d3a2e283fea743072ba6ded9f93d7926da1184dc",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 26,
+            "end": 831,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Gm"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "1c23b4979add17b384977980684c801431a9763cab93fb9d7424d654715cdb33",
+      "parent_start_1based": 64,
+      "parent_end_1based": 997,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_65a.10",
+      "start_1based": 167,
+      "end_1based": 997
+    }
+  },
+  "basic_seva_gm_11": {
+    "sha256": "20aa394489add21fb3612ea2e5d7806f1013227640cdd73e01525e603f6fe790",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 26,
+            "end": 850,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_Gm"
+          ]
+        }
+      }
+    ],
+    "type": "resistance",
+    "derivation": {
+      "operation": "remove_verified_prefix_once",
+      "parent_sha256": "431fc598ac83caf7cf4c7942e331e93025cebaef797fd9833dc2ed2c13c9f2b8",
+      "parent_start_1based": 62,
+      "parent_end_1based": 1014,
+      "removed_prefix_module_id": "basic_seva_t0",
+      "removed_prefix_bp": 103,
+      "removed_prefix_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c"
+    },
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_66-11_%26_69-11.gb",
+      "source_sha256": "6d5e5b1cafbc688a0f4fa3cf2a9eb16482bf39b89afd9970022ae11e4dade90f",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "gm_11",
+      "source_record": "BASIC_SEVA_66.11",
+      "start_1based": 165,
+      "end_1based": 1014
+    }
+  },
+  "basic_seva_rsf1010": {
+    "sha256": "72299a2593ac515cc6b6f906100c492dd7c9b034e0a18a09fd13eca30065e104",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 3671,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_RSF1010(x5ax)"
+          ]
+        }
+      }
+    ],
+    "type": "replication",
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 1308,
+      "end_1based": 4978
+    }
+  },
+  "basic_seva_p15a": {
+    "sha256": "628e9c362fae347fc6f00e3e108380dd6090cceaf879f8a1153df07fb44a44dc",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 732,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_p15A"
+          ]
+        }
+      }
+    ],
+    "type": "replication",
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_16.10",
+      "start_1based": 1305,
+      "end_1based": 2036
+    }
+  },
+  "basic_seva_psc101": {
+    "sha256": "33cc72a4fb41192deadf2827361cf0969a21c45e6db9fa99ed9d779f92aea0b8",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 1460,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_pSC101"
+          ]
+        }
+      }
+    ],
+    "type": "replication",
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_17.10",
+      "start_1based": 1305,
+      "end_1based": 2764
+    }
+  },
+  "basic_seva_pbr322_rop": {
+    "sha256": "710ce464546a14b5817746881b6121f950e9a66c2978f1ad4614b60c7d246276",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 1385,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_pBR322-ROP"
+          ]
+        }
+      }
+    ],
+    "type": "replication",
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_19.10",
+      "start_1based": 1305,
+      "end_1based": 2689
+    }
+  },
+  "basic_seva_psc101_pkd46_ts": {
+    "sha256": "e30f01e55d59589a306a1c9da60244a23b02b91cc38f1fe646d3187d033e3368",
+    "features": [
+      {
+        "type": "CDS",
+        "parts": [
+          {
+            "start": 61,
+            "end": 1012,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "Rep101(pKD46)"
+          ]
+        }
+      },
+      {
+        "type": "rep_origin",
+        "parts": [
+          {
+            "start": 1059,
+            "end": 1282,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "pSC101 ori"
+          ]
+        }
+      }
+    ],
+    "type": "replication",
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_17_pKD46.10",
+      "start_1based": 1297,
+      "end_1based": 2847
+    }
+  },
+  "basic_seva_t0": {
+    "sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c",
+    "type": "terminator",
+    "role": "t0",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 103,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_T0"
+          ]
+        }
+      }
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 64,
+      "end_1based": 166
+    }
+  },
+  "basic_seva_t1": {
+    "sha256": "ae2246d9435d4c7b95aa6c19206bd80c58aee4b9f6ad25538c19005df11de025",
+    "type": "terminator",
+    "role": "t1",
+    "features": [
+      {
+        "type": "misc_feature",
+        "parts": [
+          {
+            "start": 0,
+            "end": 105,
+            "strand": 1
+          }
+        ],
+        "operator": null,
+        "qualifiers": {
+          "label": [
+            "SEVA_T1"
+          ]
+        }
+      }
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 4993,
+      "end_1based": 5097
+    }
+  }
 }

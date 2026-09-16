@@ -621,3 +621,42 @@ summary span {
     opacity: 1;
   }
 }
+
+.terminator-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #010409bb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.terminator-dialog {
+  width: min(480px, 100%);
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #484f58;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 16px 60px #0008;
+}
+.terminator-dialog h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+.terminator-dialog li {
+  margin: 12px 0;
+  line-height: 1.5;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.terminator-callout {
+  fill: #d2a8ff;
+  font-size: 12px;
+  font-weight: 600;
+}

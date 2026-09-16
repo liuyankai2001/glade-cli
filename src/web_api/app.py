@@ -12,12 +12,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from filelock import Timeout
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from src.plasmid_design.errors import DesignError
-from src.plasmid_design.sequence import DEFAULT_COMPONENT_ORDER
+from src.plasmid_design.sequence import (
+    DEFAULT_COMPONENT_ORDER,
+    normalize_component_order,
+)
 from src.plasmid_design.service import DesignService
 from src.web_api.jobs import JobManager
 
@@ -26,13 +29,22 @@ class DesignRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     resistance_id: str = Field(min_length=1, max_length=120)
     replication_id: str = Field(min_length=1, max_length=120)
+    t0_id: str | None = Field(default=None, min_length=1, max_length=120)
+    t1_id: str | None = Field(default=None, min_length=1, max_length=120)
     expected_revision: StrictInt = Field(ge=0)
     source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    component_order: list[Literal["resistance", "replication", "expression"]] = Field(
+    component_order: list[
+        Literal["resistance", "replication", "t0", "t1", "expression"]
+    ] = Field(
         default_factory=lambda: list(DEFAULT_COMPONENT_ORDER),
-        min_length=3,
-        max_length=3,
+        min_length=5,
+        max_length=5,
     )
+
+    @field_validator("component_order", mode="before")
+    @classmethod
+    def expand_legacy_order(cls, value):
+        return normalize_component_order(value)
 
 
 def error_response(code, message, status, issues=None):

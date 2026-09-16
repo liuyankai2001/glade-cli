@@ -27,6 +27,8 @@ class DesignServiceTests(unittest.TestCase):
         return {
             "resistance_id": "basic_seva_ap",
             "replication_id": "basic_seva_p15a",
+            "t0_id": "basic_seva_t0",
+            "t1_id": "basic_seva_t1",
             "expected_revision": context["project"]["manifest_revision"],
             "source_fingerprint": context["project"]["source_fingerprint"],
         }
@@ -42,6 +44,34 @@ class DesignServiceTests(unittest.TestCase):
         self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
         self.assertFalse((self.config.project_output_path / "plasmid_designs").exists())
 
+    def test_missing_terminators_can_generate_and_record_absence_and_warnings(self):
+        request = {**self.request(), "t0_id": None, "t1_id": None}
+        preview = self.service.preview(request)
+        self.assertTrue(preview["valid"], preview["issues"])
+        self.assertEqual(len(preview["terminator_warnings"]), 2)
+        result = self.service.generate(request)
+        self.assertIsNone(result["t0_id"])
+        self.assertIsNone(result["t1_id"])
+        manifest = json.loads(
+            self.config.manifest_output_path.read_text(encoding="utf-8")
+        )
+        component = manifest["plasmid_selection"]["component_design"]
+        self.assertIsNone(component["t0_id"])
+        self.assertIsNone(component["t1_id"])
+        self.assertTrue(
+            all(w in result["warnings"] for w in preview["terminator_warnings"])
+        )
+        final = SeqIO.read(
+            self.service.download(result["id"], "final_genbank"), "genbank"
+        )
+        self.assertEqual(str(final.seq), preview["sequence"])
+        self.assertFalse(
+            any(
+                f.qualifiers.get("label", [""])[0] in ("SEVA_T0", "SEVA_T1", "T0", "T1")
+                for f in final.features
+            )
+        )
+
     def test_reordered_generation_matches_manifest_context_and_legacy_execution(self):
         from src.final_assemble_execute.common import (
             assemble_sequence,
@@ -50,14 +80,21 @@ class DesignServiceTests(unittest.TestCase):
 
         for order in permutations(["resistance", "replication", "expression"]):
             with self.subTest(order=order):
-                request = {**self.request(), "component_order": list(order)}
+                expanded = [
+                    piece
+                    for kind in order
+                    for piece in (
+                        ["t1", "expression", "t0"] if kind == "expression" else [kind]
+                    )
+                ]
+                request = {**self.request(), "component_order": expanded}
                 preview = self.service.preview(request)
-                self.assertEqual(preview["component_order"], list(order))
+                self.assertEqual(preview["component_order"], expanded)
                 result = self.service.generate(request)
-                self.assertEqual(result["component_order"], list(order))
+                self.assertEqual(result["component_order"], expanded)
                 context = self.service.context()
-                self.assertEqual(context["selection"]["component_order"], list(order))
-                self.assertEqual(context["result"]["component_order"], list(order))
+                self.assertEqual(context["selection"]["component_order"], expanded)
+                self.assertEqual(context["result"]["component_order"], expanded)
                 manifest = json.loads(
                     self.config.manifest_output_path.read_text(encoding="utf-8")
                 )
@@ -65,7 +102,7 @@ class DesignServiceTests(unittest.TestCase):
                     manifest["plasmid_selection"]["component_design"][
                         "component_order"
                     ],
-                    list(order),
+                    expanded,
                 )
                 final = SeqIO.read(
                     self.service.download(result["id"], "final_genbank"), "genbank"

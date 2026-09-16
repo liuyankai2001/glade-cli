@@ -1,4 +1,5 @@
-export type ComponentType = "resistance" | "replication" | "expression";
+export type ComponentType =
+  "resistance" | "replication" | "expression" | "t0" | "t1";
 export type ComponentOrder = ComponentType[];
 export type Feature = {
   label: string;
@@ -11,7 +12,8 @@ export type Feature = {
 export type Module = {
   id: string;
   name: string;
-  type: "resistance" | "replication";
+  type: "resistance" | "replication" | "terminator";
+  role?: "t0" | "t1";
   sequence: string;
   length_bp: number;
   gc_percent: number;
@@ -49,6 +51,8 @@ export type Context = {
   selection: {
     resistance_id: string;
     replication_id: string;
+    t0_id?: string | null;
+    t1_id?: string | null;
     component_order?: ComponentOrder;
   } | null;
   result: Result | null;
@@ -63,6 +67,9 @@ export type Issue = {
   end_bp?: number;
 };
 export type Preview = {
+  t0_id?: string | null;
+  t1_id?: string | null;
+  terminator_warnings?: string[];
   component_order?: ComponentOrder;
   valid: boolean;
   issues: Issue[];
@@ -75,6 +82,7 @@ export type Preview = {
     id: string;
     label: string;
     kind: string;
+    component_type?: ComponentType;
     start_bp: number;
     end_bp: number;
     length_bp: number;
@@ -85,6 +93,8 @@ export type Preview = {
   manifest_revision: number;
 };
 export type Result = {
+  t0_id?: string | null;
+  t1_id?: string | null;
   component_order?: ComponentOrder;
   id: string;
   resistance_id: string;

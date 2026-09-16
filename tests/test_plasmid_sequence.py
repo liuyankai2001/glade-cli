@@ -81,6 +81,77 @@ class MolecularDesignTests(unittest.TestCase):
 
         self.catalog = ModuleCatalog(Path(__file__).resolve().parents[1] / "data")
 
+    def test_missing_terminators_warn_without_adding_dna_or_blocking(self):
+        design = self.m.build_design(
+            self.catalog,
+            expression_record(),
+            ["EcoRI", "HindIII"],
+            "basic_seva_ap",
+            "basic_seva_p15a",
+            1,
+        )
+        self.assertTrue(design.preview["valid"], design.preview["issues"])
+        self.assertEqual(len(design.preview["terminator_warnings"]), 2)
+        self.assertFalse(
+            any(s["kind"] == "terminator" for s in design.preview["segments"])
+        )
+        self.assertFalse(
+            any(
+                f["label"] in ("SEVA_T0", "SEVA_T1", "T0", "T1")
+                for f in design.preview["features"]
+            )
+        )
+        self.assertEqual(set(design.preparation_records), {"backbone", "insert"})
+
+    def test_selected_terminators_warn_for_wrong_positions_and_support_circular_boundary(
+        self,
+    ):
+        for order, count in [
+            (["resistance", "replication", "t1", "expression", "t0"], 0),
+            (["t0", "resistance", "replication", "t1", "expression"], 0),
+            (["resistance", "replication", "t0", "expression", "t1"], 2),
+        ]:
+            with self.subTest(order=order):
+                design = self.m.build_design(
+                    self.catalog,
+                    expression_record(),
+                    ["EcoRI", "HindIII"],
+                    "basic_seva_ap",
+                    "basic_seva_p15a",
+                    1,
+                    component_order=order,
+                    t0_id="basic_seva_t0",
+                    t1_id="basic_seva_t1",
+                )
+                self.assertTrue(design.preview["valid"], design.preview["issues"])
+                self.assertEqual(len(design.preview["terminator_warnings"]), count)
+                self.assertEqual(
+                    [
+                        s["component_type"]
+                        for s in design.preview["segments"]
+                        if s["kind"] == "terminator"
+                    ],
+                    [k for k in order if k in ("t0", "t1")],
+                )
+
+    def test_single_selected_terminator_adds_only_that_sequence(self):
+        design = self.m.build_design(
+            self.catalog,
+            expression_record(),
+            ["EcoRI", "HindIII"],
+            "basic_seva_ap",
+            "basic_seva_p15a",
+            1,
+            t0_id="basic_seva_t0",
+        )
+        self.assertTrue(design.preview["valid"], design.preview["issues"])
+        self.assertEqual(len(design.preview["terminator_warnings"]), 1)
+        self.assertIn("T1", design.preview["terminator_warnings"][0])
+        self.assertEqual(
+            [s["id"] for s in design.preview["segments"] if s["kind"] == "terminator"],
+            ["basic_seva_t0"],
+        )
+
     def test_all_component_orders_preserve_dna_annotations_and_matching_preparations(
         self,
     ):
@@ -89,11 +160,14 @@ class MolecularDesignTests(unittest.TestCase):
             "resistance": self.catalog.get_resistance("basic_seva_ap").sequence
             + self.catalog.scaffold["resistance_to_replication"],
             "replication": self.catalog.get_replication("basic_seva_p15a").sequence
-            + self.catalog.scaffold["replication_to_t1"]
-            + self.catalog.scaffold["t1"],
+            + self.catalog.scaffold["replication_to_t1"],
             "expression": "GAATTC" + str(insert.seq) + "AAGCTT",
+            "t0": self.catalog.get_terminator("basic_seva_t0").sequence,
+            "t1": self.catalog.get_terminator("basic_seva_t1").sequence,
         }
-        for order in permutations(["resistance", "replication", "expression"]):
+        for order in permutations(
+            ["resistance", "replication", "t1", "expression", "t0"]
+        ):
             with self.subTest(order=order):
                 design = self.m.build_design(
                     self.catalog,
@@ -103,6 +177,8 @@ class MolecularDesignTests(unittest.TestCase):
                     "basic_seva_p15a",
                     1,
                     component_order=list(order),
+                    t0_id="basic_seva_t0",
+                    t1_id="basic_seva_t1",
                 )
                 self.assertTrue(design.preview["valid"], design.preview["issues"])
                 self.assertEqual(
@@ -111,9 +187,10 @@ class MolecularDesignTests(unittest.TestCase):
                 self.assertEqual(design.preview["component_order"], list(order))
                 self.assertEqual(
                     [
-                        s["kind"]
+                        s["component_type"]
                         for s in design.preview["segments"]
-                        if s["kind"] in blocks
+                        if s["kind"]
+                        in ("resistance", "replication", "expression", "terminator")
                     ],
                     list(order),
                 )
@@ -187,8 +264,7 @@ class MolecularDesignTests(unittest.TestCase):
             get_replication=lambda _: replication,
             scaffold={
                 "resistance_to_replication": "CCCC",
-                "replication_to_t1": "G",
-                "t1": "AA",
+                "replication_to_t1": "GAA",
                 "landing_pad_spacer": "CCCC",
             },
         )
