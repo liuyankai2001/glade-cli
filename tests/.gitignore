@@ -1,0 +1,8 @@
+!.gitignore
+!plasmid_fixtures.py
+!test_plasmid_catalog.py
+!test_plasmid_sequence.py
+!test_plasmid_service.py
+!test_plasmid_web_api.py
+!test_manifest_concurrency.py
+!test_web_cli.py

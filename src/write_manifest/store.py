@@ -3,11 +3,25 @@ from __future__ import annotations
 import json
 import tempfile
 from collections.abc import Mapping
+from functools import cache
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
 
 SCHEMA_VERSION = "design_manifest.v1"
+
+
+@cache
+def _manifest_lock(path: Path) -> FileLock:
+    return FileLock(str(path) + ".lock", timeout=30)
+
+
+def manifest_update_lock(path: str | Path) -> FileLock:
+    """Serialize revision checks and writes across CLI/API processes."""
+    resolved = Path(path).expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return _manifest_lock(resolved)
 
 
 def read_design_manifest(path: str | Path) -> dict[str, Any]:
@@ -19,12 +33,19 @@ def read_design_manifest(path: str | Path) -> dict[str, Any]:
             "schema_version": SCHEMA_VERSION,
             "revision": 0,
         }
+
+    # Windows readers must close the file before an atomic replacement begins.
+    with _manifest_lock(manifest_path.resolve()):
+        return _read_existing_manifest(manifest_path)
+
+
+def _read_existing_manifest(manifest_path: Path) -> dict[str, Any]:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest 不是有效 JSON：{manifest_path}") from exc
     if not isinstance(manifest, dict):
-        raise ValueError(f"manifest 根节点必须是 JSON 对象：{manifest_path}")
+        raise ValueError(f"manifest 根节点必须是 JSON 对象：{manifest_path}")  # noqa: TRY004 - invalid persisted JSON value
 
     schema_version = manifest.get("schema_version", SCHEMA_VERSION)
     if schema_version != SCHEMA_VERSION:
@@ -67,6 +88,25 @@ def update_design_manifest(
 ) -> dict[str, Any]:
     """原子更新 manifest 的指定区段并自动递增 revision。"""
 
+    with manifest_update_lock(path):
+        return _update_locked(
+            path,
+            target_compound_id=target_compound_id,
+            sections=sections,
+            discard_sections=discard_sections,
+            expected_revision=expected_revision,
+        )
+
+
+def _update_locked(
+    path: str | Path,
+    *,
+    target_compound_id: str,
+    sections: Mapping[str, Any],
+    discard_sections: tuple[str, ...],
+    expected_revision: int | None,
+) -> dict[str, Any]:
+
     manifest_path = Path(path).expanduser()
     manifest = read_design_manifest(manifest_path)
     recorded_target = str(manifest.get("target_compound_id") or "").strip()
@@ -102,6 +142,7 @@ def update_design_manifest(
 
 __all__ = [
     "SCHEMA_VERSION",
+    "manifest_update_lock",
     "read_design_manifest",
     "update_design_manifest",
 ]

@@ -37,7 +37,12 @@ def load_final_assembly_context(config: Any) -> FinalAssemblyContext:
     if int(manifest.get("revision") or 0) != plasmid_context.manifest_revision:
         raise ValueError("manifest revision 在读取最终组装上下文时发生变化，请重试")
 
-    selection = _mapping(manifest.get("plasmid_selection"), "plasmid_selection")
+    return build_final_assembly_context(plasmid_context, manifest.get("plasmid_selection"))
+
+
+def build_final_assembly_context(plasmid_context: Any, selection: Any) -> FinalAssemblyContext:
+    """Validate an explicit selection before its atomic manifest registration."""
+    selection = _mapping(selection, "plasmid_selection")
     if selection.get("schema_version") != "plasmid_selection.v2":
         raise ValueError(
             "manifest 中没有新版质粒选择，请重新运行 plasmid --recommend "
@@ -180,6 +185,7 @@ def final_assembly_context_summary(config: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "build_final_assembly_context",
     "final_assembly_context_summary",
     "load_final_assembly_context",
 ]

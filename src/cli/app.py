@@ -17,6 +17,7 @@ from src.cli.commands import (
     remove_auxiliary_protein,
     validate,
     write,
+    web,
 )
 from src.cli.common import apply_args_to_config, load_input
 from src.config.config import INPUTS_DIR
@@ -38,6 +39,7 @@ COMMAND_MODULES = [
     remove_auxiliary_protein,
     plasmid,
     optimize,
+    web,
 ]
 
 def build_parser():
