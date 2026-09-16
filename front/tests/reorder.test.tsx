@@ -10,22 +10,15 @@ import {
 import "@testing-library/jest-dom/vitest";
 import { Workbench } from "../src/Workbench";
 import { PlasmidRing } from "../src/PlasmidRing";
-import type { Preview, ComponentOrder } from "../src/types";
+import type { Preview, ComponentOrder, ComponentInstance } from "../src/types";
+import { componentPreview } from "./componentFixtures";
 
 const defaultOrder: ComponentOrder = [
   "resistance",
   "replication",
-  "t1",
   "expression",
-  "t0",
 ];
-const movedOrder: ComponentOrder = [
-  "replication",
-  "t1",
-  "expression",
-  "t0",
-  "resistance",
-];
+const movedOrder: ComponentOrder = ["replication", "expression", "resistance"];
 const modules = {
   resistance: [
     {
@@ -159,7 +152,12 @@ function install(
     url.includes("modules")
       ? response(modules)
       : url.includes("preview")
-        ? readPreview(init)
+        ? readPreview(init).then(
+            async (res) =>
+              new Response(
+                JSON.stringify(componentPreview(await res.json(), init)),
+              ),
+          )
         : url.includes("generate")
           ? response({
               id: "j",
@@ -168,7 +166,7 @@ function install(
               message: "done",
               result: {
                 ...result,
-                component_order: JSON.parse(String(init?.body)).component_order,
+                components: JSON.parse(String(init?.body)).components,
               },
             })
           : response(source),
@@ -225,7 +223,9 @@ describe("component reordering", () => {
     const mock = install((init) =>
       response({
         ...preview,
-        component_order: JSON.parse(String(init?.body)).component_order,
+        component_order: JSON.parse(String(init?.body)).components.map(
+          (c: ComponentInstance) => c.instance_id,
+        ),
       }),
     );
     render(<Workbench />);
@@ -241,20 +241,22 @@ describe("component reordering", () => {
       expect(
         mock.mock.calls
           .filter(([url]) => url.includes("preview"))
-          .map(([, init]) => JSON.parse(String(init?.body)).component_order),
+          .map(([, init]) =>
+            JSON.parse(String(init?.body)).components.map(
+              (c: ComponentInstance) => c.instance_id,
+            ),
+          ),
       ).toContainEqual(movedOrder),
     );
-    expect(JSON.parse(localStorage.getItem("plasmid:drag-demo")!)).toEqual({
-      resistance_id: "amp",
-      replication_id: "ori",
-      t0_id: null,
-      t1_id: null,
-      component_order: movedOrder,
-    });
+    expect(
+      JSON.parse(localStorage.getItem("plasmid:drag-demo")!).components.map(
+        (c: ComponentInstance) => c.instance_id,
+      ),
+    ).toEqual(movedOrder);
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "选择 KanR" })),
     );
-    expect(rowOrder()).toEqual(movedOrder);
+    expect(rowOrder()).toEqual([...movedOrder, "resistance"]);
   });
 
   it("ring press dragging ignores old validation and hides download", async () => {
@@ -269,7 +271,9 @@ describe("component reordering", () => {
           : response({
               ...preview,
               valid: false,
-              component_order: JSON.parse(String(init?.body)).component_order,
+              component_order: JSON.parse(String(init?.body)).components.map(
+                (c: ComponentInstance) => c.instance_id,
+              ),
             }),
       { ...context, result },
     );
@@ -300,7 +304,11 @@ describe("component reordering", () => {
     expect(
       mock.mock.calls
         .filter(([url]) => url.includes("preview"))
-        .map(([, init]) => JSON.parse(String(init?.body)).component_order),
+        .map(([, init]) =>
+          JSON.parse(String(init?.body)).components.map(
+            (c: ComponentInstance) => c.instance_id,
+          ),
+        ),
     ).toContainEqual(movedOrder);
   });
 
@@ -394,7 +402,9 @@ describe("component reordering", () => {
     const mock = install((init) =>
       response({
         ...preview,
-        component_order: JSON.parse(String(init?.body)).component_order,
+        component_order: JSON.parse(String(init?.body)).components.map(
+          (c: ComponentInstance) => c.instance_id,
+        ),
       }),
     );
     const mounted = render(<Workbench />);
@@ -407,7 +417,11 @@ describe("component reordering", () => {
       expect(
         mock.mock.calls
           .filter(([url]) => url.includes("generate"))
-          .map(([, init]) => JSON.parse(String(init?.body)).component_order),
+          .map(([, init]) =>
+            JSON.parse(String(init?.body)).components.map(
+              (c: ComponentInstance) => c.instance_id,
+            ),
+          ),
       ).toEqual([movedOrder]),
     );
     mounted.unmount();

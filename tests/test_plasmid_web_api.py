@@ -126,6 +126,232 @@ class LocalApiTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 422)
         self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
 
+    def component_request(self):
+        project = self.client.get("/api/context").json()["project"]
+        return {
+            "expected_revision": project["manifest_revision"],
+            "source_fingerprint": project["source_fingerprint"],
+            "components": [
+                {
+                    "instance_id": "t1-a",
+                    "component_type": "t1",
+                    "module_id": "basic_seva_t1",
+                },
+                {"instance_id": "expression", "component_type": "expression"},
+                {
+                    "instance_id": "t0-a",
+                    "component_type": "t0",
+                    "module_id": "basic_seva_t0",
+                },
+                {
+                    "instance_id": "t0-b",
+                    "component_type": "t0",
+                    "module_id": "basic_seva_t0",
+                },
+                {
+                    "instance_id": "amp-a",
+                    "component_type": "resistance",
+                    "module_id": "basic_seva_ap",
+                },
+                {
+                    "instance_id": "amp-b",
+                    "component_type": "resistance",
+                    "module_id": "basic_seva_ap",
+                },
+                {
+                    "instance_id": "replication",
+                    "component_type": "replication",
+                    "module_id": "basic_seva_p15a",
+                },
+            ],
+        }
+
+    def test_repeated_components_survive_generation_download_and_context(self):
+        request = self.component_request()
+        response = self.client.post("/api/preview", json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()
+        self.assertTrue(preview["valid"], preview["issues"])
+        self.assertEqual(preview["components"], request["components"])
+        self.assertEqual(preview["terminator_warnings"], [])
+        self.assertEqual(
+            [
+                s["instance_id"]
+                for s in preview["segments"]
+                if s["kind"] == "resistance"
+            ],
+            ["amp-a", "amp-b"],
+        )
+        modules = self.client.get("/api/modules").json()
+        amp = next(m for m in modules["resistance"] if m["id"] == "basic_seva_ap")
+        for segment in preview["segments"]:
+            if segment["kind"] == "resistance":
+                self.assertEqual(
+                    preview["sequence"][segment["start_bp"] - 1 : segment["end_bp"]],
+                    amp["sequence"],
+                )
+        generation = self.client.post("/api/generate", json=request)
+        self.assertEqual(generation.status_code, 202, generation.text)
+        for _ in range(200):
+            job = self.client.get(f"/api/jobs/{generation.json()['id']}").json()
+            if job["status"] in ("succeeded", "failed"):
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "succeeded", job)
+        self.assertEqual(job["result"]["components"], request["components"])
+        result = job["result"]
+        final_path = self.client.app.state.design_service.download(
+            result["id"], "final_genbank"
+        )
+        final = SeqIO.read(final_path, "genbank")
+        self.assertEqual(str(final.seq), preview["sequence"])
+        self.assertEqual(
+            {
+                f.qualifiers["web_instance_id"][0]
+                for f in final.features
+                if f.qualifiers.get("web_kind") == ["resistance"]
+                and f.qualifiers.get("web_instance_id")
+            },
+            {"amp-a", "amp-b"},
+        )
+        context = self.client.get("/api/context").json()
+        self.assertEqual(context["selection"]["components"], request["components"])
+        self.assertEqual(context["result"]["components"], request["components"])
+        manifest = json.loads(
+            self.config.manifest_output_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            manifest["plasmid_selection"]["component_design"]["components"],
+            request["components"],
+        )
+        self.assertEqual(
+            len(manifest["plasmid_selection"]["vector"]["selection_markers"]), 2
+        )
+        report = self.client.app.state.design_service.download(
+            result["id"], "report"
+        ).read_text(encoding="utf-8")
+        for instance in ("amp-a", "amp-b", "t0-a", "t0-b"):
+            self.assertIn(instance, report)
+
+    def test_long_instance_ids_roundtrip_in_all_genbank_exports(self):
+        request = self.component_request()
+        request["components"][2]["instance_id"] = "11223344-5566-7788-9900-aabbccddeeff"
+        request["components"][4][
+            "instance_id"
+        ] = "resistance:11223344-5566-7788-9900-aabbccddeeff"
+        request["components"][5]["instance_id"] = "long-instance-" + "a" * 106
+        generation = self.client.post("/api/generate", json=request)
+        self.assertEqual(generation.status_code, 202, generation.text)
+        for _ in range(200):
+            job = self.client.get(f"/api/jobs/{generation.json()['id']}").json()
+            if job["status"] in ("succeeded", "failed"):
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "succeeded", job)
+        expected = {
+            c["instance_id"]
+            for c in request["components"]
+            if c["component_type"] != "expression"
+        }
+        service = self.client.app.state.design_service
+        for file_id in (
+            "backbone_genbank",
+            "final_genbank",
+            "backbone_preparation_genbank",
+        ):
+            with self.subTest(file_id=file_id):
+                record = SeqIO.read(
+                    service.download(job["result"]["id"], file_id), "genbank"
+                )
+                restored = {
+                    "".join(f.qualifiers["web_instance_id"])
+                    for f in record.features
+                    if f.qualifiers.get("web_instance_id")
+                }
+                self.assertEqual(restored, expected)
+                from src.plasmid_design.sequence import feature_payloads
+
+                self.assertEqual(
+                    {
+                        f["instance_id"]
+                        for f in feature_payloads(record)
+                        if "instance_id" in f
+                    },
+                    expected,
+                )
+
+    def test_component_requests_reject_ambiguous_or_invalid_instances_without_writing(
+        self,
+    ):
+        before = self.config.manifest_output_path.read_bytes()
+        base = self.component_request()
+        variants = [
+            {**base, "resistance_id": "basic_seva_ap"},
+            {**base, "component_order": ["resistance", "replication", "expression"]},
+            {**base, "components": []},
+            {**base, "components": base["components"] + [base["components"][0]]},
+            {
+                **base,
+                "components": [
+                    c for c in base["components"] if c["component_type"] != "resistance"
+                ],
+            },
+            {
+                **base,
+                "components": [
+                    c for c in base["components"] if c["component_type"] != "expression"
+                ],
+            },
+            {
+                **base,
+                "components": base["components"]
+                + [
+                    {
+                        "instance_id": "ori-2",
+                        "component_type": "replication",
+                        "module_id": "basic_seva_p15a",
+                    }
+                ],
+            },
+            {
+                **base,
+                "components": [
+                    {**c, "module_id": "missing"} if c["instance_id"] == "amp-a" else c
+                    for c in base["components"]
+                ],
+            },
+            {
+                **base,
+                "components": [
+                    (
+                        {**c, "module_id": "basic_seva_t1"}
+                        if c["instance_id"] == "t0-a"
+                        else c
+                    )
+                    for c in base["components"]
+                ],
+            },
+            {
+                **base,
+                "components": [
+                    (
+                        {**c, "module_id": "basic_seva_ap"}
+                        if c["component_type"] == "expression"
+                        else c
+                    )
+                    for c in base["components"]
+                ],
+            },
+        ]
+        for request in variants:
+            for endpoint in ("preview", "generate"):
+                with self.subTest(request=request, endpoint=endpoint):
+                    self.assertEqual(
+                        self.client.post("/api/" + endpoint, json=request).status_code,
+                        422,
+                    )
+        self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
+
     def test_terminator_warnings_do_not_allow_restriction_conflicts_or_invalid_roles(
         self,
     ):

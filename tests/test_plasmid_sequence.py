@@ -81,6 +81,122 @@ class MolecularDesignTests(unittest.TestCase):
 
         self.catalog = ModuleCatalog(Path(__file__).resolve().parents[1] / "data")
 
+    def test_repeated_instances_preserve_order_dna_annotations_and_preparation_fragments(
+        self,
+    ):
+        components = [
+            {
+                "instance_id": "amp-a",
+                "component_type": "resistance",
+                "module_id": "basic_seva_ap",
+            },
+            {
+                "instance_id": "amp-b",
+                "component_type": "resistance",
+                "module_id": "basic_seva_ap",
+            },
+            {
+                "instance_id": "kan",
+                "component_type": "resistance",
+                "module_id": "basic_seva_km",
+            },
+            {
+                "instance_id": "ori",
+                "component_type": "replication",
+                "module_id": "basic_seva_p15a",
+            },
+            {
+                "instance_id": "t1-a",
+                "component_type": "t1",
+                "module_id": "basic_seva_t1",
+            },
+            {"instance_id": "source", "component_type": "expression"},
+            {
+                "instance_id": "t0-a",
+                "component_type": "t0",
+                "module_id": "basic_seva_t0",
+            },
+            {
+                "instance_id": "t0-b",
+                "component_type": "t0",
+                "module_id": "basic_seva_t0",
+            },
+            {
+                "instance_id": "t1-b",
+                "component_type": "t1",
+                "module_id": "basic_seva_t1",
+            },
+        ]
+        insert = expression_record()
+        blocks = {
+            "amp-a": self.catalog.get_resistance("basic_seva_ap").sequence
+            + self.catalog.scaffold["resistance_to_replication"],
+            "amp-b": self.catalog.get_resistance("basic_seva_ap").sequence
+            + self.catalog.scaffold["resistance_to_replication"],
+            "kan": self.catalog.get_resistance("basic_seva_km").sequence
+            + self.catalog.scaffold["resistance_to_replication"],
+            "ori": self.catalog.get_replication("basic_seva_p15a").sequence
+            + self.catalog.scaffold["replication_to_t1"],
+            "source": "GAATTC" + str(insert.seq) + "AAGCTT",
+            "t0-a": self.catalog.get_terminator("basic_seva_t0").sequence,
+            "t0-b": self.catalog.get_terminator("basic_seva_t0").sequence,
+            "t1-a": self.catalog.get_terminator("basic_seva_t1").sequence,
+            "t1-b": self.catalog.get_terminator("basic_seva_t1").sequence,
+        }
+        for rotation in (0, 3, 5, 6):
+            ordered = components[rotation:] + components[:rotation]
+            with self.subTest(rotation=rotation):
+                design = self.m.build_design(
+                    self.catalog, insert, ["EcoRI", "HindIII"], components=ordered
+                )
+                self.assertTrue(design.preview["valid"], design.preview["issues"])
+                self.assertEqual(design.preview["terminator_warnings"], [])
+                self.assertEqual(
+                    str(design.final_record.seq),
+                    "".join(blocks[c["instance_id"]] for c in ordered),
+                )
+                for identifier in (
+                    "amp-a",
+                    "amp-b",
+                    "kan",
+                    "t0-a",
+                    "t0-b",
+                    "t1-a",
+                    "t1-b",
+                ):
+                    segment = next(
+                        s
+                        for s in design.preview["segments"]
+                        if s["instance_id"] == identifier
+                    )
+                    final_features = [
+                        f
+                        for f in design.final_record.features
+                        if f.qualifiers.get("web_instance_id") == [identifier]
+                    ]
+                    preparation_features = [
+                        f
+                        for f in design.preparation_records["backbone"].features
+                        if f.qualifiers.get("web_instance_id") == [identifier]
+                    ]
+                    self.assertTrue(final_features, identifier)
+                    self.assertEqual(len(final_features), len(preparation_features))
+                    for feature, prepared in zip(
+                        final_features, preparation_features, strict=True
+                    ):
+                        self.assertEqual(
+                            feature.extract(design.final_record.seq),
+                            prepared.extract(
+                                design.preparation_records["backbone"].seq
+                            ),
+                        )
+                    self.assertEqual(
+                        int(final_features[0].location.start) + 1, segment["start_bp"]
+                    )
+                for record in design.preparation_records.values():
+                    self.assertEqual(len(EcoRI.search(record.seq)), 1)
+                    self.assertEqual(len(HindIII.search(record.seq)), 1)
+
     def test_missing_terminators_warn_without_adding_dna_or_blocking(self):
         design = self.m.build_design(
             self.catalog,

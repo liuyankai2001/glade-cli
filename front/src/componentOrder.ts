@@ -4,6 +4,7 @@ import type {
   Context,
   Module,
   Preview,
+  ComponentInstance,
 } from "./types";
 
 export const DEFAULT_ORDER: ComponentOrder = [
@@ -38,11 +39,16 @@ export function normalizeOrder(value: unknown): ComponentOrder {
   return [...DEFAULT_ORDER];
 }
 export function sameOrder(a: unknown, b: unknown) {
-  return normalizeOrder(a).join(",") === normalizeOrder(b).join(",");
+  return (
+    Array.isArray(a) &&
+    Array.isArray(b) &&
+    a.length === b.length &&
+    a.every((id, index) => id === b[index])
+  );
 }
 export function insertComponent(
   order: ComponentOrder,
-  type: ComponentType,
+  type: string,
   index: number,
 ): ComponentOrder {
   const remaining = order.filter((item) => item !== type);
@@ -65,21 +71,36 @@ export function segmentComponent(segment: {
   if (["left_site", "right_site"].includes(segment.id)) return "expression";
   return null;
 }
+export function segmentInstance(segment: {
+  id: string;
+  kind: string;
+  component_type?: ComponentType;
+  instance_id?: string;
+}): string | null {
+  return segment.instance_id || segmentComponent(segment);
+}
 export function componentBlocks(preview: Pick<Preview, "segments">) {
-  return DEFAULT_ORDER.flatMap((type) => {
-    const parts = preview.segments.filter(
-      (segment) => segmentComponent(segment) === type,
-    );
-    return parts.length
-      ? [
-          {
-            type,
-            start_bp: Math.min(...parts.map((part) => part.start_bp)),
-            end_bp: Math.max(...parts.map((part) => part.end_bp)),
-          },
-        ]
-      : [];
-  }).sort((a, b) => a.start_bp - b.start_bp);
+  const instances = [
+    ...new Set(
+      preview.segments.map(segmentInstance).filter((id): id is string => !!id),
+    ),
+  ];
+  return instances
+    .flatMap((type) => {
+      const parts = preview.segments.filter(
+        (segment) => segmentInstance(segment) === type,
+      );
+      return parts.length
+        ? [
+            {
+              type,
+              start_bp: Math.min(...parts.map((part) => part.start_bp)),
+              end_bp: Math.max(...parts.map((part) => part.end_bp)),
+            },
+          ]
+        : [];
+    })
+    .sort((a, b) => a.start_bp - b.start_bp);
 }
 
 // Geometry only: carry server-owned blocks and annotations together while validation
@@ -89,9 +110,9 @@ export function reorderGeometry(
   order: ComponentOrder,
 ): Preview {
   const blocks = componentBlocks(preview);
-  if (preview.segments.some((segment) => !segmentComponent(segment)))
+  if (preview.segments.some((segment) => !segmentInstance(segment)))
     return preview;
-  const offsets = new Map<ComponentType, number>();
+  const offsets = new Map<string, number>();
   let cursor = 1;
   order.forEach((type) => {
     const block = blocks.find((block) => block.type === type);
@@ -111,6 +132,13 @@ export function reorderGeometry(
     valid: false,
     sequence: "",
     component_order: [...order],
+    ...(preview.components
+      ? {
+          components: order.flatMap((id) =>
+            preview.components!.filter((c) => c.instance_id === id),
+          ),
+        }
+      : {}),
     segments: preview.segments
       .map((segment) => ({
         ...segment,
@@ -128,20 +156,20 @@ export function reorderGeometry(
 
 export function selectionGeometry(
   construct: Context["construct"],
-  selected: {
-    resistance?: Module;
-    replication?: Module;
-    t0?: Module;
-    t1?: Module;
-  },
+  selected: Record<string, Module | undefined>,
   order: ComponentOrder,
+  components?: ComponentInstance[],
 ): Preview | null {
   if (!construct && !Object.values(selected).some(Boolean)) return null;
   let cursor = 1;
   let sourceOffset = 0;
+  let gcTotal = 0;
   const segments: Preview["segments"] = [];
-  order.forEach((type) => {
-    const part = type === "expression" ? construct : selected[type];
+  order.forEach((id) => {
+    const type =
+      components?.find((c) => c.instance_id === id)?.component_type ||
+      (id as ComponentType);
+    const part = type === "expression" ? construct : selected[id];
     if (!part) return;
     if (type === "expression") sourceOffset = cursor - 1;
     segments.push({
@@ -149,11 +177,13 @@ export function selectionGeometry(
       label: part.name,
       kind: type === "t0" || type === "t1" ? "terminator" : type,
       component_type: type,
+      instance_id: id,
       start_bp: cursor,
       end_bp: cursor + part.length_bp - 1,
       length_bp: part.length_bp,
     });
     cursor += part.length_bp;
+    gcTotal += part.length_bp * part.gc_percent;
   });
   return {
     valid: false,
@@ -162,11 +192,12 @@ export function selectionGeometry(
     terminator_warnings: [],
     sequence: "",
     length_bp: cursor - 1,
-    gc_percent: 0,
+    gc_percent: cursor > 1 ? gcTotal / (cursor - 1) : 0,
     sequence_sha256: "",
     manifest_revision: 0,
     source_fingerprint: "",
     component_order: [...order],
+    components,
     segments,
     features: (construct?.features || []).map((feature) => ({
       ...feature,

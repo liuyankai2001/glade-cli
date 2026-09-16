@@ -12,6 +12,11 @@ from src.final_assemble_execute.common import resolve_project_file, sha256_file
 from src.final_assemble_plan.common import gc_percent
 from src.plasmid_design.catalog import ModuleCatalog
 from src.plasmid_design.errors import DesignError
+from src.plasmid_design.components import (
+    LEGACY_SELECTION_FIELDS,
+    legacy_components,
+    normalize_components,
+)
 from src.plasmid_design.project import authenticate_request, read_project
 from src.plasmid_design.registration import committed_files, export_design
 from src.plasmid_design.sequence import (
@@ -112,7 +117,17 @@ class DesignService:
             selection.get("component_design", {}) if isinstance(selection, dict) else {}
         )
         component = component if isinstance(component, dict) else {}
-        if (
+        if "components" in component:
+            try:
+                response["selection"] = {
+                    "components": normalize_components(
+                        component["components"], snapshot.catalog
+                    ),
+                    **{key: component.get(key) for key in LEGACY_SELECTION_FIELDS},
+                }
+            except DesignError as exc:
+                response["issues"].append({"code": exc.code, "message": str(exc)})
+        elif (
             component.get("resistance_id") in snapshot.catalog.resistance
             and component.get("replication_id") in snapshot.catalog.replication
         ):
@@ -128,12 +143,17 @@ class DesignService:
                     "replication_id": component["replication_id"],
                     "component_order": order,
                     **{
-                        f"{role}_id": component.get(f"{role}_id")
-                        if isinstance(component.get(f"{role}_id"), str)
-                        and component.get(f"{role}_id") in snapshot.catalog.terminator
-                        and snapshot.catalog.terminator[component[f"{role}_id"]].role
-                        == role
-                        else None
+                        f"{role}_id": (
+                            component.get(f"{role}_id")
+                            if isinstance(component.get(f"{role}_id"), str)
+                            and component.get(f"{role}_id")
+                            in snapshot.catalog.terminator
+                            and snapshot.catalog.terminator[
+                                component[f"{role}_id"]
+                            ].role
+                            == role
+                            else None
+                        )
                         for role in ("t0", "t1")
                     },
                 }
@@ -144,6 +164,10 @@ class DesignService:
         return response
 
     def _prepare(self, request: dict):
+        if "components" in request and request.keys() & LEGACY_SELECTION_FIELDS:
+            raise DesignError(
+                "组件列表不能与旧的单选参数混用。", code="invalid_components"
+            )
         snapshot = read_project(self.config)
         authenticate_request(snapshot, request)
         design = build_design(
@@ -156,6 +180,11 @@ class DesignService:
             component_order=request.get("component_order", DEFAULT_COMPONENT_ORDER),
             t0_id=request.get("t0_id"),
             t1_id=request.get("t1_id"),
+            components=(
+                normalize_components(request["components"], snapshot.catalog)
+                if "components" in request
+                else None
+            ),
         )
         design.preview.update(
             {
@@ -264,6 +293,33 @@ class DesignService:
         if len(constructs) != 1:
             return None
         generation_id = component["generation_id"]
+        if "components" in component:
+            try:
+                components = normalize_components(
+                    component["components"], snapshot.catalog
+                )
+            except DesignError as exc:
+                raise DesignError(
+                    "已登记组件实例无效，请重新生成。", code="artifact_invalid"
+                ) from exc
+            order = component.get("component_order")
+            if order != [c["instance_id"] for c in components]:
+                # Old single-selection generations may retain empty T0/T1 slots.
+                try:
+                    legacy_order = normalize_component_order(order)
+                except DesignError as exc:
+                    raise DesignError(
+                        "已登记组件顺序无效。", code="artifact_invalid"
+                    ) from exc
+                if legacy_components(component, legacy_order) != components:
+                    raise DesignError("已登记组件顺序不一致。", code="artifact_invalid")
+        else:
+            order = normalize_component_order(
+                component.get("component_order", DEFAULT_COMPONENT_ORDER)
+            )
+            components = normalize_components(
+                legacy_components(component, order), snapshot.catalog
+            )
         for role in ("t0", "t1"):
             identifier = component.get(f"{role}_id")
             if identifier is not None and (
@@ -313,9 +369,8 @@ class DesignService:
             "replication_id": component["replication_id"],
             "t0_id": component.get("t0_id"),
             "t1_id": component.get("t1_id"),
-            "component_order": normalize_component_order(
-                component.get("component_order", DEFAULT_COMPONENT_ORDER)
-            ),
+            "component_order": order,
+            "components": components,
             "sequence_sha256": sequence,
             "length_bp": constructs[0]["length_bp"],
             "gc_percent": gc_percent(str(record.seq)),

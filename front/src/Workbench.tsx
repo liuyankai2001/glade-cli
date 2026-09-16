@@ -18,11 +18,10 @@ import type {
   Job,
   ComponentOrder,
   ComponentType,
+  ComponentInstance,
 } from "./types";
 import {
-  DEFAULT_ORDER,
   insertComponent,
-  normalizeOrder,
   reorderGeometry,
   sameOrder,
   selectionGeometry,
@@ -30,9 +29,14 @@ import {
 import { palette } from "./palette";
 import { api } from "./api";
 import { moduleName } from "./display";
+import {
+  findModule,
+  initialComponents,
+  moduleRole,
+  restoreComponents,
+  sameComponents,
+} from "./componentSelection";
 type ModuleRole = Exclude<ComponentType, "expression">;
-const moduleRole = (item: Module): ModuleRole =>
-  item.type === "terminator" ? item.role! : item.type;
 const slotTitle = (type: ModuleRole) =>
   type === "resistance"
     ? "抗性标记"
@@ -58,15 +62,16 @@ export function Workbench() {
     terminator: Module[];
   }>({ resistance: [], replication: [], terminator: [] });
   const [context, setContext] = useState<Context | null>(null);
-  const [chosen, setChosen] = useState<{
-    resistance_id: string;
-    replication_id: string;
-    t0_id: string | null;
-    t1_id: string | null;
-  }>({ resistance_id: "", replication_id: "", t0_id: null, t1_id: null });
-  const [componentOrder, setComponentOrder] = useState<ComponentOrder>([
-    ...DEFAULT_ORDER,
-  ]);
+  const [chosen, setChosen] = useState<ComponentInstance[]>(initialComponents);
+  const componentOrder = useMemo(
+    () => chosen.map((c) => c.instance_id),
+    [chosen],
+  );
+  const setComponentOrder = useCallback((order: ComponentOrder) => {
+    setChosen((current) =>
+      order.flatMap((id) => current.filter((c) => c.instance_id === id)),
+    );
+  }, []);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [geometry, setGeometry] = useState<Preview | null>(null);
   const [message, setMessage] = useState("正在读取项目…");
@@ -81,7 +86,7 @@ export function Workbench() {
   const submitting = useRef(false);
   const ignoredJobs = useRef(new Set<string>());
   const [listDrag, setListDrag] = useState<{
-    type: ComponentType;
+    type: string;
     insertion: number;
     moved: boolean;
   } | null>(null);
@@ -94,22 +99,17 @@ export function Workbench() {
   const [pending, setPending] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const selected = useMemo(
-    () => ({
-      resistance: library.resistance.find(
-        (item) => item.id === chosen.resistance_id,
+    () =>
+      Object.fromEntries(
+        chosen.map((component) => [
+          component.instance_id,
+          findModule(library, component),
+        ]),
       ),
-      t0: library.terminator.find(
-        (item) => item.role === "t0" && item.id === chosen.t0_id,
-      ),
-      t1: library.terminator.find(
-        (item) => item.role === "t1" && item.id === chosen.t1_id,
-      ),
-      replication: library.replication.find(
-        (item) => item.id === chosen.replication_id,
-      ),
-    }),
     [library, chosen],
   );
+  const instanceType = (id: string) =>
+    chosen.find((c) => c.instance_id === id)!.component_type;
   const invalidateJob = useCallback(() => {
     setConfirmWarnings(null);
     if (contextRef.current?.active_job)
@@ -122,10 +122,23 @@ export function Workbench() {
   const choose = useCallback(
     (item: Module) => {
       requestVersion.current += 1;
-      setChosen((current) => ({
-        ...current,
-        [`${moduleRole(item)}_id`]: item.id,
-      }));
+      const role = moduleRole(item);
+      setChosen((current) =>
+        role === "replication"
+          ? current.map((component) =>
+              component.component_type === "replication"
+                ? { ...component, module_id: item.id }
+                : component,
+            )
+          : [
+              ...current,
+              {
+                instance_id: crypto.randomUUID(),
+                component_type: role,
+                module_id: item.id,
+              },
+            ],
+      );
       setPreview(null);
       setGeometry(null);
       invalidateJob();
@@ -176,13 +189,7 @@ export function Workbench() {
         changed ? nextContext : { ...nextContext, project: current!.project },
       );
       if (!preserve) {
-        let saved: {
-          resistance_id?: string;
-          replication_id?: string;
-          t0_id?: string | null;
-          t1_id?: string | null;
-          component_order?: ComponentOrder;
-        } | null = null;
+        let saved: unknown = null;
         try {
           saved = JSON.parse(
             localStorage.getItem(`plasmid:${nextContext.project.target}`) ||
@@ -191,30 +198,12 @@ export function Workbench() {
         } catch {
           /* Storage may be disabled. */
         }
-        const candidate = saved || nextContext.selection || {};
-        setComponentOrder(normalizeOrder(candidate.component_order));
-        setChosen({
-          t0_id: (modules.terminator || []).some(
-            (item) => item.role === "t0" && item.id === candidate.t0_id,
-          )
-            ? candidate.t0_id!
-            : null,
-          t1_id: (modules.terminator || []).some(
-            (item) => item.role === "t1" && item.id === candidate.t1_id,
-          )
-            ? candidate.t1_id!
-            : null,
-          resistance_id: modules.resistance.some(
-            (item) => item.id === candidate.resistance_id,
-          )
-            ? candidate.resistance_id || ""
-            : "",
-          replication_id: modules.replication.some(
-            (item) => item.id === candidate.replication_id,
-          )
-            ? candidate.replication_id || ""
-            : "",
-        });
+        setChosen(
+          restoreComponents(saved || nextContext.selection, {
+            ...modules,
+            terminator: modules.terminator || [],
+          }),
+        );
         setJob(nextContext.active_job);
       } else {
         setJob((current) => {
@@ -261,7 +250,7 @@ export function Workbench() {
       try {
         localStorage.setItem(
           `plasmid:${context.project.target}`,
-          JSON.stringify({ ...chosen, component_order: componentOrder }),
+          JSON.stringify({ components: chosen }),
         );
       } catch {
         /* Optional persistence. */
@@ -272,20 +261,28 @@ export function Workbench() {
   const fingerprint = context?.project.source_fingerprint;
   const ready = context?.ready;
   useEffect(() => {
-    if (!ready || !chosen.resistance_id || !chosen.replication_id) return;
+    if (
+      !ready ||
+      !chosen.some(
+        (c) => c.component_type === "resistance" && selected[c.instance_id],
+      ) ||
+      !chosen.some(
+        (c) => c.component_type === "replication" && selected[c.instance_id],
+      )
+    )
+      return;
     const token = ++requestVersion.current;
     void api<Preview>("/api/preview", {
       method: "POST",
       body: JSON.stringify({
-        ...chosen,
-        component_order: componentOrder,
+        components: chosen,
         expected_revision: revision,
         source_fingerprint: fingerprint,
       }),
     })
       .then((next) => {
         if (token !== requestVersion.current) return;
-        if (!sameOrder(next.component_order, componentOrder)) return;
+        if (!sameComponents(next.components, chosen)) return;
         setPreview(next);
         setGeometry(next);
         setMessage(
@@ -351,8 +348,7 @@ export function Workbench() {
       const next = await api<Job>("/api/generate", {
         method: "POST",
         body: JSON.stringify({
-          ...chosen,
-          component_order: componentOrder,
+          components: chosen,
           expected_revision: revision,
           source_fingerprint: fingerprint,
         }),
@@ -374,26 +370,30 @@ export function Workbench() {
       setPending(false);
     }
   };
-  const clear = (type: ModuleRole) => {
+  const clear = (id: string) => {
     requestVersion.current += 1;
     setPreview(null);
     setGeometry(null);
     invalidateJob();
-    setChosen((current) => ({
-      ...current,
-      [`${type}_id`]: type === "t0" || type === "t1" ? null : "",
-    }));
-    setMessage("请选择两个模块以生成预览。");
+    setChosen((current) =>
+      current.flatMap((component) =>
+        component.instance_id !== id
+          ? [component]
+          : component.component_type === "replication"
+            ? [{ instance_id: id, component_type: "replication" }]
+            : [],
+      ),
+    );
+    setMessage("组件已移除，正在更新预览。");
   };
   const possibleResult = job?.result || context?.result;
   const currentResult =
     possibleResult &&
     context?.ready &&
-    possibleResult.resistance_id === chosen.resistance_id &&
-    possibleResult.replication_id === chosen.replication_id &&
-    (possibleResult.t0_id ?? null) === chosen.t0_id &&
-    (possibleResult.t1_id ?? null) === chosen.t1_id &&
-    sameOrder(possibleResult.component_order, componentOrder) &&
+    sameComponents(
+      possibleResult.components || restoreComponents(possibleResult, library),
+      chosen,
+    ) &&
     possibleResult.source_fingerprint === context.project.source_fingerprint
       ? possibleResult
       : null;
@@ -467,12 +467,11 @@ export function Workbench() {
           : allIssues.length
             ? "需要处理"
             : "待选择组件";
-  const componentCount =
-    Number(!!context?.construct) +
-    Number(!!selected.resistance) +
-    Number(!!selected.replication) +
-    Number(!!selected.t0) +
-    Number(!!selected.t1);
+  const componentCount = chosen.filter((c) =>
+    c.component_type === "expression"
+      ? !!context?.construct
+      : !!selected[c.instance_id],
+  ).length;
   const ringPreview = useMemo(
     () =>
       geometry
@@ -481,8 +480,9 @@ export function Workbench() {
             context?.construct || null,
             selected,
             componentOrder,
+            chosen,
           ),
-    [geometry, componentOrder, context?.construct, selected],
+    [geometry, componentOrder, context?.construct, selected, chosen],
   );
   const draggingList = !!listDrag;
   const listIdentity = JSON.stringify([
@@ -506,7 +506,7 @@ export function Workbench() {
       const remaining = componentOrder.filter((type) => type !== current.type);
       const insertion = remaining.filter((type) => {
         const box = listRef.current
-          ?.querySelector(`[data-component-type='${type}']`)
+          ?.querySelector(`[data-component-instance='${CSS.escape(type)}']`)
           ?.getBoundingClientRect();
         return box && event.clientY > box.top + box.height / 2;
       }).length;
@@ -548,11 +548,13 @@ export function Workbench() {
       listDragRef.current = null;
     };
   }, [draggingList]);
-  const startListDrag = (event: ReactMouseEvent, type: ComponentType) => {
+  const startListDrag = (event: ReactMouseEvent, type: string) => {
     if (
       event.button !== 0 ||
       (event.target as Element).closest("button") ||
-      !(type === "expression" ? context?.construct : selected[type])
+      !(instanceType(type) === "expression"
+        ? context?.construct
+        : selected[type])
     )
       return;
     event.preventDefault();
@@ -623,10 +625,12 @@ export function Workbench() {
           <button
             className="btn"
             onClick={() => {
-              clear("resistance");
-              clear("replication");
-              clear("t0");
-              clear("t1");
+              requestVersion.current += 1;
+              setPreview(null);
+              setGeometry(null);
+              invalidateJob();
+              setChosen(initialComponents());
+              setMessage("请选择抗性和复制模块以生成预览。");
             }}
           >
             清空
@@ -696,9 +700,7 @@ export function Workbench() {
                         key={item.id}
                         className={
                           "module-card" +
-                          (chosen[
-                            (moduleRole(item) + "_id") as keyof typeof chosen
-                          ] === item.id
+                          (chosen.some((c) => c.module_id === item.id)
                             ? " selected"
                             : "")
                         }
@@ -756,7 +758,13 @@ export function Workbench() {
         >
           {dragged && dragTarget === "canvas" && (
             <p className="drop-hint">
-              松开以{selected[moduleRole(dragged)] ? "替换" : "添加"}{" "}
+              松开以
+              {dragged.type === "replication" &&
+              chosen.some(
+                (c) => c.component_type === "replication" && c.module_id,
+              )
+                ? "替换"
+                : "添加"}{" "}
               {moduleName(dragged)}
             </p>
           )}
@@ -770,18 +778,16 @@ export function Workbench() {
               <span>
                 {preview
                   ? preview.length_bp.toLocaleString() + " bp"
-                  : context?.construct
-                    ? context.construct.length_bp.toLocaleString() + " bp"
+                  : ringPreview
+                    ? ringPreview.length_bp.toLocaleString() + " bp"
                     : "0 bp"}
               </span>
               <span>组件：{componentCount}</span>
               <span>
                 GC：
-                {(
-                  preview?.gc_percent ??
-                  context?.construct?.gc_percent ??
-                  0
-                ).toFixed(2)}
+                {(preview?.gc_percent ?? ringPreview?.gc_percent ?? 0).toFixed(
+                  2,
+                )}
                 %
               </span>
             </div>
@@ -834,7 +840,8 @@ export function Workbench() {
               return (
                 <div
                   key={type}
-                  data-component-type={type}
+                  data-component-type={instanceType(type)}
+                  data-component-instance={type}
                   className={
                     "component-row" +
                     (listDrag?.type === type && listDrag.moved
@@ -845,7 +852,7 @@ export function Workbench() {
                   }
                   onMouseDown={(event) => startListDrag(event, type)}
                 >
-                  {type === "expression" ? (
+                  {instanceType(type) === "expression" ? (
                     <div
                       className="slot source-slot"
                       data-testid="source-slot"
@@ -865,14 +872,23 @@ export function Workbench() {
                     </div>
                   ) : (
                     <Slot
-                      title={slotTitle(type)}
+                      title={slotTitle(instanceType(type) as ModuleRole)}
                       item={selected[type]}
-                      type={type}
+                      type={instanceType(type) as ModuleRole}
                       onDrop={drop}
-                      active={dragTarget === type}
+                      active={dragTarget === instanceType(type)}
                       onDragOver={dragOver}
                       onDragLeave={dragLeave}
-                      onClear={clear}
+                      onClear={() => clear(type)}
+                      copyNumber={
+                        selected[type] &&
+                        chosen.filter((c) => c.module_id === selected[type]?.id)
+                          .length > 1
+                          ? chosen
+                              .filter((c) => c.module_id === selected[type]?.id)
+                              .findIndex((c) => c.instance_id === type) + 1
+                          : undefined
+                      }
                     />
                   )}
                 </div>
@@ -922,15 +938,10 @@ export function Workbench() {
           )}
           <details className="foldout detail">
             <summary>组件详情与 DNA</summary>
-            {[
-              selected.resistance,
-              selected.replication,
-              selected.t0,
-              selected.t1,
-            ]
-              .filter(Boolean)
-              .map((item) => (
-                <section className="module-detail" key={item!.id}>
+            {Object.entries(selected)
+              .filter(([, item]) => !!item)
+              .map(([instanceId, item]) => (
+                <section className="module-detail" key={instanceId}>
                   <b>{moduleName(item!)}</b>
                   <p>{item!.name}</p>
                   <p>
@@ -1033,6 +1044,7 @@ function Slot({
   onDragOver,
   onDragLeave,
   onClear,
+  copyNumber,
 }: {
   title: string;
   item?: Module;
@@ -1042,6 +1054,7 @@ function Slot({
   onDragOver: (event: DragEvent, target: string, type?: ModuleRole) => void;
   onDragLeave: (event: DragEvent) => void;
   onClear: (type: ModuleRole) => void;
+  copyNumber?: number;
 }) {
   return (
     <div
@@ -1062,6 +1075,9 @@ function Slot({
             ? "未添加" + title
             : "添加" + title}
       </b>
+      {copyNumber !== undefined && (
+        <span className="copy-number">#{copyNumber}</span>
+      )}
       {item && (
         <>
           <small>{item.length_bp.toLocaleString()} bp</small>

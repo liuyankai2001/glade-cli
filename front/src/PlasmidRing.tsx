@@ -12,6 +12,7 @@ import {
   DEFAULT_ORDER,
   insertComponent,
   segmentComponent,
+  segmentInstance,
 } from "./componentOrder";
 import { palette } from "./palette";
 import { segmentName } from "./display";
@@ -21,6 +22,7 @@ type Segment = {
   label: string;
   kind: string;
   component_type?: ComponentType;
+  instance_id?: string;
   start_bp: number;
   end_bp: number;
 };
@@ -54,7 +56,7 @@ export function PlasmidRing({
   const [annotations, setAnnotations] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{
-    type: ComponentType;
+    type: string;
     angle: number;
     insertion: number;
     marker: number;
@@ -94,6 +96,7 @@ export function PlasmidRing({
       part.id,
       part.kind,
       part.component_type,
+      part.instance_id,
       part.start_bp,
       part.end_bp,
     ]),
@@ -179,7 +182,7 @@ export function PlasmidRing({
     };
   }, [dragging]);
   const startDrag = (event: ReactMouseEvent, part: Segment) => {
-    const type = segmentComponent(part);
+    const type = segmentInstance(part);
     if (event.button !== 0 || !type || !onReorder) return;
     event.preventDefault();
     event.stopPropagation();
@@ -244,9 +247,12 @@ export function PlasmidRing({
       ((part.end_bp - part.start_bp + 1) / Math.max(1, length)) * 360 > 22;
     return (
       <g
-        key={part.id}
+        key={`${part.instance_id || part.id}:${part.id}:${part.start_bp}`}
         data-ring-component={
           radius === 138 ? segmentComponent(part) || undefined : undefined
+        }
+        data-ring-instance={
+          radius === 138 ? segmentInstance(part) || undefined : undefined
         }
         className={
           radius === 138 && onReorder && segmentComponent(part)
@@ -321,7 +327,7 @@ export function PlasmidRing({
           {outer.map((part) => draw(part, 138, 28))}
           {callouts.map(({ part, a, side, x, y }) => (
             <g
-              key={`callout-${part.id}`}
+              key={`callout-${part.instance_id || part.id}`}
               className="terminator-leader"
               onMouseDown={(event) => startDrag(event, part)}
             >
@@ -344,6 +350,9 @@ export function PlasmidRing({
           {drag?.moved &&
             (() => {
               const block = blocks.find((block) => block.type === drag.type)!;
+              const kind = segmentComponent(
+                outer.find((part) => segmentInstance(part) === drag.type)!,
+              );
               const span =
                 ((block.end_bp - block.start_bp + 1) / length) * Math.PI * 2;
               const markerAngle = angle(drag.marker);
@@ -357,7 +366,7 @@ export function PlasmidRing({
                       drag.angle + span / 2,
                       28,
                     )}
-                    fill={palette[drag.type]}
+                    fill={palette[kind || ""]}
                     opacity=".65"
                   />
                   <line

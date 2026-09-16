@@ -23,7 +23,7 @@ from src.final_assemble_plan.get_final_assembly_context import (
 )
 from src.plasmid_selection.get_plasmid_context import stable_json_hash
 
-DESIGN_VERSION = "component_plasmid_design.v3"
+DESIGN_VERSION = "component_plasmid_design.v4"
 DESIGN_WARNING = "这些文件是计算拼接设计，实际质粒需制备并验证。"
 PROTECTIVE_WARNING = (
     "制备片段两端已加入 6 bp 保护碱基，实验前请核对所选酶的末端切割条件。"
@@ -60,14 +60,21 @@ def export_design(
 ) -> dict[str, dict]:
     """Write artifacts and construct all payloads, without updating the manifest."""
     source, root = snapshot.source, snapshot.source.project_output_path
-    component_segments = {
-        s["kind"]: s
-        for s in design.preview["segments"]
-        if s["kind"] in ("resistance", "replication", "expression")
-    }
-    resistance = snapshot.catalog.get_resistance(component_segments["resistance"]["id"])
+    components = design.preview["components"]
+    resistances = [
+        (c, snapshot.catalog.get_resistance(c["module_id"]))
+        for c in components
+        if c["component_type"] == "resistance"
+    ]
+    resistance = resistances[0][1]
     replication = snapshot.catalog.get_replication(
-        component_segments["replication"]["id"]
+        next(c["module_id"] for c in components if c["component_type"] == "replication")
+    )
+    expression_segment = next(
+        s for s in design.preview["segments"] if s["kind"] == "expression"
+    )
+    resistance_description = " + ".join(
+        f"{module.name}（{module.antibiotic}）" for _, module in resistances
     )
     design_id = source.constructs[0].design_id
     generated_at = datetime.now(UTC).isoformat()
@@ -128,6 +135,7 @@ def export_design(
         "t1_id": design.preview["t1_id"],
         "terminator_warnings": list(design.preview["terminator_warnings"]),
         "component_order": list(design.preview["component_order"]),
+        "components": deepcopy(components),
         "scaffold_version": snapshot.catalog.scaffold.get(
             "version", "basic_seva_fixed.v1"
         ),
@@ -144,7 +152,9 @@ def export_design(
             "covered_design_count": 1,
             "vector": {
                 "plasmid_id": f"component_{generation_id}",
-                "name": f"{resistance.name} + {replication.name}",
+                "name": " + ".join(
+                    [*(module.name for _, module in resistances), replication.name]
+                ),
                 "description": "Component-derived backbone for restriction assembly",
                 "vector_type": "component_derived",
                 "length_bp": len(design.backbone_record),
@@ -163,11 +173,13 @@ def export_design(
                 ],
                 "selection_markers": [
                     {
-                        "module_id": resistance.id,
-                        "name": resistance.name,
-                        "antibiotic": resistance.antibiotic,
-                        "gene": resistance.resistance_gene,
+                        "instance_id": component["instance_id"],
+                        "module_id": module.id,
+                        "name": module.name,
+                        "antibiotic": module.antibiotic,
+                        "gene": module.resistance_gene,
                     }
+                    for component, module in resistances
                 ],
                 "insertion_regions": [region],
                 "protected_features": protected,
@@ -220,6 +232,7 @@ def export_design(
                 "resistance": resistance.id,
                 "replication": replication.id,
                 "component_order": design.preview["component_order"],
+                "components": components,
                 "t0_id": design.preview["t0_id"],
                 "t1_id": design.preview["t1_id"],
                 "enzymes": design.preview["enzymes"],
@@ -267,7 +280,7 @@ def export_design(
     final_fasta = directory / "final_plasmid.fasta"
     write_genbank(final_genbank, design.final_record)
     write_fasta(final_fasta, design.final_record.id, final_sequence)
-    inserted_start = component_segments["expression"]["start_bp"]
+    inserted_start = expression_segment["start_bp"]
     validation = validate_written_outputs(
         genbank_path=final_genbank,
         fasta_path=final_fasta,
@@ -351,14 +364,21 @@ def export_design(
         "t1": "T1",
     }
     order_description = " → ".join(
-        order_labels[k]
-        for k in design.preview["component_order"]
-        if k not in ("t0", "t1") or design.preview[f"{k}_id"] is not None
+        f"{order_labels[c['component_type']]}（{c.get('module_id', '当前项目')}；{c['instance_id']}）"
+        for c in components
+    )
+    terminator_description = (
+        "；".join(
+            f"{c['component_type'].upper()} = {c['module_id']}（{c['instance_id']}）"
+            for c in components
+            if c["component_type"] in ("t0", "t1")
+        )
+        or "未选择"
     )
     report_path.write_text(
-        f"# 质粒设计：{source.target_compound_id}\n\n抗性模块：{resistance.name}（{resistance.antibiotic}）\n\n复制模块：{replication.name}；拷贝数类别：{replication.copy_number}\n\n表达构建：方案 {design_id}，{construct.length_bp} bp\n\n目标质粒：{len(final_sequence)} bp，GC {design.preview['gc_percent']:.2f}%，环状。\n\n保留来源中的模块间隔；终止子仅包含用户明确选入的 T0/T1。所选模块和表达构建序列完整保留。\n\n| 边界 | 酶 | 识别序列 | 末端 |\n| --- | --- | --- | --- |\n{rows}\n\n制备骨架和表达插入两个 DNA 片段，再用指定双酶切割并连接。骨架制备片段中的边界酶顺序为右酶→骨架→左酶，插入片段为左酶→表达构建→右酶。保护碱基在切割时去除；骨架占位序列不保留在目标质粒中。\n\n禁止位点检查覆盖各模块、表达构建、连接处及环状闭合处；只保留两个指定边界位点。序列、导出文件和插入区域已核对。\n\n"
+        f"# 质粒设计：{source.target_compound_id}\n\n抗性模块：{resistance_description}\n\n复制模块：{replication.name}；拷贝数类别：{replication.copy_number}\n\n表达构建：方案 {design_id}，{construct.length_bp} bp\n\n目标质粒：{len(final_sequence)} bp，GC {design.preview['gc_percent']:.2f}%，环状。\n\n保留来源中的模块间隔；终止子仅包含用户明确选入的 T0/T1。所选模块和表达构建序列完整保留。\n\n| 边界 | 酶 | 识别序列 | 末端 |\n| --- | --- | --- | --- |\n{rows}\n\n制备骨架和表达插入两个 DNA 片段，再用指定双酶切割并连接。骨架制备片段中的边界酶顺序为右酶→骨架→左酶，插入片段为左酶→表达构建→右酶。保护碱基在切割时去除；骨架占位序列不保留在目标质粒中。\n\n禁止位点检查覆盖各模块、表达构建、连接处及环状闭合处；只保留两个指定边界位点。序列、导出文件和插入区域已核对。\n\n"
         + f"组件顺序：{order_description}\n\n"
-        + f"终止子引用：T0 = {design.preview['t0_id'] or '未选择'}；T1 = {design.preview['t1_id'] or '未选择'}。\n\n"
+        + f"终止子引用：{terminator_description}。\n\n"
         + "\n".join(f"- {w}" for w in warnings)
         + "\n",
         encoding="utf-8",

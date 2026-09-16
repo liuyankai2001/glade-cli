@@ -12,7 +12,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from filelock import Timeout
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -22,17 +29,19 @@ from src.plasmid_design.sequence import (
     normalize_component_order,
 )
 from src.plasmid_design.service import DesignService
+from src.plasmid_design.components import LEGACY_SELECTION_FIELDS, normalize_components
 from src.web_api.jobs import JobManager
 
 
 class DesignRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    resistance_id: str = Field(min_length=1, max_length=120)
-    replication_id: str = Field(min_length=1, max_length=120)
+    resistance_id: str | None = Field(default=None, min_length=1, max_length=120)
+    replication_id: str | None = Field(default=None, min_length=1, max_length=120)
     t0_id: str | None = Field(default=None, min_length=1, max_length=120)
     t1_id: str | None = Field(default=None, min_length=1, max_length=120)
     expected_revision: StrictInt = Field(ge=0)
     source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    components: list[dict] | None = None
     component_order: list[
         Literal["resistance", "replication", "t0", "t1", "expression"]
     ] = Field(
@@ -45,6 +54,16 @@ class DesignRequest(BaseModel):
     @classmethod
     def expand_legacy_order(cls, value):
         return normalize_component_order(value)
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if "components" in self.model_fields_set:
+            if self.model_fields_set & LEGACY_SELECTION_FIELDS:
+                raise ValueError("组件列表不能与旧的单选参数混用。")
+            self.components = normalize_components(self.components)
+        elif not self.resistance_id or not self.replication_id:
+            raise ValueError("需要抗性和复制模块。")
+        return self
 
 
 def error_response(code, message, status, issues=None):
@@ -144,11 +163,11 @@ def create_app(config) -> FastAPI:
 
     @app.post("/api/preview")
     def preview(request: DesignRequest):
-        return service.preview(request.model_dump())
+        return service.preview(request.model_dump(exclude_unset=True))
 
     @app.post("/api/generate", status_code=202)
     def generate(request: DesignRequest):
-        return jobs.submit(request.model_dump())
+        return jobs.submit(request.model_dump(exclude_unset=True))
 
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str):

@@ -21,6 +21,7 @@ from src.final_assemble_execute.common import (
 from src.final_assemble_execute.models import SequenceAssemblyResult
 from src.final_assemble_plan.common import enzyme_cut_positions, gc_percent
 from src.plasmid_design.errors import DesignError
+from src.plasmid_design.components import legacy_components, normalize_components
 
 LEGACY_COMPONENT_ORDER = ("resistance", "replication", "expression")
 DEFAULT_COMPONENT_ORDER = ("resistance", "replication", "t1", "expression", "t0")
@@ -191,6 +192,11 @@ def feature_payloads(record: SeqRecord) -> list[dict]:
                 "end_bp": int(feature.location.end),
                 "strand": int(feature.location.strand or 0),
                 "kind": kind,
+                **(
+                    {"instance_id": "".join(feature.qualifiers["web_instance_id"])}
+                    if feature.qualifiers.get("web_instance_id")
+                    else {}
+                ),
             }
         )
     return result
@@ -204,7 +210,7 @@ def _annotation(start, end, label, kind, *, feature_type="misc_feature"):
     )
 
 
-def _module_features(module, offset: int) -> list[SeqFeature]:
+def _module_features(module, offset: int, instance_id: str) -> list[SeqFeature]:
     features = [
         _annotation(offset, offset + module.length_bp, module.name, module.type)
     ]
@@ -224,6 +230,13 @@ def _module_features(module, offset: int) -> list[SeqFeature]:
             key: list(values) for key, values in item.get("qualifiers", {}).items()
         }
         features.append(SeqFeature(location, type=item["type"], qualifiers=qualifiers))
+    # Repeat the qualifier in short ordered chunks to avoid spaces inserted by
+    # GenBank readers when wrapping long qualifier words.
+    chunks = [
+        instance_id[index : index + 36] for index in range(0, len(instance_id), 36)
+    ]
+    for feature in features:
+        feature.qualifiers["web_instance_id"] = list(chunks)
     return features
 
 
@@ -316,48 +329,73 @@ def build_design(
     catalog,
     insert_record: SeqRecord,
     enzyme_names,
-    resistance_id: str,
-    replication_id: str,
-    design_id: int,
+    resistance_id: str | None = None,
+    replication_id: str | None = None,
+    design_id: int = 1,
     component_order=DEFAULT_COMPONENT_ORDER,
     t0_id: str | None = None,
     t1_id: str | None = None,
+    components: list[dict] | None = None,
 ) -> MolecularDesign:
-    order = normalize_component_order(component_order)
-    enzymes = resolve_enzymes(enzyme_names)
-    try:
-        resistance, replication = (
-            catalog.get_resistance(resistance_id),
-            catalog.get_replication(replication_id),
-        )
-    except (KeyError, ValueError) as exc:
-        raise DesignError(
-            "所选模块 ID 不在当前组件库中。", code="unknown_module"
-        ) from exc
-    terminators = {}
-    for role, identifier in (("t0", t0_id), ("t1", t1_id)):
-        if identifier is None:
-            continue
-        try:
-            module = catalog.get_terminator(identifier)
-        except (KeyError, ValueError) as exc:
-            raise DesignError(
-                "所选终止子 ID 不在当前组件库中。", code="unknown_module"
-            ) from exc
-        if module.role != role:
-            raise DesignError(
-                f"{module.name} 不能作为 {role.upper()} 使用。",
-                code="invalid_terminator_role",
+    legacy_order = (
+        normalize_component_order(component_order) if components is None else None
+    )
+    components = normalize_components(
+        (
+            legacy_components(
+                {
+                    "resistance_id": resistance_id,
+                    "replication_id": replication_id,
+                    "t0_id": t0_id,
+                    "t1_id": t1_id,
+                },
+                legacy_order,
             )
-        terminators[role] = module
-    terminator_warnings = []
-    actual_order = [
-        kind for kind in order if kind not in ("t0", "t1") or kind in terminators
+            if components is None
+            else components
+        ),
+        catalog,
+    )
+    order = legacy_order or [c["instance_id"] for c in components]
+    enzymes = resolve_enzymes(enzyme_names)
+    modules = {}
+    for component in components:
+        kind = component["component_type"]
+        if kind == "expression":
+            continue
+        identifier = component["module_id"]
+        modules[component["instance_id"]] = (
+            catalog.get_terminator(identifier)
+            if kind in ("t0", "t1")
+            else (
+                catalog.get_resistance(identifier)
+                if kind == "resistance"
+                else catalog.get_replication(identifier)
+            )
+        )
+    resistances = [
+        modules[c["instance_id"]]
+        for c in components
+        if c["component_type"] == "resistance"
     ]
+    resistance = resistances[0]
+    replication = next(
+        modules[c["instance_id"]]
+        for c in components
+        if c["component_type"] == "replication"
+    )
+    t0_id = next(
+        (c["module_id"] for c in components if c["component_type"] == "t0"), None
+    )
+    t1_id = next(
+        (c["module_id"] for c in components if c["component_type"] == "t1"), None
+    )
+    terminator_warnings = []
+    actual_order = [c["component_type"] for c in components]
     expression_index = actual_order.index("expression")
     for role, relative in (("t1", -1), ("t0", 1)):
         boundary = "上游" if relative < 0 else "下游"
-        if role not in terminators:
+        if role not in actual_order:
             terminator_warnings.append(
                 f"当前设计缺少 {role.upper()} 终止子，仍可继续生成。"
             )
@@ -371,69 +409,72 @@ def build_design(
             "完整表达构建必须包含连续的 A/C/G/T 序列。", code="invalid_sequence"
         )
     left, right = enzymes
-    resistance_pieces = [
-        (resistance_id, resistance.name, "resistance", resistance.sequence),
-        (
-            "module_interval",
-            "固定模块间隔",
-            "linker",
-            catalog.scaffold["resistance_to_replication"],
-        ),
-    ]
-    replication_pieces = [
-        (replication_id, replication.name, "replication", replication.sequence),
-        (
-            "t1_interval",
-            "复制模块尾部间隔",
-            "linker",
-            catalog.scaffold["replication_to_t1"],
-        ),
-    ]
     spacer = catalog.scaffold["landing_pad_spacer"]
 
     def layout(expression_dna, *, placeholder=False):
-        blocks = {
-            "resistance": resistance_pieces,
-            "replication": replication_pieces,
-            **{
-                role: [(module.id, module.name, "terminator", module.sequence)]
-                for role, module in terminators.items()
-            },
-            "expression": [
-                ("left_site", left.name, "restriction", left.site),
-                (
-                    "landing_pad_spacer" if placeholder else "expression",
-                    "landing_pad_spacer" if placeholder else "完整表达构建",
-                    "linker" if placeholder else "expression",
-                    expression_dna,
-                ),
-                ("right_site", right.name, "restriction", right.site),
-            ],
-        }
-        pieces = [(owner, *piece) for owner in order for piece in blocks.get(owner, [])]
+        expression_pieces = [
+            ("left_site", left.name, "restriction", left.site),
+            (
+                "landing_pad_spacer" if placeholder else "expression",
+                "landing_pad_spacer" if placeholder else "完整表达构建",
+                "linker" if placeholder else "expression",
+                expression_dna,
+            ),
+            ("right_site", right.name, "restriction", right.site),
+        ]
+        pieces = []
+        for component in components:
+            owner, kind = component["instance_id"], component["component_type"]
+            if kind == "expression":
+                block = expression_pieces
+            else:
+                module = modules[owner]
+                block = [
+                    (
+                        module.id,
+                        module.name,
+                        "terminator" if kind in ("t0", "t1") else kind,
+                        module.sequence,
+                    )
+                ]
+                if kind == "resistance":
+                    block.append(
+                        (
+                            "module_interval",
+                            "固定模块间隔",
+                            "linker",
+                            catalog.scaffold["resistance_to_replication"],
+                        )
+                    )
+                elif kind == "replication":
+                    block.append(
+                        (
+                            "t1_interval",
+                            "复制模块尾部间隔",
+                            "linker",
+                            catalog.scaffold["replication_to_t1"],
+                        )
+                    )
+            pieces.extend((owner, kind, *piece) for piece in block)
         segments, features, cursor = [], [], 0
-        for owner, identifier, label, kind, dna in pieces:
+        for owner, component_type, identifier, label, kind, dna in pieces:
             segments.append(
                 {
                     "id": identifier,
                     "label": label,
                     "kind": kind,
-                    "component_type": owner,
+                    "component_type": component_type,
+                    "instance_id": owner,
                     "start_bp": cursor + 1,
                     "end_bp": cursor + len(dna),
                     "length_bp": len(dna),
                 }
             )
             if kind in ("resistance", "replication"):
-                features.extend(
-                    _module_features(
-                        resistance if kind == "resistance" else replication, cursor
-                    )
-                )
+                features.extend(_module_features(modules[owner], cursor, owner))
             elif kind == "terminator":
                 # One source annotation per standalone terminator; no duplicate wrapper.
-                module = terminators[owner]
-                features.extend(_module_features(module, cursor)[1:])
+                features.extend(_module_features(modules[owner], cursor, owner)[1:])
             elif kind not in ("restriction", "expression"):
                 features.append(
                     _annotation(
@@ -441,13 +482,13 @@ def build_design(
                         cursor + len(dna),
                         label,
                         kind,
-                        feature_type="terminator"
-                        if kind == "terminator"
-                        else "misc_feature",
+                        feature_type=(
+                            "terminator" if kind == "terminator" else "misc_feature"
+                        ),
                     )
                 )
             cursor += len(dna)
-        return "".join(p[4] for p in pieces), segments, features
+        return "".join(p[5] for p in pieces), segments, features
 
     backbone_sequence, bone_segments, features = layout(spacer, placeholder=True)
     final_sequence, segments, _ = layout(insert)
@@ -475,6 +516,7 @@ def build_design(
         "parts_design_id": design_id,
         "assembly_method": "restriction",
         "component_order": order,
+        "components": components,
         "t0_id": t0_id,
         "t1_id": t1_id,
         "estimated_final_length_bp": len(final_sequence),
@@ -583,8 +625,8 @@ def build_design(
         result=assembled,
         plan=plan,
     )
-    warnings = [*resistance.notes, *replication.notes, *terminator_warnings]
-    warnings.extend(w for module in terminators.values() for w in module.notes)
+    warnings = [w for module in modules.values() for w in module.notes]
+    warnings.extend(terminator_warnings)
     warnings.extend(w for w in mapping_warnings if "landing_pad_spacer" not in w)
     preparations = {}
     if not issues:
@@ -613,6 +655,7 @@ def build_design(
             issues.append({"code": exc.code, "message": str(exc)})
     preview = {
         "component_order": order,
+        "components": components,
         "t0_id": t0_id,
         "t1_id": t1_id,
         "terminator_warnings": terminator_warnings,

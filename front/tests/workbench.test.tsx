@@ -8,7 +8,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import type { Preview } from "../src/types";
+import type { Preview, ComponentInstance } from "../src/types";
+import { componentPreview } from "./componentFixtures";
 import { PlasmidRing, Workbench } from "../src/Workbench";
 
 const context = {
@@ -97,7 +98,16 @@ const preview: Preview = {
   manifest_revision: 3,
 };
 
-function response(body: unknown, ok = true, status = 200) {
+function response(body: any, ok = true, status = 200, init?: RequestInit) {
+  if (ok && body.segments) body = componentPreview(body, init);
+  if (ok && body.result && init?.body)
+    body = {
+      ...body,
+      result: {
+        ...body.result,
+        components: JSON.parse(String(init.body)).components,
+      },
+    };
   return Promise.resolve(
     new Response(JSON.stringify(body), {
       status,
@@ -129,13 +139,16 @@ describe("Workbench", () => {
   it.each(["ring", "list"])(
     "accepts library dragging onto the whole %s",
     async (target) => {
-      const mock = vi.fn((url: string, _init?: RequestInit) =>
+      const mock = vi.fn((url: string, init?: RequestInit) =>
         response(
           url.includes("modules")
             ? modules
             : url.includes("preview")
               ? preview
               : context,
+          true,
+          200,
+          init,
         ),
       );
       vi.stubGlobal("fetch", mock);
@@ -170,26 +183,28 @@ describe("Workbench", () => {
       );
       const request = mock.mock.calls.find(([url]) => url.includes("preview"));
       expect(JSON.parse(String(request?.[1]?.body))).toEqual({
-        component_order: [
-          "resistance",
-          "replication",
-          "t1",
-          "expression",
-          "t0",
+        components: [
+          {
+            instance_id: "replication",
+            component_type: "replication",
+            module_id: "puc",
+          },
+          { instance_id: "expression", component_type: "expression" },
+          {
+            instance_id: expect.any(String),
+            component_type: "resistance",
+            module_id: "amp",
+          },
         ],
-        t0_id: null,
-        t1_id: null,
-        resistance_id: "amp",
-        replication_id: "puc",
         expected_revision: 3,
         source_fingerprint: "source-a",
       });
     },
   );
-  it("replaces a selected module by dropping another of the same type onto the ring", async () => {
+  it("adds another module of the same type by dropping it onto the ring", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string) =>
+      vi.fn((url: string, init?: RequestInit) =>
         response(
           url.includes("modules")
             ? {
@@ -202,6 +217,9 @@ describe("Workbench", () => {
             : url.includes("preview")
               ? preview
               : context,
+          true,
+          200,
+          init,
         ),
       ),
     );
@@ -218,15 +236,19 @@ describe("Workbench", () => {
         dataTransfer: data,
       }),
     );
-    expect(screen.getByTestId("resistance-slot")).toHaveTextContent("KanR");
-    expect(screen.getByTestId("resistance-slot")).not.toHaveTextContent("AmpR");
+    expect(screen.getAllByTestId("resistance-slot")[0]).toHaveTextContent(
+      "AmpR",
+    );
+    expect(screen.getAllByTestId("resistance-slot")[1]).toHaveTextContent(
+      "KanR",
+    );
     expect(screen.getByTestId("replication-slot")).toHaveTextContent("pUC ori");
   });
   it("ignores foreign drag data and rejects dropping into a slot of the wrong type", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string) =>
-        response(url.includes("modules") ? modules : context),
+      vi.fn((url: string, init?: RequestInit) =>
+        response(url.includes("modules") ? modules : context, true, 200, init),
       ),
     );
     render(<Workbench />);
@@ -245,13 +267,13 @@ describe("Workbench", () => {
     fireEvent.drop(screen.getByRole("img", { name: "质粒环图" }), {
       dataTransfer: foreign,
     });
-    expect(screen.getByTestId("resistance-slot")).not.toHaveTextContent("AmpR");
+    expect(screen.queryByTestId("resistance-slot")).not.toBeInTheDocument();
     expect(screen.getByTestId("replication-slot")).not.toHaveTextContent(
       "pUC ori",
     );
     expect(screen.getByRole("button", { name: "生成设计" })).toBeDisabled();
   });
-  it("replaces the fixed resistance slot when another resistance is chosen", async () => {
+  it("keeps existing resistance when another resistance is chosen", async () => {
     const second = {
       ...modules,
       resistance: [
@@ -263,8 +285,8 @@ describe("Workbench", () => {
       "fetch",
       vi
         .fn()
-        .mockImplementation((url: string) =>
-          response(url.includes("modules") ? second : context),
+        .mockImplementation((url: string, init?: RequestInit) =>
+          response(url.includes("modules") ? second : context, true, 200, init),
         ),
     );
     render(<Workbench />);
@@ -273,8 +295,12 @@ describe("Workbench", () => {
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: /KanR/ })),
     );
-    expect(screen.getByTestId("resistance-slot")).toHaveTextContent("KanR");
-    expect(screen.getByTestId("resistance-slot")).not.toHaveTextContent("AmpR");
+    expect(screen.getAllByTestId("resistance-slot")[0]).toHaveTextContent(
+      "AmpR",
+    );
+    expect(screen.getAllByTestId("resistance-slot")[1]).toHaveTextContent(
+      "KanR",
+    );
   });
 
   it("does not generate before a valid preview exists", async () => {
@@ -282,8 +308,13 @@ describe("Workbench", () => {
       "fetch",
       vi
         .fn()
-        .mockImplementation((url: string) =>
-          response(url.includes("modules") ? modules : context),
+        .mockImplementation((url: string, init?: RequestInit) =>
+          response(
+            url.includes("modules") ? modules : context,
+            true,
+            200,
+            init,
+          ),
         ),
     );
     render(<Workbench />);
@@ -303,16 +334,18 @@ describe("Workbench", () => {
         { ...modules.resistance[0], id: "kan", name: "KanR" },
       ],
     };
-    const fetchMock = vi.fn().mockImplementation((url: string) => {
-      if (url.includes("modules")) return response(second);
-      if (url.includes("preview"))
-        return fetchMock.mock.calls.filter(([u]) =>
-          String(u).includes("preview"),
-        ).length === 1
-          ? oldPreview
-          : response({ ...preview, length_bp: 4000 });
-      return response(context);
-    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("modules")) return response(second, true, 200, init);
+        if (url.includes("preview"))
+          return fetchMock.mock.calls.filter(([u]) =>
+            String(u).includes("preview"),
+          ).length === 1
+            ? oldPreview
+            : response({ ...preview, length_bp: 4000 }, true, 200, init);
+        return response(context, true, 200, init);
+      });
     vi.stubGlobal("fetch", fetchMock);
     render(<Workbench />);
     await screen.findByText("AmpR");
@@ -333,8 +366,8 @@ describe("Workbench", () => {
     const fetchMock = vi
       .fn()
       .mockImplementation((url: string, init?: RequestInit) => {
-        if (url.includes("modules")) return response(modules);
-        if (url.includes("preview")) return response(preview);
+        if (url.includes("modules")) return response(modules, true, 200, init);
+        if (url.includes("preview")) return response(preview, true, 200, init);
         if (url.includes("generate"))
           return response(
             {
@@ -365,11 +398,17 @@ describe("Workbench", () => {
             },
             true,
             202,
+            init,
           );
-        return response({
-          ...context,
-          project: { ...context.project, manifest_revision: 2 },
-        });
+        return response(
+          {
+            ...context,
+            project: { ...context.project, manifest_revision: 2 },
+          },
+          true,
+          200,
+          init,
+        );
       });
     vi.stubGlobal("fetch", fetchMock);
     render(<Workbench />);
@@ -386,15 +425,16 @@ describe("Workbench", () => {
   it("renders a failed preview API message", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((url: string) => {
-        if (url.includes("modules")) return response(modules);
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("modules")) return response(modules, true, 200, init);
         if (url.includes("preview"))
           return response(
             { error: { code: "invalid_modules", message: "模块不兼容" } },
             false,
             422,
+            init,
           );
-        return response(context);
+        return response(context, true, 200, init);
       }),
     );
     render(<Workbench />);
@@ -405,6 +445,10 @@ describe("Workbench", () => {
   });
 
   it("hides a completed result after a dirty selection change", async () => {
+    localStorage.setItem(
+      "plasmid:demo",
+      JSON.stringify({ resistance_id: "amp", replication_id: "puc" }),
+    );
     const second = {
       ...modules,
       resistance: [
@@ -439,20 +483,21 @@ describe("Workbench", () => {
       "fetch",
       vi
         .fn()
-        .mockImplementation((url: string) =>
+        .mockImplementation((url: string, init?: RequestInit) =>
           response(
             url.includes("modules")
               ? second
               : url.includes("preview")
                 ? preview
                 : completed,
+            true,
+            200,
+            init,
           ),
         ),
     );
     render(<Workbench />);
-    await screen.findByText("AmpR");
-    fireEvent.click(screen.getByRole("button", { name: /AmpR/ }));
-    fireEvent.click(screen.getByRole("button", { name: /pUC ori/ }));
+    await screen.findByRole("button", { name: "选择 AmpR" });
     expect(
       await screen.findByRole("link", { name: /下载 GenBank/ }),
     ).toBeInTheDocument();
@@ -541,7 +586,7 @@ describe("Workbench", () => {
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((url: string) =>
+      vi.fn().mockImplementation((url: string, init?: RequestInit) =>
         response(
           url.includes("modules")
             ? modules
@@ -559,6 +604,9 @@ describe("Workbench", () => {
                     ...context,
                     project: { ...context.project, manifest_revision: 1 },
                   },
+          true,
+          200,
+          init,
         ),
       ),
     );
@@ -578,9 +626,12 @@ describe("Workbench", () => {
       "fetch",
       vi
         .fn()
-        .mockImplementation((url: string) =>
+        .mockImplementation((url: string, init?: RequestInit) =>
           response(
             url.includes("modules") ? modules : { ...context, ready: false },
+            true,
+            200,
+            init,
           ),
         ),
     );
@@ -596,18 +647,28 @@ describe("Workbench", () => {
   });
   it("recovers a generate conflict by refreshing context and preview", async () => {
     let revision = 3;
-    const mock = vi.fn((url: string) => {
-      if (url.includes("modules")) return response(modules);
+    const mock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes("modules")) return response(modules, true, 200, init);
       if (url.includes("preview"))
-        return response({ ...preview, manifest_revision: revision });
+        return response(
+          { ...preview, manifest_revision: revision },
+          true,
+          200,
+          init,
+        );
       if (url.includes("generate")) {
         revision = 4;
-        return response({ error: { message: "源已更新" } }, false, 409);
+        return response({ error: { message: "源已更新" } }, false, 409, init);
       }
-      return response({
-        ...context,
-        project: { ...context.project, manifest_revision: revision },
-      });
+      return response(
+        {
+          ...context,
+          project: { ...context.project, manifest_revision: revision },
+        },
+        true,
+        200,
+        init,
+      );
     });
     vi.stubGlobal("fetch", mock);
     render(<Workbench />);
@@ -628,7 +689,7 @@ describe("Workbench", () => {
     );
   });
   it("guards pending submission, exposes read-only DNA, and supports clearing", async () => {
-    const mock = vi.fn((url: string) =>
+    const mock = vi.fn((url: string, init?: RequestInit) =>
       url.includes("generate")
         ? new Promise<Response>(() => {})
         : response(
@@ -637,6 +698,9 @@ describe("Workbench", () => {
               : url.includes("preview")
                 ? preview
                 : context,
+            true,
+            200,
+            init,
           ),
     );
     vi.stubGlobal("fetch", mock);
@@ -655,7 +719,7 @@ describe("Workbench", () => {
     ).toHaveLength(1);
     expect(screen.getByRole("button", { name: "生成设计" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "清空抗性标记" }));
-    expect(screen.getByTestId("resistance-slot")).not.toHaveTextContent("AmpR");
+    expect(screen.queryByTestId("resistance-slot")).not.toBeInTheDocument();
     expect(screen.getByTestId("source-slot")).toHaveTextContent("完整表达构建");
   });
   it("discards cached IDs that do not exist in the current library", async () => {
@@ -663,13 +727,13 @@ describe("Workbench", () => {
       "plasmid:demo",
       JSON.stringify({ resistance_id: "missing", replication_id: "puc" }),
     );
-    const mock = vi.fn((url: string) =>
-      response(url.includes("modules") ? modules : context),
+    const mock = vi.fn((url: string, init?: RequestInit) =>
+      response(url.includes("modules") ? modules : context, true, 200, init),
     );
     vi.stubGlobal("fetch", mock);
     render(<Workbench />);
     await screen.findByText("AmpR");
-    expect(screen.getByTestId("resistance-slot")).not.toHaveTextContent("AmpR");
+    expect(screen.queryByTestId("resistance-slot")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("AmpR 只读 DNA")).not.toBeInTheDocument();
     expect(mock.mock.calls.some(([url]) => url.includes("preview"))).toBe(
       false,
@@ -721,6 +785,7 @@ describe("Workbench", () => {
   it("refreshes the preview revision after committing a job while preserving chosen IDs", async () => {
     let revision = 1;
     const committed = {
+      components: [] as ComponentInstance[],
       id: "g",
       resistance_id: "amp",
       replication_id: "puc",
@@ -736,24 +801,40 @@ describe("Workbench", () => {
       ],
     };
     const mock = vi.fn((url: string, init?: RequestInit) => {
-      if (url.includes("modules")) return response(modules);
+      if (url.includes("modules")) return response(modules, true, 200, init);
       if (url.includes("preview"))
-        return response({ ...preview, manifest_revision: revision });
+        return response(
+          { ...preview, manifest_revision: revision },
+          true,
+          200,
+          init,
+        );
       if (url.includes("generate")) {
         revision = 2;
-        return response({
-          id: "j",
-          status: "succeeded",
-          stage: "done",
-          message: "完成",
-          result: committed,
-        });
+        committed.components = JSON.parse(String(init?.body)).components;
+        return response(
+          {
+            id: "j",
+            status: "succeeded",
+            stage: "done",
+            message: "完成",
+            result: committed,
+          },
+          true,
+          200,
+          init,
+        );
       }
-      return response({
-        ...context,
-        result: revision === 2 ? committed : null,
-        project: { ...context.project, manifest_revision: revision },
-      });
+      return response(
+        {
+          ...context,
+          result: revision === 2 ? committed : null,
+          project: { ...context.project, manifest_revision: revision },
+        },
+        true,
+        200,
+        init,
+      );
     });
     vi.stubGlobal("fetch", mock);
     render(<Workbench />);
@@ -781,13 +862,16 @@ describe("Workbench", () => {
     let reads = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string) =>
+      vi.fn((url: string, init?: RequestInit) =>
         response(
           url.includes("modules")
             ? modules
             : url.includes("preview")
               ? preview
               : { ...context, ready: ++reads === 1 },
+          true,
+          200,
+          init,
         ),
       ),
     );
@@ -808,6 +892,7 @@ describe("Workbench", () => {
     "uses authoritative context after a completed job: %s",
     async (mode) => {
       const resultA = {
+        components: [] as ComponentInstance[],
         id: "a",
         resistance_id: "amp",
         replication_id: "puc",
@@ -827,29 +912,46 @@ describe("Workbench", () => {
       let invalid = false;
       vi.stubGlobal(
         "fetch",
-        vi.fn((url: string) => {
-          if (url.includes("modules")) return response(modules);
+        vi.fn((url: string, init?: RequestInit) => {
+          if (url.includes("modules"))
+            return response(modules, true, 200, init);
           if (url.includes("preview"))
-            return response({ ...preview, manifest_revision: revision });
+            return response(
+              { ...preview, manifest_revision: revision },
+              true,
+              200,
+              init,
+            );
           if (url.includes("generate")) {
             revision = 2;
+            resultA.components = JSON.parse(String(init?.body)).components;
             authoritative = resultA;
-            return response({
-              id: "job-a",
-              status: "succeeded",
-              stage: "done",
-              message: "完成",
-              result: resultA,
-            });
+            return response(
+              {
+                id: "job-a",
+                status: "succeeded",
+                stage: "done",
+                message: "完成",
+                result: resultA,
+              },
+              true,
+              200,
+              init,
+            );
           }
-          return response({
-            ...context,
-            project: { ...context.project, manifest_revision: revision },
-            result: authoritative,
-            issues: invalid
-              ? [{ code: "artifact_invalid", message: "产物校验失败" }]
-              : [],
-          });
+          return response(
+            {
+              ...context,
+              project: { ...context.project, manifest_revision: revision },
+              result: authoritative,
+              issues: invalid
+                ? [{ code: "artifact_invalid", message: "产物校验失败" }]
+                : [],
+            },
+            true,
+            200,
+            init,
+          );
         }),
       );
       render(<Workbench />);

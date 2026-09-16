@@ -109,23 +109,29 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-it("keeps terminators empty until manually selected and sends nullable IDs with five roles", async () => {
+it("keeps terminators absent until manually added and sends ordered instances", async () => {
   const fetcher = install();
   render(<Workbench />);
   await selectRequired();
-  expect(screen.getByTestId("t0-slot")).toHaveTextContent("未添加T0");
-  expect(screen.getByTestId("t1-slot")).toHaveTextContent("未添加T1");
+  expect(screen.queryByTestId("t0-slot")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("t1-slot")).not.toBeInTheDocument();
   expect(
     JSON.parse(
       String(fetcher.mock.calls.find(([u]) => u === "/api/preview")?.[1]?.body),
     ),
-  ).toMatchObject({ t0_id: null, t1_id: null, component_order: order });
+  ).toMatchObject({
+    components: [
+      { component_type: "replication", module_id: "ori" },
+      { component_type: "expression" },
+      { component_type: "resistance", module_id: "amp" },
+    ],
+  });
   fireEvent.click(screen.getByRole("button", { name: "选择 T0" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled(),
   );
   expect(screen.getByTestId("t0-slot")).toHaveTextContent("T0");
-  expect(screen.getByTestId("t1-slot")).toHaveTextContent("未添加T1");
+  expect(screen.queryByTestId("t1-slot")).not.toBeInTheDocument();
 });
 it.each(["返回调整", "Escape", "backdrop"])(
   "cancels warning dialog via %s without generation or changing selections",
@@ -177,9 +183,13 @@ it("continues warnings with exact choices only once and changing selection close
       ),
     ),
   ).toMatchObject({
-    t0_id: "basic_seva_t0",
-    t1_id: "basic_seva_t1",
-    component_order: order,
+    components: [
+      { component_type: "replication", module_id: "ori" },
+      { component_type: "expression" },
+      { component_type: "resistance", module_id: "amp" },
+      { component_type: "t0", module_id: "basic_seva_t0" },
+      { component_type: "t1", module_id: "basic_seva_t1" },
+    ],
   });
 });
 it("does not confirm generic notes and keeps hard conflicts blocking", async () => {
@@ -357,7 +367,7 @@ it("restores only explicit valid terminator references and clear all preserves s
     expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled(),
   );
   expect(screen.getByTestId("t0-slot")).toHaveTextContent("T0");
-  expect(screen.getByTestId("t1-slot")).toHaveTextContent("未添加T1");
+  expect(screen.queryByTestId("t1-slot")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "生成设计" }));
   fireEvent.click(screen.getByRole("button", { name: "清空T0" }));
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -366,11 +376,10 @@ it("restores only explicit valid terminator references and clear all preserves s
   expect(
     JSON.parse(localStorage.getItem("plasmid:terminator-demo")!),
   ).toMatchObject({
-    resistance_id: "",
-    replication_id: "",
-    t0_id: null,
-    t1_id: null,
-    component_order: order,
+    components: [
+      { instance_id: "replication", component_type: "replication" },
+      { instance_id: "expression", component_type: "expression" },
+    ],
   });
   expect(screen.getByTestId("source-slot")).toHaveTextContent("完整表达构建");
 });
@@ -391,17 +400,21 @@ it("supports manual terminator library drop and independent list reordering whic
   };
   const card = screen.getByRole("button", { name: "选择 T0" });
   fireEvent.dragStart(card, { dataTransfer: data });
-  fireEvent.dragOver(screen.getByTestId("t0-slot"), { dataTransfer: data });
-  fireEvent.drop(screen.getByTestId("t0-slot"), { dataTransfer: data });
+  fireEvent.dragOver(screen.getByRole("img", { name: "质粒环图" }), {
+    dataTransfer: data,
+  });
+  fireEvent.drop(screen.getByRole("img", { name: "质粒环图" }), {
+    dataTransfer: data,
+  });
   fireEvent.dragEnd(card, { dataTransfer: data });
   expect(screen.getByTestId("t0-slot")).toHaveTextContent("T0");
-  expect(screen.getByTestId("t1-slot")).toHaveTextContent("未添加T1");
+  expect(screen.queryByTestId("t1-slot")).not.toBeInTheDocument();
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled(),
   );
   fireEvent.click(screen.getByRole("button", { name: "生成设计" }));
   expect(screen.getByRole("alertdialog")).toBeInTheDocument();
-  order.forEach((type, index) =>
+  ["replication", "expression", "resistance", "t0"].forEach((type, index) =>
     vi
       .spyOn(
         container.querySelector(`[data-component-type="${type}"]`)!,
@@ -434,9 +447,12 @@ it("supports manual terminator library drop and independent list reordering whic
       ),
     ),
   ).toMatchObject({
-    t0_id: "basic_seva_t0",
-    t1_id: null,
-    component_order: ["t0", "resistance", "replication", "t1", "expression"],
+    components: [
+      { component_type: "t0", module_id: "basic_seva_t0" },
+      { component_type: "replication", module_id: "ori" },
+      { component_type: "expression" },
+      { component_type: "resistance", module_id: "amp" },
+    ],
   });
 });
 
@@ -538,6 +554,12 @@ it("closes confirmation on a changed source while preserving manual choices and 
   ).toMatchObject({
     source_fingerprint: "new-source",
     expected_revision: 2,
-    t0_id: "basic_seva_t0",
+    components: expect.arrayContaining([
+      {
+        instance_id: expect.any(String),
+        component_type: "t0",
+        module_id: "basic_seva_t0",
+      },
+    ]),
   });
 });
