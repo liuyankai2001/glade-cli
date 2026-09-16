@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>质粒组装可视化</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0d1117; color: #e6edf3; height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.header {
+  background: #161b22; padding: 10px 20px; display: flex;
+  justify-content: space-between; align-items: center;
+  border-bottom: 1px solid #30363d; flex-shrink: 0;
+}
+.header h1 { font-size: 18px; color: #58a6ff; }
+.header-actions { display: flex; gap: 8px; }
+.btn {
+  padding: 6px 14px; border: 1px solid #30363d; border-radius: 6px;
+  background: #21262d; color: #e6edf3; cursor: pointer; font-size: 13px;
+  transition: all .2s;
+}
+.btn:hover { background: #30363d; border-color: #58a6ff; }
+.btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* 左侧面板 */
+.left-panel {
+  width: 260px; background: #161b22; border-right: 1px solid #30363d;
+  overflow-y: auto; padding: 12px; flex-shrink: 0;
+}
+.panel-title {
+  font-size: 14px; font-weight: 600; color: #58a6ff; margin-bottom: 12px;
+  padding-bottom: 8px; border-bottom: 1px solid #30363d;
+}
+.category { margin-bottom: 8px; }
+.category-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; background: #21262d; border-radius: 6px;
+  cursor: pointer; font-size: 13px; font-weight: 500;
+  transition: background .2s; user-select: none;
+}
+.category-header:hover { background: #30363d; }
+.category-header .arrow { transition: transform .2s; font-size: 10px; }
+.category-header.collapsed .arrow { transform: rotate(-90deg); }
+.category-items { padding: 4px 0 4px 8px; }
+.category-items.hidden { display: none; }
+.component-item {
+  display: flex; align-items: center; padding: 6px 8px; margin: 2px 0;
+  border-radius: 4px; cursor: grab; font-size: 12px;
+  transition: background .2s; user-select: none;
+}
+.component-item:hover { background: #21262d; }
+.color-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+.comp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comp-size { color: #8b949e; font-size: 11px; margin-left: 4px; }
+
+/* 中间面板 */
+.center-panel {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 20px; position: relative; background: #0d1117;
+}
+.plasmid-info { text-align: center; margin-bottom: 16px; }
+.plasmid-info h2 { font-size: 16px; color: #58a6ff; margin-bottom: 4px; }
+.plasmid-info .stats { font-size: 12px; color: #8b949e; }
+.plasmid-info .stats span { margin: 0 8px; }
+#plasmid-svg { cursor: default; }
+
+/* 右侧面板 */
+.right-panel {
+  width: 300px; background: #161b22; border-left: 1px solid #30363d;
+  overflow-y: auto; padding: 12px; flex-shrink: 0;
+}
+.assembly-item {
+  display: flex; align-items: center; padding: 8px 10px; margin: 3px 0;
+  border-radius: 6px; background: #21262d; font-size: 12px;
+  transition: all .15s; user-select: none; cursor: grab;
+  position: relative; border: 2px solid transparent;
+}
+.assembly-item:hover { background: #30363d; }
+.assembly-item.dragging { opacity: 0.4; }
+.assembly-item.drag-over-top { border-top-color: #58a6ff; }
+.assembly-item.drag-over-bottom { border-bottom-color: #58a6ff; }
+.assembly-item .color-dot { width: 8px; height: 8px; }
+.assembly-item .item-name { flex: 1; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assembly-item .item-size { color: #8b949e; font-size: 11px; margin: 0 6px; }
+.item-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .2s; }
+.assembly-item:hover .item-actions { opacity: 1; }
+.item-btn {
+  width: 22px; height: 22px; border: none; border-radius: 4px;
+  background: #30363d; color: #e6edf3; cursor: pointer; font-size: 11px;
+  display: flex; align-items: center; justify-content: center; transition: background .2s;
+}
+.item-btn:hover { background: #484f58; }
+.item-btn.delete:hover { background: #da3633; }
+.empty-hint { text-align: center; color: #484f58; font-size: 13px; padding: 40px 20px; line-height: 1.8; }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🧬 质粒组装可视化</h1>
+  <div class="header-actions">
+    <button class="btn" onclick="loadExample()">加载示例</button>
+    <button class="btn" onclick="clearAll()">清空</button>
+    <button class="btn btn-primary" onclick="exportGB()">导出 .gb</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="left-panel" id="leftPanel">
+    <div class="panel-title">📦 组件库</div>
+    <div id="library"></div>
+  </div>
+  <div class="center-panel" id="centerPanel">
+    <div class="plasmid-info" id="plasmidInfo">
+      <h2 id="plasmidName">未命名质粒</h2>
+      <div class="stats">
+        <span id="statLen">总长: 0 bp</span>
+        <span id="statCount">组件: 0</span>
+        <span id="statGC">GC: 0%</span>
+      </div>
+    </div>
+    <svg id="plasmid-svg" width="420" height="420" viewBox="0 0 420 420"></svg>
+  </div>
+  <div class="right-panel" id="rightPanel">
+    <div class="panel-title">📋 组装列表</div>
+    <div id="assemblyList"></div>
+  </div>
+</div>
+
+<script>
+// ========== 数据 ==========
+const CATEGORIES = [
+  { id:'ori', name:'复制起始位点 (ori)', color:'#f0883e', items:[
+    {name:'pUC ori',size:520,gc:51},{name:'ColE1 ori',size:480,gc:50},{name:'p15A ori',size:620,gc:49}
+  ]},
+  { id:'res', name:'抗性基因', color:'#3fb950', items:[
+    {name:'AmpR',size:861,gc:53},{name:'KanR',size:810,gc:52},{name:'CmR',size:630,gc:50}
+  ]},
+  { id:'pro', name:'启动子', color:'#58a6ff', items:[
+    {name:'T7 promoter',size:50,gc:48},{name:'lac promoter',size:200,gc:52},{name:'CMV promoter',size:600,gc:55}
+  ]},
+  { id:'ter', name:'终止子', color:'#d2a8ff', items:[
+    {name:'T7 terminator',size:200,gc:50},{name:'rrnB T1',size:350,gc:52},{name:'SV40 polyA',size:250,gc:54}
+  ]},
+  { id:'sel', name:'筛选标记', color:'#f778ba', items:[
+    {name:'GFP',size:720,gc:49},{name:'RFP',size:700,gc:50},{name:'His-tag',size:30,gc:45}
+  ]},
+  { id:'gene', name:'目的基因', color:'#ffa657', items:[
+    {name:'Gene A',size:1500,gc:50},{name:'Gene B',size:2000,gc:48},{name:'Gene C',size:900,gc:52}
+  ]}
+];
+
+let assembly = [];
+let svgDragState = null; 
+let listDragState = null; 
+
+// ========== 左侧组件库渲染 ==========
+function renderLibrary() {
+  const lib = document.getElementById('library');
+  lib.innerHTML = '';
+  CATEGORIES.forEach(cat => {
+    const div = document.createElement('div');
+    div.className = 'category';
+    div.innerHTML = `
+      <div class="category-header" onclick="this.classList.toggle('collapsed');this.nextElementSibling.classList.toggle('hidden')">
+        <span style="display:flex;align-items:center;gap:6px"><span class="color-dot" style="background:${cat.color}"></span>${cat.name}</span>
+        <span class="arrow">▼</span>
+      </div>
+      <div class="category-items">
+        ${cat.items.map((item,i) => `
+          <div class="component-item" draggable="true"
+               ondragstart="onLibDragStart(event,'${cat.id}',${i})">
+            <span class="color-dot" style="background:${cat.color}"></span>
+            <span class="comp-name">${item.name}</span>
+            <span class="comp-size">${item.size}</span>
+          </div>
+        `).join('')}
+      </div>`;
+    lib.appendChild(div);
+  });
+}
+
+function onLibDragStart(e, catId, itemIdx) {
+  const cat = CATEGORIES.find(c=>c.id===catId);
+  const item = cat.items[itemIdx];
+  e.dataTransfer.setData('application/json', JSON.stringify({
+    name:item.name, size:item.size, gc:item.gc, color:cat.color
+  }));
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
+document.getElementById('centerPanel').addEventListener('dragover', e => {
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+});
+document.getElementById('centerPanel').addEventListener('drop', e => {
+  e.preventDefault();
+  try {
+    const data = JSON.parse(e.dataTransfer.getData('application/json'));
+    assembly.push(data);
+    renderAll();
+  } catch(err) {}
+});
+
+// ========== 右侧组装列表渲染与拖拽 ==========
+function renderAssemblyList() {
+  const list = document.getElementById('assemblyList');
+  list.innerHTML = '';
+
+  if(assembly.length === 0) {
+    list.innerHTML = `<div class="empty-hint">暂无组件<br>从左侧拖拽组件到中间圆环</div>`;
+    return;
+  }
+
+  assembly.forEach((comp, i) => {
+    const div = document.createElement('div');
+    div.className = 'assembly-item';
+    div.dataset.index = i;
+
+    if(listDragState && listDragState.dragIndex === i) {
+      div.classList.add('dragging');
+    }
+    if(listDragState && listDragState.overIndex === i) {
+      div.classList.add(listDragState.overSide === 'top' ? 'drag-over-top' : 'drag-over-bottom');
+    }
+
+    div.innerHTML = `
+      <span class="color-dot" style="background:${comp.color}"></span>
+      <span class="item-name">${comp.name}</span>
+      <span class="item-size">${comp.size}</span>
+      <div class="item-actions">
+        <button class="item-btn" onclick="moveItem(${i},-1)" title="上移">↑</button>
+        <button class="item-btn" onclick="moveItem(${i},1)" title="下移">↓</button>
+        <button class="item-btn delete" onclick="removeItem(${i})" title="删除">✕</button>
+      </div>`;
+
+    div.addEventListener('mousedown', (e) => onListMouseDown(e, i));
+    list.appendChild(div);
+  });
+}
+
+function onListMouseDown(e, index) {
+  if(e.target.closest('.item-actions')) return;
+  listDragState = { dragIndex: index, overIndex: null, overSide: null };
+  renderAssemblyList();
+  document.addEventListener('mousemove', listGlobalMouseMove);
+  document.addEventListener('mouseup', listGlobalMouseUp);
+}
+
+function listGlobalMouseMove(e) {
+  if(!listDragState) return;
+  const listEl = document.getElementById('assemblyList');
+  const items = listEl.querySelectorAll('.assembly-item');
+  let foundIndex = null, foundSide = null;
+  
+  items.forEach((item, i) => {
+    const rect = item.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    if(e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      foundIndex = i;
+      foundSide = e.clientY < midY ? 'top' : 'bottom';
+    }
+  });
+  
+  if(listDragState.overIndex !== foundIndex || listDragState.overSide !== foundSide) {
+    listDragState.overIndex = foundIndex;
+    listDragState.overSide = foundSide;
+    renderAssemblyList();
+  }
+}
+
+function listGlobalMouseUp() {
+  if(!listDragState) return;
+  const { dragIndex, overIndex, overSide } = listDragState;
+  
+  if(overIndex !== null && dragIndex !== overIndex) {
+    let targetIndex = overIndex;
+    if(overSide === 'bottom') targetIndex = overIndex + 1;
+    if(targetIndex > dragIndex) targetIndex--;
+    
+    const [moved] = assembly.splice(dragIndex, 1);
+    assembly.splice(targetIndex, 0, moved);
+    renderAll();
+  }
+  
+  listDragState = null;
+  document.removeEventListener('mousemove', listGlobalMouseMove);
+  document.removeEventListener('mouseup', listGlobalMouseUp);
+}
+
+// ========== 中间 SVG 渲染与拖拽 ==========
+const CX=210, CY=210, R=150, W=36;
+
+function renderPlasmid() {
+  const svg = document.getElementById('plasmid-svg');
+  const totalLen = assembly.reduce((s,c)=>s+c.size, 0);
+  const gc = totalLen > 0 ? (assembly.reduce((s,c)=>s+c.size*c.gc,0)/totalLen).toFixed(1) : '0';
+  
+  document.getElementById('plasmidName').textContent = assembly.length > 0 ? `质粒 (${assembly.length} 组件)` : '未命名质粒';
+  document.getElementById('statLen').textContent = `总长: ${totalLen.toLocaleString()} bp`;
+  document.getElementById('statCount').textContent = `组件: ${assembly.length}`;
+  document.getElementById('statGC').textContent = `GC: ${gc}%`;
+
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+
+  if(assembly.length === 0) {
+    const hint = document.createElementNS('http://www.w3.org/2000/svg','text');
+    hint.setAttribute('x',CX); hint.setAttribute('y',CY);
+    hint.setAttribute('text-anchor','middle'); hint.setAttribute('fill','#484f58');
+    hint.setAttribute('font-size','14');
+    hint.textContent = '从左侧拖拽组件到此处';
+    svg.appendChild(hint);
+    return;
+  }
+
+  const isDragging = svgDragState !== null;
+  const dragIdx = isDragging ? svgDragState.index : -1;
+  
+  let currentAngle = -90;
+  const segments = assembly.map((comp, i) => {
+    const frac = comp.size / totalLen;
+    const angleSpan = frac * 360;
+    const startAngle = currentAngle;
+    const endAngle = currentAngle + angleSpan;
+    currentAngle = endAngle;
+    return {comp, i, startAngle, endAngle, angleSpan};
+  });
+
+  // 背景圆环
+  const bg = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  bg.setAttribute('cx',CX); bg.setAttribute('cy',CY);
+  bg.setAttribute('r',R); bg.setAttribute('fill','none');
+  bg.setAttribute('stroke','#21262d'); bg.setAttribute('stroke-width',W);
+  svg.appendChild(bg);
+
+  // 绘制静态组件
+  segments.forEach(seg => {
+    if(seg.i === dragIdx) return;
+    const path = createArcPath(seg.startAngle, seg.endAngle, R, W);
+    path.setAttribute('fill', seg.comp.color);
+    path.setAttribute('stroke','#0d1117');
+    path.setAttribute('stroke-width','2');
+    path.style.cursor = 'grab';
+    path.addEventListener('mousedown', (e) => onSvgMouseDown(e, seg.i));
+    svg.appendChild(path);
+
+    if(seg.angleSpan > 15) {
+      const midAngle = (seg.startAngle + seg.endAngle) / 2;
+      const lx = CX + (R + W/2 + 15) * Math.cos(midAngle * Math.PI/180);
+      const ly = CY + (R + W/2 + 15) * Math.sin(midAngle * Math.PI/180);
+      const text = document.createElementNS('http://www.w3.org/2000/svg','text');
+      text.setAttribute('x',lx); text.setAttribute('y',ly);
+      text.setAttribute('text-anchor','middle');
+      text.setAttribute('dominant-baseline','middle');
+      text.setAttribute('fill','#e6edf3');
+      text.setAttribute('font-size','11');
+      text.style.pointerEvents = 'none';
+      text.textContent = seg.comp.name;
+      svg.appendChild(text);
+    }
+  });
+
+  // 绘制拖拽幽灵
+  if(isDragging && svgDragState.ghostAngle !== null) {
+    const dragComp = assembly[dragIdx];
+    const frac = dragComp.size / totalLen;
+    const ghostSpan = frac * 360;
+    const ghostStart = svgDragState.ghostAngle - ghostSpan / 2;
+    const ghostEnd = svgDragState.ghostAngle + ghostSpan / 2;
+    
+    const ghostPath = createArcPath(ghostStart, ghostEnd, R, W + 10);
+    ghostPath.setAttribute('fill', dragComp.color);
+    ghostPath.setAttribute('opacity', '0.5');
+    ghostPath.style.pointerEvents = 'none';
+    ghostPath.style.filter = 'drop-shadow(0 0 8px rgba(0,0,0,0.8))';
+    svg.appendChild(ghostPath);
+
+    // 插入指示线
+    if(svgDragState.insertIndex !== -1) {
+      let indAngle = -90;
+      for(let i=0; i<assembly.length; i++) {
+        if(i === svgDragState.insertIndex) break;
+        indAngle += (assembly[i].size / totalLen) * 360;
+      }
+      const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1', CX + (R - W/2 - 10) * Math.cos(indAngle * Math.PI/180));
+      line.setAttribute('y1', CY + (R - W/2 - 10) * Math.sin(indAngle * Math.PI/180));
+      line.setAttribute('x2', CX + (R + W/2 + 10) * Math.cos(indAngle * Math.PI/180));
+      line.setAttribute('y2', CY + (R + W/2 + 10) * Math.sin(indAngle * Math.PI/180));
+      line.setAttribute('stroke', '#58a6ff');
+      line.setAttribute('stroke-width', '3');
+      line.setAttribute('stroke-dasharray', '4');
+      svg.appendChild(line);
+    }
+  }
+}
+
+function createArcPath(startAngle, endAngle, radius, width) {
+  const innerR = radius - width / 2;
+  const outerR = radius + width / 2;
+  const startRad = startAngle * Math.PI / 180;
+  const endRad = endAngle * Math.PI / 180;
+  
+  const x1 = CX + outerR * Math.cos(startRad);
+  const y1 = CY + outerR * Math.sin(startRad);
+  const x2 = CX + outerR * Math.cos(endRad);
+  const y2 = CY + outerR * Math.sin(endRad);
+  const x3 = CX + innerR * Math.cos(endRad);
+  const y3 = CY + innerR * Math.sin(endRad);
+  const x4 = CX + innerR * Math.cos(startRad);
+  const y4 = CY + innerR * Math.sin(startRad);
+  
+  const largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+  
+  const d = [
+    `M ${x1} ${y1}`,
+    `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2} ${y2}`,
+    `L ${x3} ${y3}`,
+    `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x4} ${y4}`,
+    'Z'
+  ].join(' ');
+  
+  const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('d', d);
+  return path;
+}
+
+function onSvgMouseDown(e, index) {
+  e.preventDefault();
+  const svg = document.getElementById('plasmid-svg');
+  const rect = svg.getBoundingClientRect();
+  const startX = e.clientX - rect.left;
+  const startY = e.clientY - rect.top;
+  const startAngle = Math.atan2(startY - CY, startX - CX) * 180 / Math.PI;
+  
+  svgDragState = {
+    index: index,
+    startAngle: startAngle,
+    ghostAngle: startAngle,
+    insertIndex: -1
+  };
+  
+  document.addEventListener('mousemove', svgGlobalMouseMove);
+  document.addEventListener('mouseup', svgGlobalMouseUp);
+  renderPlasmid();
+}
+
+function svgGlobalMouseMove(e) {
+  if(!svgDragState) return;
+  const svg = document.getElementById('plasmid-svg');
+  const rect = svg.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const currentAngle = Math.atan2(y - CY, x - CX) * 180 / Math.PI;
+  
+  svgDragState.ghostAngle = currentAngle;
+  
+  // 计算插入位置
+  const totalLen = assembly.reduce((s,c)=>s+c.size, 0);
+  let offset = currentAngle - (-90);
+  if(offset < 0) offset += 360;
+  
+  let currentOffset = 0;
+  let insertIdx = assembly.length;
+  for(let i=0; i<assembly.length; i++) {
+    const span = (assembly[i].size / totalLen) * 360;
+    if(offset >= currentOffset && offset < currentOffset + span) {
+      const mid = currentOffset + span / 2;
+      insertIdx = offset < mid ? i : i + 1;
+      break;
+    }
+    currentOffset += span;
+  }
+  svgDragState.insertIndex = insertIdx;
+  
+  renderPlasmid();
+}
+
+function svgGlobalMouseUp() {
+  if(!svgDragState) return;
+  const { index, insertIndex } = svgDragState;
+  
+  if(insertIndex !== -1 && insertIndex !== index) {
+    let targetIdx = insertIndex;
+    if(targetIdx > index) targetIdx--;
+    
+    const [moved] = assembly.splice(index, 1);
+    assembly.splice(targetIdx, 0, moved);
+  }
+  
+  svgDragState = null;
+  document.removeEventListener('mousemove', svgGlobalMouseMove);
+  document.removeEventListener('mouseup', svgGlobalMouseUp);
+  renderAll();
+}
+
+// ========== 全局操作函数 ==========
+function renderAll() {
+  renderAssemblyList();
+  renderPlasmid();
+}
+
+function loadExample() {
+  assembly = [
+    {name:'pUC ori', size:520, gc:51, color:'#f0883e'},
+    {name:'AmpR', size:861, gc:53, color:'#3fb950'},
+    {name:'T7 promoter', size:50, gc:48, color:'#58a6ff'},
+    {name:'GFP', size:720, gc:49, color:'#f778ba'},
+    {name:'T7 terminator', size:200, gc:50, color:'#d2a8ff'}
+  ];
+  renderAll();
+}
+
+function clearAll() {
+  if(confirm('确定清空所有组件？')) {
+    assembly = [];
+    renderAll();
+  }
+}
+
+function exportGB() {
+  if(assembly.length === 0) {
+    alert('请先添加组件');
+    return;
+  }
+  const seq = assembly.map(c => c.name).join(' -> ');
+  alert(`导出成功！\n序列概览: ${seq}\n(模拟导出 GenBank 格式)`);
+}
+
+function moveItem(index, direction) {
+  const newIndex = index + direction;
+  if(newIndex < 0 || newIndex >= assembly.length) return;
+  [assembly[index], assembly[newIndex]] = [assembly[newIndex], assembly[index]];
+  renderAll();
+}
+
+function removeItem(index) {
+  assembly.splice(index, 1);
+  renderAll();
+}
+
+// 初始化
+renderLibrary();
+renderAll();
+</script>
+</body>
+</html>
+
+
