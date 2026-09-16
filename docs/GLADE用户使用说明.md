@@ -931,7 +931,7 @@ python main.py protein-to-cds -i demo01.json --device cpu `
 - 用户直接上传的 CDS 不经过密码子优化门禁。
 
 原有 `optimize_protein_cds` / `repair_cds` 修正能力仍保留，供后续独立编辑流程调用。
-独立的 `optimize` 命令支持整体/局部 GC 调整和按用户选择的限制酶批量消除 CDS 内部识别位点。
+独立的 `optimize` 命令支持整体/局部 GC 调整、指定限制酶位点消除和超长同聚物消除。
 
 输出目录：
 
@@ -944,6 +944,7 @@ outputs/C00811/protein_to_cds/
 ├── reports/<accession>.generation.json       # 当前生成报告
 ├── reports/<accession>.uploaded.json         # 上传 CDS 来源及 raw 记录
 ├── reports/<accession>.restriction_optimization.json # 禁止酶位点消除报告
+├── reports/<accession>.homopolymer_optimization.json # 同聚物消除报告
 ├── reports/<accession>.optimization.json     # 以前的修正报告如已存在则保留
 └── run_summary.json
 ```
@@ -1010,7 +1011,8 @@ python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
 不传 `--window` 时，本次上下限用于整体 GC；DNA Chisel 保持长度、编码蛋白、起始及终止密码子
 不变，并尽量减少改动。若此前已经配置局部 GC，本次整体调整也必须同时满足该局部要求。
 GC 调整同时满足 manifest 中已选择的限制酶禁止要求；只有 GC 和酶位点约束都达标才直接保留序列。
-不自动执行 CAI 或同聚物修正，未选择限制酶时不启用默认禁止酶。
+若已经设置同聚物最大长度，GC 调整也必须满足该长度要求；未设置时仍只统计同聚物。
+不自动执行 CAI 修正，未选择限制酶时不启用默认禁止酶。
 优化后独立复核精确 GC 数量，不用四舍五入后的显示值判定。不可满足时不放宽范围。
 CAI 等指标继续统计，因此可能出现 CAI 下降；用户已选择酶的内部识别位点必须为零。
 
@@ -1055,6 +1057,7 @@ python main.py optimize -i demo01.json --enzyme EcoRI HindIII
 
 一次处理 manifest 当前全部待表达蛋白的 `optimized_cds`，包括上传 CDS，不固定条数。
 该批量模式不能与 `--cds`、`--gc-min`、`--gc-max` 或 `--window` 同次使用；已有整体、局部 GC 设置仍保留并满足。
+已设置的同聚物最大长度同样保留并满足；不能同次传入 `--homopolymer-max`。
 参数和库名均通过小写匹配，`ecori`、`ECORI` 和 `EcoRI` 等价，最终保存库中的标准名称。
 重复酶名自动去重，未知或没有可用识别序列的酶会报错。
 
@@ -1083,6 +1086,38 @@ CLI 共用 CDS 信息表，并展示位点数量前后变化；相同选择且�
 手动上传元件齐全后，上传命令将该表达盒的禁止酶位点检查写入草稿，返回冲突位置；
 即使存在冲突，也保留本次上传结果。`info --expression-box` 显示酶名、位置及涉及的元件。
 CDS 编辑使草稿检查失效；再次上传对应元件时会使用当前 CDS 重新检查。
+
+### 11.5 消除超长同聚物
+
+```powershell
+python main.py optimize -i demo01.json --homopolymer-max 6
+```
+
+同聚物指连续相同碱基，例如 `AAAAAAAAA`。最大长度为 6 时，连续 6 个允许，7 个及以上需要
+通过同义替换打断。短串可以保留，编码蛋白、长度及原始起止密码子不变。
+6 与现有完整表达盒门槛一致，仅作为使用示例，必须显式指定；未配置时不自动消除 CDS 同聚物。
+
+一次处理当前全部 `optimized_cds`，包括有效上传 CDS。最大长度必须为正整数，可以大于 CDS 长度；
+不能与 `--cds`、`--enzyme`、GC 或窗口参数同次混用。第一版只支持设置、调整，不提供 `none` 关闭取值。
+阈值记录到 `cds_selection.homopolymer_max`，再次指定替换旧值，不恢复以前的原始序列。
+
+同聚物消除同时满足各 CDS 已有整体/局部 GC 设置和所选限制酶禁止要求；后续 GC、酶位点编辑也保持
+同聚物阈值。通过 DNA Chisel 的四种超长单碱基模式约束求解，并独立复核所有活动约束。不可满足时不放宽
+长度；任何一条失败、来源变化或提交失败，整批不保存。相同策略且全部当前工作文件仍满足要求时直接复用。
+
+报告保存为 `reports/<accession>.homopolymer_optimization.json`，记录原始、本次输入和最终的最长串、
+违规片段数量、碱基、长度及从 1 开始的闭区间位置。连续 9 个 A 算一个违规片段，不按重叠窗口重复计数。
+报告同时保存输入/输出校验值、相对 raw 与本次输入的修改量及有效 GC、酶设置；兼容现有来源报告。
+新报告中的同聚物检查按用户阈值计算，旧报告的默认门槛不恢复为活动 CDS 编辑约束。
+
+`optimize` 与 `info --cds` 保留六列表格，下方追加最长串和超长片段数量前后变化；raw 视图显示原始最长串，
+不显示当前编辑摘要。重新运行 `protein-to-cds` 保留用户阈值，但覆盖工作副本、重置检查状态并提示需重新检查，
+不自动执行 DNA Chisel。
+
+成功更新保留表达盒分组和上传 parts，让旧检查、预测及构建失效。元件齐全后，上传命令检查完整草稿的
+同聚物，包括元件连接处，即使未选择限制酶也执行。表达盒使用已选最大长度，未配置时保持原有最多 6 个的
+门槛。冲突保留上传结果并记录位置和相关元件，`info --expression-box` 可查看；CDS 更新后旧检查失效，
+再次上传对应元件时重新检查，不自动修改或挑选 parts。
 
 ## 12. 表达盒分组
 
@@ -1188,8 +1223,8 @@ python main.py info -i demo01.json --expression-box
 ```
 
 信息表格始终包含“翻译起始率”列：未配置 RBS 以及非 RBS 组件显示 `-`，已配置 RBS
-显示 OSTIR 结果。启动子和终止子上传本身不运行 OSTIR；草稿阶段不运行完整表达盒
-DNA Chisel 检查，也不会建立完整的 `parts_selection`。若已有完整表达元件、质粒或组装
+显示 OSTIR 结果。启动子和终止子上传本身不运行 OSTIR；元件齐全后，草稿记录完整表达盒的
+限制酶位点与同聚物检查，保留存在冲突的上传结果，不自动编辑元件，也不会建立完整的 `parts_selection`。若已有完整表达元件、质粒或组装
 结果，上传或替换任一表达元件都会使这些下游结果失效。
 
 GC 编辑或重新生成 CDS 后，蛋白名单不变且分组仍有效时，上传元件保持原 ID、来源和快照文件，
@@ -1391,6 +1426,7 @@ outputs/C00811/final_assembly/
 | 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
 | 调整单条 CDS 局部 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
 | 批量消除指定限制酶位点 | `python main.py optimize -i demo01.json --enzyme EcoRI HindIII` |
+| 批量消除超长同聚物 | `python main.py optimize -i demo01.json --homopolymer-max 6` |
 
 RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
 候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号

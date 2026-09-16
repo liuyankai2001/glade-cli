@@ -35,6 +35,7 @@ class ExpressionPartsContext:
     input_fingerprint: str
     cassettes: tuple[ExpressionPartsCassette, ...]
     restriction_enzymes: tuple[str, ...] = ()
+    homopolymer_max: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

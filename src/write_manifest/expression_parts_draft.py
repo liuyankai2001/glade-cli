@@ -25,12 +25,14 @@ from src.expression_box.parts_models import RbsPrediction
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.protein_to_cds.sequence_constraints import (
     DEFAULT_FORBIDDEN_MOTIFS,
+    HOMOPOLYMER_LIMIT,
     gc_fraction,
     max_homopolymer_length,
     motif_hits,
 )
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.protein_to_cds.restriction_sites import normalize_enzymes, restriction_site_audit
+from src.protein_to_cds.homopolymers import homopolymer_audit, saved_homopolymer_max
 
 
 EXPRESSION_PARTS_DRAFT_SCHEMA_VERSION = "expression_parts_draft.v1"
@@ -351,8 +353,8 @@ def _draft_payload(
 
 def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, new_part, new_sequence):
     enzymes = normalize_enzymes(manifest.get("cds_selection", {}).get("restriction_enzymes"))
-    if not enzymes:
-        return
+    maximum = saved_homopolymer_max(manifest.get("cds_selection", {}))
+    maximum = HOMOPOLYMER_LIMIT - 1 if maximum is None else maximum
     complete = [cassette for cassette in cassettes
                 if cassette.get("promoter") and cassette.get("terminator")
                 and all(accession in cassette["rbs_by_accession"] for accession in cassette["protein_accessions"])]
@@ -392,6 +394,13 @@ def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, 
             site["components"] = [label for start, end, label in spans
                                    if start <= site["end_1based"] and end >= site["start_1based"]]
         cassette["restriction_site_audit"] = audit
+        homopolymers = homopolymer_audit(sequence, maximum)
+        homopolymers["sequence_sha256"] = audit["sequence_sha256"]
+        homopolymers["length_nt"] = len(sequence)
+        for run in homopolymers["violations"]:
+            run["components"] = [label for start, end, label in spans
+                                  if start <= run["end_1based"] and end >= run["start_1based"]]
+        cassette["homopolymer_audit"] = homopolymers
 
 
 def _commit_uploaded_part(
@@ -550,6 +559,11 @@ def _commit_uploaded_part(
                  for site in cassette.get("restriction_site_audit", {}).get("sites", [])]
     if conflicts:
         result["限制酶位点冲突"] = conflicts
+    homopolymer_conflicts = [{"cassette_index": cassette["cassette_index"], **run}
+                            for cassette in cassettes
+                            for run in cassette.get("homopolymer_audit", {}).get("violations", [])]
+    if homopolymer_conflicts:
+        result["同聚物冲突"] = homopolymer_conflicts
     ostir = part.get("ostir")
     if isinstance(ostir, Mapping):
         result["翻译起始率"] = ostir.get("translation_initiation_rate")

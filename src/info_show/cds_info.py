@@ -13,6 +13,7 @@ from typing import Any
 from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.artifacts import raw_cds_metadata
 from src.protein_to_cds.restriction_sites import normalize_enzymes
+from src.protein_to_cds.homopolymers import saved_homopolymer_max
 
 
 _HEADERS = ("蛋白 ID", "CDS 长度（nt）", "GC（%）", "CAI", "禁止位点数", "修改密码子数量")
@@ -110,6 +111,8 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
         raise ValueError("不支持的 cds_selection schema_version，请重新运行 protein-to-cds")
     enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
     result["限制酶"] = enzymes
+    maximum = saved_homopolymer_max(selection)
+    result["同聚物最大长度"] = maximum
     status = selection.get("status")
     if status not in _STATUS_LABELS:
         raise ValueError("cds_selection.status 无效")
@@ -148,7 +151,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             directory = _directory(root, optimized.get("path"))
             mode = optimized.get("processing_mode")
             is_optimized = (
-                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only", "user_uploaded_cds", "dna_chisel_restriction_sites"}
+                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only", "user_uploaded_cds", "dna_chisel_restriction_sites", "dna_chisel_homopolymer"}
                 and directory == str(root / "protein_to_cds" / "optimized_cds")
             )
             if not is_optimized:
@@ -173,6 +176,9 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             "局部GC": metrics.get("local_gc") if not show_raw else None,
             "限制酶待检查": pending,
             "限制酶消除": metrics.get("restriction_sites") if not show_raw else None,
+            "最长同聚物": _number(final.get("max_homopolymer"), integer=True),
+            "同聚物待检查": maximum is not None and final.get("homopolymer_audit", {}).get("maximum_allowed") != maximum,
+            "同聚物": metrics.get("homopolymers") if not show_raw else None,
         })
         result["优化成功数"] += 1
         directory = _directory(root, selected.get("path"))
@@ -230,6 +236,8 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
     lines = [summary]
     if result.get("限制酶"):
         lines.append("内部禁止限制酶：" + "、".join(result["限制酶"]))
+    if result.get("同聚物最大长度") is not None:
+        lines.append(f"连续相同碱基最大长度：{result['同聚物最大长度']} nt")
     headers = _HEADERS[:5] if show_raw else _HEADERS
     rows = [
         [
@@ -252,6 +260,13 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
         lines.extend(render(row) for row in rows)
     if not show_raw:
         for item in result["CDS列表"]:
+            if item.get("同聚物待检查"):
+                lines.append(f"{_cell(item['蛋白ID'])} 同聚物：需重新检查，请执行 optimize --homopolymer-max {result['同聚物最大长度']}")
+            homopolymers = item.get("同聚物")
+            if isinstance(homopolymers, Mapping):
+                lines.append(f"{_cell(item['蛋白ID'])} 同聚物：最长 {_metric(homopolymers.get('input_max'))} → {_metric(homopolymers.get('final_max'))} nt｜"
+                             f"超长片段 {_metric(homopolymers.get('input_count'))} → {_metric(homopolymers.get('final_count'))}")
+        for item in result["CDS列表"]:
             if item.get("限制酶待检查"):
                 lines.append(f"{_cell(item['蛋白ID'])} 限制酶位点：需重新检查，请执行 optimize --enzyme 指定酶名")
             repair = item.get("限制酶消除")
@@ -273,6 +288,8 @@ def format_cds_info(result: Mapping[str, Any]) -> str:
                 f"越界窗口 {_metric(_number(before.get('violation_count'), integer=True))} → {_metric(_number(final.get('violation_count'), integer=True))}",
                 f"局部 GC 最小 {_metric(_number(final.get('min_gc_percent')), 2)}%｜最大 {_metric(_number(final.get('max_gc_percent')), 2)}%",
             ])
+    if show_raw and result.get("同聚物最大长度") is not None:
+        lines.extend(f"{_cell(item['蛋白ID'])} 原始同聚物最长：{_metric(item.get('最长同聚物'))} nt" for item in result["CDS列表"])
     if result["CDS文件目录"]:
         lines.append("")
         lines.extend(f"CDS 文件目录：{directory}" for directory in result["CDS文件目录"])

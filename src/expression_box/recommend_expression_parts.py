@@ -191,6 +191,7 @@ def _context_sequence(
 
 def _rbs_shortlist(
     candidates: tuple[PartCandidate, ...],
+    homopolymer_max=None,
 ) -> dict[str, list[PartCandidate]]:
     targets = {"low": 20.0, "medium": 50.0, "high": 80.0}
     result: dict[str, list[PartCandidate]] = {}
@@ -199,7 +200,7 @@ def _rbs_shortlist(
             item
             for item in candidates
             if item.role == "rbs" and item.strength == strength
-            and _part_sequence_safe(item)
+            and _part_sequence_safe(item, homopolymer_max)
         ]
         values.sort(key=lambda item: _metadata_rank(item, target))
         result[strength] = values[:RBS_SHORTLIST_PER_STRENGTH]
@@ -208,10 +209,10 @@ def _rbs_shortlist(
     return result
 
 
-def _part_sequence_safe(part: PartCandidate) -> bool:
+def _part_sequence_safe(part: PartCandidate, homopolymer_max=None) -> bool:
     return (
         not motif_hits(part.sequence, DEFAULT_FORBIDDEN_MOTIFS)
-        and max_homopolymer_length(part.sequence) < HOMOPOLYMER_LIMIT
+        and max_homopolymer_length(part.sequence) <= (HOMOPOLYMER_LIMIT - 1 if homopolymer_max is None else homopolymer_max)
     )
 
 
@@ -303,8 +304,8 @@ def _rbs_options(
     return options[:6]
 
 
-def _audit_sequence(sequence: str, enzymes=()) -> dict[str, Any]:
-    return audit_expression_sequence(sequence, enzymes)
+def _audit_sequence(sequence: str, enzymes=(), homopolymer_max=None) -> dict[str, Any]:
+    return audit_expression_sequence(sequence, enzymes, homopolymer_max)
 
 
 def _rank_role_candidates(
@@ -314,12 +315,13 @@ def _rank_role_candidates(
     strength: str,
     target: float,
     limit: int,
+    homopolymer_max=None,
 ) -> list[tuple[float, PartCandidate]]:
     rows = [
         item
         for item in candidates
         if item.role == role and item.strength == strength
-        and _part_sequence_safe(item)
+        and _part_sequence_safe(item, homopolymer_max)
     ]
     ranked = [
         (_activity_distance(item, target) + _metadata_penalty(item), item)
@@ -370,6 +372,7 @@ def _cassette_candidates(
     predictions: dict[tuple[int, str, str], RbsPrediction],
     limit: int,
     enzymes=(),
+    homopolymer_max=None,
 ) -> list[dict[str, Any]]:
     promoter_options = _rank_role_candidates(
         candidates,
@@ -377,6 +380,7 @@ def _cassette_candidates(
         strength=str(strategy["strength"]),
         target=float(strategy["target_percentile"]),
         limit=6,
+        homopolymer_max=homopolymer_max,
     )
     terminator_options = _rank_role_candidates(
         candidates,
@@ -384,6 +388,7 @@ def _cassette_candidates(
         strength="high",
         target=95.0,
         limit=8,
+        homopolymer_max=homopolymer_max,
     )
     if not promoter_options:
         raise ValueError(
@@ -470,7 +475,7 @@ def _cassette_candidates(
         if raw_signature in seen_final:
             continue
         seen_final.add(raw_signature)
-        audit = _audit_sequence(selected["sequence"] + terminator.sequence, enzymes)
+        audit = _audit_sequence(selected["sequence"] + terminator.sequence, enzymes, homopolymer_max)
         if audit["gate_status"] != "PASS":
             continue
         part_hashes = (
@@ -564,6 +569,7 @@ def _whole_design_candidates(
             predictions=predictions,
             limit=cassette_limit,
             enzymes=context.restriction_enzymes,
+            homopolymer_max=context.homopolymer_max,
         )
         expanded = (
             _combine_design_candidate(beam, cassette_candidate)
@@ -763,7 +769,7 @@ def generate_expression_parts_designs(
 ) -> dict[str, Any]:
     """Generate globally ranked, sequence-safe stable-expression designs."""
 
-    shortlists = _rbs_shortlist(snapshot.candidates)
+    shortlists = _rbs_shortlist(snapshot.candidates, context.homopolymer_max)
     predictions, prediction_failures = _predict_all_rbs(
         context,
         shortlists,

@@ -430,6 +430,7 @@ def _write_cds_selection_to_manifest(
         "source_manifest_revision": context.manifest_revision,
         "source_fingerprint": context.source_fingerprint,
         "restriction_enzymes": manifest.get("cds_selection", {}).get("restriction_enzymes", []),
+        "homopolymer_max": manifest.get("cds_selection", {}).get("homopolymer_max"),
         "source_selection": {
             "selected_solution_id": context.selected_solution_id,
             "selected_set_id": context.selected_set_id,

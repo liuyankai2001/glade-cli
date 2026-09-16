@@ -40,8 +40,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def audit_expression_construct_sequence(sequence: str, enzymes=()) -> dict[str, Any]:
-    return audit_expression_sequence(sequence, enzymes)
+def audit_expression_construct_sequence(sequence: str, enzymes=(), homopolymer_max=None) -> dict[str, Any]:
+    return audit_expression_sequence(sequence, enzymes, homopolymer_max)
 
 
 def _part_sequence(part: Mapping[str, Any], role: str) -> str:
@@ -295,7 +295,7 @@ def _build_record(
         )
 
     whole_sequence = "".join(sequence_chunks)
-    audit = audit_expression_construct_sequence(whole_sequence, context.restriction_enzymes)
+    audit = audit_expression_construct_sequence(whole_sequence, context.restriction_enzymes, context.homopolymer_max)
     if audit.get("gate_status") != "PASS":
         failed = ", ".join(str(item) for item in audit.get("failed_checks", []))
         conflicts = []
@@ -305,6 +305,12 @@ def _build_record(
                                  and int(feature.location.end) >= site["start_1based"]
                                  for label in feature.qualifiers.get("label", [])})
             conflicts.append(f"{site['enzyme']} {site['start_1based']}:{site['end_1based']} ({', '.join(components)})")
+        for run in audit.get("homopolymer_audit", {}).get("violations", []):
+            components = sorted({label for feature in features
+                                 if int(feature.location.start) < run["end_1based"]
+                                 and int(feature.location.end) >= run["start_1based"]
+                                 for label in feature.qualifiers.get("label", [])})
+            conflicts.append(f"{run['base']} homopolymer {run['start_1based']}:{run['end_1based']} ({', '.join(components)})")
         raise ValueError(
             f"expression-parts design {design_id} complete construct failed "
             f"sequence safety checks: {failed or 'unknown'}; " + "; ".join(conflicts)

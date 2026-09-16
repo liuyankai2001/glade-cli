@@ -122,6 +122,8 @@ def cds_dependency_update(
                 raise ValueError("上传元件草稿与当前表达盒分组不一致")
             if cassette.pop("restriction_site_audit", None) is not None:
                 cassette["restriction_audit_status"] = "stale"
+            if cassette.pop("homopolymer_audit", None) is not None:
+                cassette["homopolymer_audit_status"] = "stale"
             rbs_parts = cassette.get("rbs_by_accession", {})
             if not isinstance(rbs_parts, Mapping) or set(rbs_parts) - set(expected["protein_accessions"]):
                 raise ValueError("上传元件草稿包含未知 RBS 蛋白")

@@ -26,6 +26,10 @@ from src.protein_to_cds.sequence_constraints import (
 from src.protein_to_cds.restriction_sites import (
     enzyme_constraints, normalize_enzymes, restriction_site_audit, with_restriction_audit,
 )
+from src.protein_to_cds.homopolymers import (
+    homopolymer_audit, homopolymer_constraints, homopolymer_summary,
+    saved_homopolymer_max, with_homopolymer_audit,
+)
 from src.write_manifest.cds_dependencies import cds_dependency_update
 from src.write_manifest.cds_optimization import commit_cds_optimization
 from src.write_manifest.store import read_design_manifest
@@ -40,6 +44,8 @@ GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v2"
 GC_REPORT_SCHEMAS = {GC_REPORT_SCHEMA, "protein_to_cds.gc_optimization.v1"}
 RESTRICTION_MODE = "dna_chisel_restriction_sites"
 RESTRICTION_REPORT_SCHEMA = "protein_to_cds.restriction_optimization.v1"
+HOMOPOLYMER_MODE = "dna_chisel_homopolymer"
+HOMOPOLYMER_REPORT_SCHEMA = "protein_to_cds.homopolymer_optimization.v1"
 
 
 def _path(root: Path, value: str) -> Path:
@@ -109,10 +115,11 @@ class CdsEditInput:
     source_sequence: str
     uploaded: bool
 
-    def audit(self, sequence: str, enzymes: list[str]) -> dict:
+    def audit(self, sequence: str, enzymes: list[str], maximum: int | None = None) -> dict:
         assess = assess_uploaded_cds if self.uploaded else assess_generated_cds
-        return with_restriction_audit(
-            assess(sequence, self.protein, self.organism_id, self.extras), sequence, enzymes,
+        return with_homopolymer_audit(
+            with_restriction_audit(assess(sequence, self.protein, self.organism_id, self.extras), sequence, enzymes),
+            sequence, maximum,
         )
 
 
@@ -157,9 +164,11 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
         raise ValueError("已有优化文件来源不明，不能覆盖；请检查文件与 manifest")
     if report.get("final", {}).get("sequence_sha256") != sha256_text(source_sequence):
         raise ValueError("当前优化文件与来源报告不一致，不能继续编辑")
-    if mode in {GC_MODE, RESTRICTION_MODE}:
-        schemas = GC_REPORT_SCHEMAS if mode == GC_MODE else {RESTRICTION_REPORT_SCHEMA}
-        suffix = "gc_optimization" if mode == GC_MODE else "restriction_optimization"
+    edit_reports = {GC_MODE: (GC_REPORT_SCHEMAS, "gc_optimization"),
+                    RESTRICTION_MODE: ({RESTRICTION_REPORT_SCHEMA}, "restriction_optimization"),
+                    HOMOPOLYMER_MODE: ({HOMOPOLYMER_REPORT_SCHEMA}, "homopolymer_optimization")}
+    if mode in edit_reports:
+        schemas, suffix = edit_reports[mode]
         if (
             report.get("schema_version") not in schemas
             or _path(root, previous["report"]["path"]) != root / f"protein_to_cds/reports/{accession}.{suffix}.json"
@@ -178,9 +187,13 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
 def _adjust_gc(
     sequence: str, protein: str, lower: int, upper: int, seed: int,
     *, local: dict[str, Any] | None = None, enzymes: list[str] | None = None,
+    homopolymer_max: int | None = None,
 ) -> str:
     enzymes = normalize_enzymes(enzymes)
-    if lower <= _gc_count(sequence) <= upper and (local is None or window_gc_audit(sequence, local)["violation_count"] == 0) and restriction_site_audit(sequence, enzymes)["passed"]:
+    if (lower <= _gc_count(sequence) <= upper
+        and (local is None or window_gc_audit(sequence, local)["violation_count"] == 0)
+        and restriction_site_audit(sequence, enzymes)["passed"]
+        and (homopolymer_max is None or homopolymer_audit(sequence, homopolymer_max)["passed"])):
         return sequence
     # Fixed start/stop codons plus synonymous choices bound the possible GC count.
     codons = CodonTable.unambiguous_dna_by_id[11].forward_table
@@ -194,6 +207,7 @@ def _adjust_gc(
         AvoidChanges(location=(0, 3)), AvoidChanges(location=(length - 3, length)),
         EnforceGCContent(mini=lower / length, maxi=upper / length),
         *enzyme_constraints(enzymes),
+        *homopolymer_constraints(homopolymer_max, length),
     ]
     if local is not None:
         window = local["window_nt"]
@@ -242,13 +256,14 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     raw_meta, raw_path, raw, protein = source.raw_meta, source.raw_path, source.raw, source.protein
     extras = source.extras
     enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
-    raw_audit = source.audit(raw, enzymes)
+    maximum = saved_homopolymer_max(selection)
+    raw_audit = source.audit(raw, enzymes, maximum)
     output = _path(root, f"protein_to_cds/optimized_cds/{accession}.fasta")
     report_path = _path(root, f"protein_to_cds/reports/{accession}.gc_optimization.json")
     guards.setdefault(output, output.read_bytes() if output.exists() else None)
     guards.setdefault(report_path, report_path.read_bytes() if report_path.exists() else None)
     source_path, source_sequence = source.source_path, source.source_sequence
-    input_audit = source.audit(source_sequence, enzymes)
+    input_audit = source.audit(source_sequence, enzymes, maximum)
     length = len(raw)
     window = getattr(config, "window", None)
     if window is not None:
@@ -266,9 +281,12 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     }
     if enzymes:
         request["restriction_enzymes"] = enzymes
+    if maximum is not None:
+        request["homopolymer_max"] = maximum
     if (
         output.exists() and source_report.get("request") == request
         and input_pass and input_audit["restriction_site_audit"]["passed"]
+        and (maximum is None or input_audit["homopolymer_audit"]["passed"])
         and source_report.get("raw", {}).get("user_forbidden_site_hits") == raw_audit["user_forbidden_site_hits"]
         and source_report.get("final", {}).get("user_forbidden_site_hits") == input_audit["user_forbidden_site_hits"]
         and source_path == output
@@ -281,10 +299,14 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         options["local"] = settings["local"]
     if enzymes:
         options["enzymes"] = enzymes
+    if maximum is not None:
+        options["homopolymer_max"] = maximum
     final = _adjust_gc(source_sequence, protein, lower, upper, seed, **options)
     if len(final) != length or final[:3] != raw[:3] or final[-3:] != raw[-3:]:
         raise ValueError("优化结果改变了序列长度或起止密码子")
-    final_audit = source.audit(final, enzymes)
+    final_audit = source.audit(final, enzymes, maximum)
+    if maximum is not None and not final_audit["homopolymer_audit"]["passed"]:
+        raise ValueError("优化结果仍包含超过用户阈值的同聚物，未保存")
     if not final_audit["restriction_site_audit"]["passed"]:
         raise ValueError("优化结果仍包含用户禁止的限制酶识别位点，未保存")
     global_validation, final_local, final_pass = gc_settings_audit(final, settings)
@@ -295,6 +317,11 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     baseline = copy.deepcopy(previous.get("metrics", {}).get("raw") or source_report.get("raw") or raw_audit)
     baseline["user_forbidden_site_hits"] = raw_audit["user_forbidden_site_hits"]
     baseline["restriction_site_audit"] = raw_audit["restriction_site_audit"]
+    if maximum is not None:
+        baseline["homopolymer_audit"] = raw_audit["homopolymer_audit"]
+        baseline["checks"] = {**baseline.get("checks", {}), "homopolymer_pass": raw_audit["checks"]["homopolymer_pass"]}
+        baseline["failed_checks"] = [name for name, passed in baseline["checks"].items() if not passed]
+        baseline["gate_status"] = "FAIL" if baseline["failed_checks"] else "PASS"
     report = {
         "schema_version": GC_REPORT_SCHEMA, "processing_mode": GC_MODE, "status": "PASS",
         "request": request, "deterministic_seed": seed,
@@ -317,6 +344,10 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         report["gc_validation"] = global_validation
     if final_local is not None:
         report["local_gc_validation"] = {"input": input_local, "final": final_local}
+    if maximum is not None:
+        report["homopolymer_max"] = maximum
+        report["enforced_checks"].append("homopolymers")
+        report["homopolymer_validation"] = {"input": input_audit["homopolymer_audit"], "final": final_audit["homopolymer_audit"]}
     report_bytes = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     fasta = (f">{accession} gc_optimized\n" + "\n".join(final[i:i + 80] for i in range(0, length, 80)) + "\n").encode("utf-8")
     updated = copy.deepcopy(selection)
@@ -337,6 +368,9 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         updated_item["optimized_cds"]["gc_range_percent"] = settings["global"]["range_percent"]
     if final_local is not None:
         updated_item["optimized_cds"]["metrics"]["local_gc"] = local_gc_summary(input_local, final_local)
+    if maximum is not None:
+        updated_item["optimized_cds"]["homopolymer_max"] = maximum
+        updated_item["optimized_cds"]["metrics"]["homopolymers"] = homopolymer_summary(input_audit["homopolymer_audit"], final_audit["homopolymer_audit"])
     if enzymes:
         updated_item["optimized_cds"]["metrics"]["restriction_sites"] = {
             "input_count": input_audit["restriction_site_audit"]["site_count"],

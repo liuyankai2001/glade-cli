@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from src.protein_to_cds.restriction_sites import normalize_enzymes
+from src.protein_to_cds.homopolymers import saved_homopolymer_max
+from src.protein_to_cds.sequence_constraints import HOMOPOLYMER_LIMIT
 from src.write_manifest.store import read_design_manifest
 
 
@@ -513,6 +515,17 @@ def _apply_draft(
             elif enzymes:
                 complete = promoter is not None and terminator is not None and set(raw_rbs) == set(expected_accessions)
                 cassette["限制酶检查"] = {"状态": "需重新检查" if complete else "元件未齐全", "位点": []}
+            maximum = saved_homopolymer_max(manifest.get("cds_selection", {}))
+            maximum = HOMOPOLYMER_LIMIT - 1 if maximum is None else maximum
+            homopolymers = raw.get("homopolymer_audit")
+            complete = promoter is not None and terminator is not None and set(raw_rbs) == set(expected_accessions)
+            if isinstance(homopolymers, Mapping) and homopolymers.get("maximum_allowed") == maximum:
+                cassette["同聚物检查"] = {"状态": "通过" if homopolymers.get("passed") else "发现冲突",
+                                      "最大长度": maximum, "最长串": homopolymers.get("longest_run_length"),
+                                      "超长片段": homopolymers.get("violations", [])}
+            else:
+                cassette["同聚物检查"] = {"状态": "需重新检查" if complete else "元件未齐全",
+                                      "最大长度": maximum, "超长片段": []}
         result["表达元件草稿"] = {
             "状态": str(draft.get("status") or "partial"),
             "已上传启动子数": promoter_count,
@@ -858,6 +871,12 @@ def format_expression_box_info(result: Mapping[str, Any]) -> str:
             for site in restriction.get("位点", []):
                 components = "、".join(site.get("components", []))
                 lines.append(f"- {site['enzyme']} {site['start_1based']}:{site['end_1based']}｜涉及元件 {components}")
+        homopolymers = cassette.get("同聚物检查")
+        if isinstance(homopolymers, Mapping):
+            lines.append(f"完整表达盒同聚物检查：{homopolymers['状态']}｜最大允许 {homopolymers['最大长度']} nt")
+            for run in homopolymers.get("超长片段", []):
+                components = "、".join(run.get("components", []))
+                lines.append(f"- 连续 {run['length_nt']} 个 {run['base']}｜{run['start_1based']}:{run['end_1based']}｜涉及元件 {components}")
 
     construct = result.get("完整表达构建")
     if isinstance(construct, Mapping):

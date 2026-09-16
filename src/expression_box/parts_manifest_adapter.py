@@ -19,6 +19,7 @@ from src.expression_box.parts_models import (
 )
 from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.restriction_sites import normalize_enzymes
+from src.protein_to_cds.homopolymers import saved_homopolymer_max
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -245,6 +246,9 @@ def load_expression_parts_context(
     enzymes = normalize_enzymes(cds_selection.get("restriction_enzymes"))
     if enzymes:
         fingerprint_payload["restriction_enzymes"] = enzymes
+    maximum = saved_homopolymer_max(cds_selection)
+    if maximum is not None:
+        fingerprint_payload["homopolymer_max"] = maximum
     return ExpressionPartsContext(
         manifest_path=path,
         manifest_revision=revision,
@@ -258,6 +262,7 @@ def load_expression_parts_context(
         input_fingerprint=_stable_hash(fingerprint_payload),
         cassettes=cassettes,
         restriction_enzymes=tuple(enzymes),
+        homopolymer_max=maximum,
     )
 
 
