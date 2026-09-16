@@ -1,154 +1,38 @@
 # GLADE 用户使用说明
 
-本文档说明当前版本 GLADE 已实现的命令行工作流。示例均假定项目位于
-`F:\myproject\glade`，目标化合物为 KEGG Compound ID `C00811`，输入配置文件名为
-`demo01.json`。
+本文按常规操作顺序介绍 GLADE：从目标化合物出发，准备路线、蛋白和表达构建，最后生成理论质粒设计。
 
-## 1. 工作流概览
+- [运行准备](#1-运行准备)
+- [常规完整流程](#2-常规完整流程)
+- [可选功能](#3-可选功能)
+- [结果与重新运行](#4-结果与重新运行)
+- [常见问题](#5-常见问题)
 
-GLADE 以底盘细胞的基因组尺度代谢模型为起点，搜索目标化合物的候选合成路线，
-对路线做通量验证，选择主酶和辅助蛋白，生成 CDS 与表达构建，推荐质粒骨架，最后
-输出理论组装后的质粒文件。
+示例使用项目目录 `F:\myproject\glade`、目标 `C00811` 和配置文件 `demo01.json`。
+路线、方案和蛋白编号都应替换为自己结果中的编号。
 
-完整操作顺序如下：
+## 1. 运行准备
 
-```text
-准备输入配置
-    ↓
-分析底盘可生成代谢物（chassis）
-    ↓
-可选：分层扩展底盘可达代谢物（expand）
-    ↓
-搜索候选合成路线（默认使用 KEGG；需要预测反应时显式启用 RetroPath）
-    ↓
-查看并验证候选路线（info / validate）
-    ↓
-将路线写入 manifest（write --solution）
-    ↓
-检索主酶候选并生成主酶组合（main-enzyme / main-enzyme-sets）
-    ↓
-将主酶组合写入 manifest（write --main-enzyme-set）
-    ↓
-可选：手动导入辅助蛋白，或运行辅助蛋白研究流程
-    ↓
-生成或接收 CDS（protein-to-cds）
-    ↓
-设计并选择表达盒分组（expression --box）
-    ↓
-推荐并选择表达元件（expression --parts）
-    ↓
-推荐并选择质粒骨架（plasmid）
-    ↓
-生成、接受并执行最终组装计划（assembly）
-```
+### 启动环境
 
-`design_manifest.json` 是整个项目的状态中心。路线、蛋白、CDS、表达设计、质粒和组装
-信息都会按阶段写入该文件。上游选择发生变化时，系统会清除已经失效的下游区段，
-防止旧结果与新输入混用。
-
-## 2. 运行环境
-
-### 2.1 Python 环境
-
-项目要求 Python 3.12。进入项目目录后，可以使用已有虚拟环境：
+项目使用 Python 3.12。在 PowerShell 中进入项目并激活已有虚拟环境：
 
 ```powershell
 cd F:\myproject\glade
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 & .\.venv\Scripts\Activate.ps1
 ```
 
-激活后，本文档中的命令可直接写成：
+如果激活脚本被阻止，可先执行：
 
 ```powershell
-python main.py <命令> <参数>
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 ```
 
-如果使用 `uv` 管理环境，可先同步依赖：
+首次安装、网络服务和 RetroPath 部署见 [部署教程](GLADE部署教程.md)。
 
-```powershell
-uv sync
-```
+### 创建输入配置
 
-然后将命令中的 `python main.py` 替换为：
-
-```powershell
-uv run python main.py
-```
-
-### 2.2 网络与服务配置
-
-路径搜索、主酶检索和序列下载会访问 KEGG、Rhea、UniProt 等在线服务。使用对应阶段时，
-计算机需要能够访问这些服务。
-
-辅助蛋白研究以及主酶文献检索使用根目录下的 `.env` 模型配置：
-
-```dotenv
-MODEL_PROVIDER=openai
-AGENT_LLM_MODEL=<模型名称>
-API_KEY=<密钥>
-BASE_URL=<兼容 OpenAI API 的服务地址>
-```
-
-主酶检索还支持以下配置：
-
-```dotenv
-GLADE_CONTACT_EMAIL=<联系邮箱>
-SELENZYME_REST_URL=<Selenzyme REST 服务地址>
-```
-
-其中 `SELENZYME_REST_URL` 在流程需要使用 Selenzyme 回退检索时必须可用。
-
-表达元件和质粒骨架推荐使用远端 Milvus：
-
-```dotenv
-MILVUS_HOST=<Milvus 主机>
-MILVUS_PORT=19530
-MILVUS_TOKEN=<可选令牌>
-MILVUS_DB_NAME=<可选数据库名>
-```
-
-表达元件集合为 `expression_parts_v3`，质粒集合为 `plasmid_templates_v2`。系统不会在
-远端 Milvus 不可用时静默使用过期结果。
-
-### 2.3 使用 RetroPath 前启动本地服务
-
-只有执行带 `--retropath` 的路线搜索时才需要本地 RetroPath 服务。先确认 Docker
-Desktop 已启动，并检查规则文件已经放到项目指定位置：
-
-```powershell
-docker version
-Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
-```
-
-首次使用时构建并启动服务。首次构建需要下载较大的运行环境，可能耗时较长；以后镜像
-没有变化时只执行第二条启动命令即可：
-
-```powershell
-docker compose -f compose.retropath.yml build retropath
-docker compose -f compose.retropath.yml up -d retropath
-```
-
-确认服务已经就绪：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/health
-```
-
-返回结果中的 `ready` 必须为 `true`。GLADE 会自动准备输入并调用该服务，用户不需要
-手动提交 CSV 或调用 HTTP 接口。使用结束后可以停止服务：
-
-```powershell
-docker compose -f compose.retropath.yml down
-```
-
-不要使用 `down -v`，否则会同时删除服务保存的任务和结果。
-
-## 3. 输入配置
-
-### 3.1 创建项目配置文件
-
-在 `inputs` 目录中创建 JSON 文件，例如 `inputs/demo01.json`：
+创建 `inputs/demo01.json`：
 
 ```json
 {
@@ -156,1529 +40,356 @@ docker compose -f compose.retropath.yml down
 }
 ```
 
-`target_name` 必须是大写的 KEGG Compound ID，格式为 `C` 加五位数字。
+`target_name` 使用大写 KEGG Compound ID，格式为 `C` 加五位数字。
 
-### 3.2 `--input` 的路径规则
+所有命令的 `-i` 后只填文件名，例如 `-i demo01.json`，程序会自动查找 `inputs`。
+当前默认底盘是 *E. coli* MG1655，使用 iML1515 模型。
 
-所有命令都会自动在 `inputs` 目录下查找 `-i/--input` 指定的文件，因此只传文件名：
+## 2. 常规完整流程
+
+操作顺序：
+
+```text
+准备配置 → 底盘分析 → 搜索并选择路线 → 选择主酶
+→ 可选添加辅助蛋白 → 生成 CDS → 按需运行 DNA Chisel
+→ 选择表达盒分组 → 上传元件或确认推荐元件
+→ 构建完整表达序列 → 选择质粒骨架 → 生成并执行组装计划
+```
+
+### 2.1 分析底盘
+
+分析当前底盘和培养基可提供的代谢物：
 
 ```powershell
 python main.py chassis -i demo01.json
 ```
 
-不要传入完整路径，也不要写成 `inputs/demo01.json`，否则程序会再次拼接 `inputs`
-目录。
+完成后继续搜索路线。若提示目标已可直接供给，本次模型条件下无需新增合成路线。
 
-手动导入辅助蛋白时，`--protein-file` 同样只接收 `inputs` 目录下的文件名。
+### 2.2 搜索并选择路线
 
-### 3.3 当前默认底盘
-
-当前运行配置使用：
-
-- GEM 模型：`data/gem_models/iML1515.json`；
-- 培养基：`data/mediums/default_medium.json`；
-- 底盘标识：`ecoli_mg1655`；
-- 代谢物分析默认检测胞质区室；
-- CDS 优化使用与 *E. coli* MG1655 对应的 CodonTransformer organism ID 52。
-
-同一目标的项目输出统一写入：
-
-```text
-outputs/C00811/
-```
-
-## 4. 分析底盘可提供的代谢物
-
-执行：
-
-```powershell
-python main.py chassis -i demo01.json
-```
-
-该命令加载默认 GEM 和培养基，在维持最低生长约束的情况下逐个测试胞内代谢物的
-最大 demand flux，并导出具有 KEGG 注释的可生成代谢物。
-
-主要输出：
-
-```text
-outputs/C00811/chassis_result/
-├── producible_kegg_compounds.csv
-└── analyze_chassis_metabolites_summary.csv
-```
-
-- `producible_kegg_compounds.csv`：可生成代谢物与 GEM、区室、KEGG ID 的对应表；
-- `analyze_chassis_metabolites_summary.csv`：基线生长、最低生长要求、检测数量、可生成
-  数量、KEGG 映射数量及目标供给判定摘要。
-
-命令结束时，终端会按“目标供给结论、分析条件、分析结果、结果文件”四部分输出本次
-分析信息。其中目标供给结论分为：
-
-- `检测到直接供给`：在本次模型、培养基和最低生长约束下，检测到超过通量阈值的目标
-  demand flux；终端会同时列出对应 GEM 代谢物、区室和最大 demand flux。
-- `未检测到直接供给`：本次分析没有获得超过阈值的目标供给通量；目标没有 GEM 映射、
-  映射代谢物未纳入检测范围以及已检测但通量未超过阈值，均归入此结果，并继续搜索
-  新增合成路径。
-- `结果不确定`：仅在目标关联代谢物的优化失败时使用；该状态不应解释为“底盘不能供给
-  目标”。
-
-这些结论仅描述本次 GEM/FBA 分析条件下的模型供给结果，不代表湿实验中的实际生产能力。
-
-查看结果：
-
-```powershell
-python main.py info -i demo01.json --chassis
-```
-
-## 5. 可选：扩展底盘可达代谢物集合
-
-如果直接使用底盘原始可生成集合找不到路线，可以按 KEGG 反应逐层扩展。每个定向
-KEGG 反应计一层；同一酶连续催化两个反应仍计两层。扩展深度必须大于等于 1：
-
-```powershell
-python main.py expand -i demo01.json -d 1
-```
-
-生成更深层结果时，将 `1` 改为需要的累计深度：
-
-```powershell
-python main.py expand -i demo01.json -d 2
-```
-
-主要输出位于 `outputs/C00811/chassis_result/`：
-
-```text
-chassis_expansion_manifest.json
-chassis_frontier_depth_1.csv
-chassis_expanded_reachable_depth_1.csv
-chassis_frontier_depth_2.csv
-chassis_expanded_reachable_depth_2.csv
-```
-
-`frontier` 文件只记录该层新增结果；`expanded_reachable` 文件记录截至该深度的累计
-可达集合。
-
-扩展采用载体感知策略：普通主底物必须全部位于上一层累计集合；P450 还原酶、
-ferredoxin、thioredoxin 等已识别电子载体不阻断主产物，但载体自身不会作为新增的
-可达代谢物，也不会作为 RetroPath 的路线连接点。CSV 和 manifest 会记录电子载体、
-风险、净变化、辅助角色以及
-`auxiliary_requirements_json`。因此“扩展可达”表示补充相应 KEGG 反应和工程辅助系统后
-可以抵达，不表示底盘天然已经具备这些酶和电子再生能力。
-
-注释为 `first/second/... step of ... reaction` 的 KEGG 条目是多步路线中已经拆分好的
-独立组件反应，每个仍计一层；只有 `three-step reaction (see R...+R...)` 这类汇总条目
-继续被拒绝，避免把多个酶促步骤冒充一层。
-
-扩展策略升级后，旧版 `chassis_forward_expansion.v1` 和
-`chassis_forward_expansion.v2_carrier_aware` 结果不可复用；再次使用对应 depth 前需
-重新执行 `expand -d N`。
-
-查看指定扩展深度：
-
-```powershell
-python main.py info -i demo01.json --chassis -d 1
-```
-
-## 6. 搜索候选合成路线
-
-### 6.1 使用原始底盘集合
-
-深度 0 表示直接使用 `chassis` 得到的底盘可生成代谢物集合：
+先搜索，再查看路线列表和所选路线详情：
 
 ```powershell
 python main.py gap -i demo01.json -d 0
-```
-
-### 6.2 使用扩展集合
-
-使用深度 1 前，必须先完成对应的 `expand -d 1`：
-
-```powershell
-python main.py gap -i demo01.json -d 1
-```
-
-搜索从目标 KEGG 化合物逆向展开，综合底盘内源反应方向、KEGG module、异源酶数量、
-辅因子负担、电子载体风险和循环剪枝生成候选路线。
-
-如果目标化合物已经属于底盘可生成集合，命令会正常结束并返回状态
-`target_already_available_in_chassis`，明确提示“目标化合物已在底盘细胞中，无需新增
-合成路径”。该状态不会被表示为零步候选路线，也不会与
-`no_pathway_found`（确实没有找到候选路径）混用；后续 `info`、`validate` 和
-`write --solution` 会返回相同提示，不再因为步骤表为空而报错。
-
-深度 0 的主要输出为：
-
-```text
-outputs/C00811/kegg_gap_C00811/depth0/
-├── solutions.csv
-├── all_solution_steps.csv
-├── rejected_reaction_routes.csv
-├── route_electron_requirements.csv
-├── solution_electron_summary.csv
-└── run_config.json
-```
-
-- `solutions.csv`：每条路线的总步骤数、异源步骤数、可达前体和风险摘要；
-- `all_solution_steps.csv`：全部路线的逐步反应、方向、底物、产物、EC、KO 和风险字段；
-- `rejected_reaction_routes.csv`：因反应规范化门禁等原因不能推荐的路线；
-- `route_electron_requirements.csv`：存在电子系统风险的步骤；
-- `solution_electron_summary.csv`：每条路线的电子载体平衡与辅助角色需求；
-- `run_config.json`：本次搜索参数、版本和实际使用的回退模式。
-
-深度大于 0 时，目录中的 `depth0` 替换为对应深度。
-
-### 6.3 查看路线
-
-查看候选路线摘要：
-
-```powershell
 python main.py info -i demo01.json --gap -d 0
-```
-
-查看路线 1 的完整正向步骤：
-
-```powershell
 python main.py info -i demo01.json --solution 1 -d 0
 ```
 
-只查看路线 1 的第 2 步：
-
-```powershell
-python main.py info -i demo01.json --solution 1 --step 2 -d 0
-```
-
-路线详情默认使用中文卡片展示，不打印完整 JSON 或超长哈希路径链。每一步按“输入 → 输出”
-列出。RetroPath 预测中间体优先通过本地 MNXref 3.0 按结构显示化合物名称；名称后的 `*`
-表示只确认了连接结构，立体构型或质子化状态仍待确认。无法解析名称时才显示简短结构
-标识。完整反应 ID、Reaction SMILES 和原始字段仍保存在 `all_solution_steps.csv` 中。
-
-选择路线时应重点关注：异源步骤数、是否可以推荐、电子载体平衡、是否需要额外电子
-再生系统、是否需要确认载体兼容性，以及具体反应方向。
-
-### 6.4 使用 RetroPath 搜索预测路线
-
-当 KEGG 搜索没有合适路线，或者希望尝试基于化学结构的预测反应时，可以显式启用
-RetroPath。运行前先按 2.3 节确认本地服务已经就绪：
-
-```powershell
-python main.py gap -i demo01.json --retropath -d 0
-```
-
-RetroPath 默认最多逆向预测 **3 步**。可用 `--step N` 将本次预测限制为 1–10 步，
-例如预测最多 5 步：
-
-```powershell
-python main.py gap -i demo01.json --retropath --step 5 -d 0
-```
-
-命令完成后，终端只显示中文结果摘要，包括是否找到路线、候选数量、排名第 1 路线的
-步数、起始代谢物、是否使用缓存以及下一步查看命令。完整的机器可读运行记录不会打印
-到终端，仍保存在对应深度目录的 `retropath/pipeline_result.json` 中。
-
-如果服务因内存上限或运行时限中断，但已经落盘的结果中存在从目标到可信 sink 的
-完整闭合路线，GLADE 会保留这些候选并显示“搜索中断，但已恢复完整候选路线”。
-此时 `search_complete=false`，表示候选自身完整，但搜索覆盖并不完整；不能据此断言
-没有其他路线。恢复的候选仍需通过后续计量、严格 GEM 和人工验证。
-
-`--step` 仅影响 RetroPath 的预测步数，不影响 `-d/--depth` 选择的底盘代谢物扩展深度。
-
-`-d 0` 表示预测路线必须连接到底盘直接可生成的代谢物。若想让路线连接到扩展后的
-可达代谢物，必须先生成同一深度的扩展结果。例如使用深度 5：
-
-```powershell
-python main.py expand -i demo01.json -d 5
-python main.py gap -i demo01.json --retropath -d 5
-```
-
-默认 `gap` 只运行 KEGG 搜索，不会自动调用 RetroPath；带 `--retropath` 的命令也只
-运行 RetroPath，不会自动先补跑 KEGG 搜索。RetroPath 从目标化合物逆向预测，只保留
-能够完整连接到底盘可达代谢物的路线。若某个反应需要多个前体，则所有必要前体都必须
-能够连接到底盘，缺少任一分支都不会作为可用路线。
-
-搜索完成后，建议按下面的顺序查看结果：
-
-```powershell
-# 统一查看当前深度的全部 KEGG 和 RetroPath 路线
-python main.py info -i demo01.json --gap -d 0
-
-# 再看排名第 1 的 RetroPath 候选详情
-python main.py info -i demo01.json --retropath-candidate 1 -d 0
-
-# 候选详情会给出对应的路线编号，假设为 N
-python main.py info -i demo01.json --solution N -d 0
-
-# 按需计算并查看培养基有机底物到目标化合物的完整路线
-python main.py info -i demo01.json --solution N --all -d 0
-
-# 查看模型反应、区室、方向和 pFBA 通量等反应级详情
-python main.py info -i demo01.json --solution N --all --verbose -d 0
-```
-
-`--all` 会在内存中加载当前 GEM 和培养基，对该路线的底盘锚点运行 pFBA，再把
-底盘内源段与 gap 路线拼接展示。起点不会写死为葡萄糖：系统从锚点沿实际通量反向
-追踪到培养基 exchange，自动列出真正参与目标路线的葡萄糖、氨基酸、甘油、有机酸
-等有机底物。默认输出会按含碳代谢物流图和当前 GEM 的 `subsystem` 注释，将连续反应、
-分支和稳态循环压缩成少量底盘阶段；模型内部 ID、区室、逐反应通量以及氧气、铵、
-磷酸盐和金属离子等辅助输入不会逐项展开。需要检查底层计算时，可加 `--verbose`
-恢复完整反应级输出。阶段划分不依赖特定底盘的反应编号或化合物编号。
-
-结果是一套当前约束下的简约可行路线及其必要分支，不代表底盘中唯一可能的代谢路线。
-
-`--all` 只能与 `--solution N` 使用，不能和 `--step N` 同时使用。该查看过程不请求
-网络，也不会修改 gap、验证或 manifest 文件；但需要先完成 `chassis`，并保留对应的
-GEM、培养基、底盘可生成代谢物和分析摘要。`--verbose` 只能与
-`--solution N --all` 一起使用。
-
-`info --gap` 读取共用的 `solutions.csv`。即使当前深度只运行过 RetroPath、没有 KEGG
-`run_config.json` 也可以使用；两种搜索都运行过时，会合并展示并标明每条路线来源。
-`info --retropath` 保留为 RetroPath 专项诊断视图，用于查看任务状态、sink 命中和拒绝原因。
-
-这里有两种编号，不能混用：
-
-- `--retropath-candidate 1` 中的 `1` 是 RetroPath 候选排名，只用于查看预测详情；
-- `--solution N` 中的 `N` 是 GLADE 路线编号，用于查看、验证和写入路线。
-
-候选详情中显示的 `正式Solution编号` 就是这里所说的 GLADE 路线编号。
-
-每条可用的 RetroPath 候选都会获得一个 GLADE 路线编号，并加入当前深度的路线列表。
-已有 KEGG 路线的编号保持不变，RetroPath 路线从当前最大编号之后继续编号。
-
-最常用的结果文件位于：
-
-```text
-outputs/C00811/kegg_gap_C00811/depthN/retropath/
-├── pipeline_result.json
-├── candidate_routes.csv
-├── candidate_steps.csv
-└── rejected_routes.csv
-```
-
-- `pipeline_result.json`：本次服务运行状态、完整连接数量、候选数量和失败原因；
-- `candidate_routes.csv`：可以完整连接到底盘的候选路线摘要；
-- `candidate_steps.csv`：每条候选路线的逐步反应；
-- `rejected_routes.csv`：路线未连接完整、结构冲突或证据不足等拒绝原因。
-
-“已经生成预测反应网络”不等于“已经找到完整路线”。如果预测网络没有连接到底盘
-可达代谢物，候选数量仍为 0，也不会把不完整路线加入 `solutions.csv`。此时执行：
-
-```powershell
-python main.py info -i demo01.json --retropath -d 5
-```
-
-重点查看服务状态、完整连接数量、候选数量和拒绝原因。如果显示已经产生预测网络但
-候选为 0，应理解为“本次预测尚未得到一条能完整连接到底盘的路线”。
-
-## 7. GEM（底盘代谢模型）通量验证
-
-GEM 验证用于判断候选路线在当前底盘模型和培养基中是否具备通量可行性。它对 KEGG
-和 RetroPath 路线都是可选的：未验证或验证失败的路线仍可写入设计清单，但系统会保留
-验证状态和人工复核提示。
-
-验证路线 1：
-
-```powershell
-python main.py validate -i demo01.json -s 1 -m per -c strict -d 0
-```
-
-一次验证多条路线：
-
-```powershell
-python main.py validate -i demo01.json -s 1 2 3 -m per -c strict -d 0
-```
-
-省略 `-s` 时，验证当前深度下的全部候选路线：
-
-```powershell
-python main.py validate -i demo01.json -m per -c strict -d 0
-```
-
-参数含义：
-
-- `-m per`：每条路线单独加入 GEM 并验证，适合为单条路线生成独立证据；
-- `-m pooled`：将所选 KEGG 路线放在同一个模型中联合检查；
-- `-m both`：对所选 KEGG 路线同时生成独立和联合结果；
-- `-c strict`：严格处理通用辅因子，默认模式；
-- `-c relaxed`：放宽通用辅因子处理，可用于诊断辅因子造成的阻断；
-- `-d`：必须与所验证的 `gap` 深度一致。
-
-只要待验证列表中包含 RetroPath 路线，就必须使用 `-m per`。省略 `-s` 时，程序会自动
-识别当前深度下每条路线来自 KEGG 还是 RetroPath，并分别验证。
-
-主要输出：
-
-```text
-outputs/C00811/kegg_gap_C00811/depth0/gem_validation/
-├── gem_validation_summary.csv
-└── gem_validation_route_fluxes.csv
-```
-
-验证结果会记录为“未运行”“通过”或“失败”，并保存通量、辅因子模式和问题说明。
-验证失败只增加人工复核提示，不会单独阻止路线写入。
-
-### 7.1 可选验证 RetroPath 路线
-
-RetroPath 路线在搜索完成后就可以直接查看或写入，不需要先验证。假设候选详情显示其
-对应的路线编号为 `N`：
-
-```powershell
-python main.py info -i demo01.json --solution N -d 0
-python main.py write -i demo01.json --solution N -d 0
-```
-
-没有运行 GEM 验证时，系统会明确标记“尚未验证”和“需要人工复核”，但允许继续主酶、
-CDS 和表达设计流程。
-
-如果需要验证 RetroPath 路线，首次使用前先安装计量补全所需的 MNXref v3.0 数据：
-
-```powershell
-python -m src.pathway_analyze.retropath_mnxref install
-```
-
-安装器会下载并校验官方源文件，只保留当前预测规则需要的反应、化合物和映射。检查
-安装状态：
-
-```powershell
-python -m src.pathway_analyze.retropath_mnxref status
-```
-
-验证当前深度的全部路线：
-
-```powershell
-python main.py validate -i demo01.json -m per -d 0
-```
-
-使用宽松辅因子模式诊断全部路线：
-
-```powershell
-python main.py validate -i demo01.json -m per -c relaxed -d 0
-```
-
-只验证路线 4 和 5：
-
-```powershell
-python main.py validate -i demo01.json -s 4 5 -m per -d 0
-```
-
-RetroPath 路线只支持独立验证，不能使用 `-m pooled` 或 `-m both`。严格和宽松模式都
-只使用预测规则能够追溯到的数据库反应补全化学计量，不会根据 EC 编号或元素差额自行
-猜测辅因子。宽松模式仅放开路线实际涉及的通用载体，用于判断路线是否主要受辅因子
-约束；结果中会明确记录放开了哪些载体。
-
-主要输出：
-
-```text
-outputs/C00811/kegg_gap_C00811/depth0/retropath/gem_validation/
-├── stoichiometry_hypotheses.csv
-├── stoichiometry_terms.csv
-├── rejected_hypotheses.csv
-├── gem_validation_summary.csv
-├── gem_validation_route_fluxes.csv
-└── validation_manifest.json
-```
-
-结果可以这样理解：
-
-- 通过：至少存在一套有数据库来源的完整反应计量，能够同时满足底盘生长、目标产出和
-  路线中每一步都有通量；
-- 失败：当前证据和验证模式下没有找到可行计量与通量，路线仍可写入，但必须人工复核；
-- 未运行：没有验证证据，路线仍可写入，并保留“尚未验证”警告。
-
-验证只更新路线的计量和 GEM 证据，不会改变路线编号或步骤。一次只验证部分路线时，
-只有选中的路线获得本次验证结果。系统会校验候选文件和验证文件的一致性；如果文件被
-手动修改或上游搜索结果已经变化，应重新运行同一深度的 `gap --retropath`，不要手动
-拼接或覆盖 CSV。
-
-### 7.2 为 RetroPath 路线生成主酶候选
-
-先用路线编号 `N` 将选中的 RetroPath 路线写入设计清单。GEM 验证可以先运行，也可以
-跳过：
-
-```powershell
-python main.py write -i demo01.json --solution N -d 0
-```
-
-随后与纯 KEGG 路线使用完全相同的命令：
-
-```powershell
-python main.py main-enzyme -i demo01.json
-python main.py main-enzyme-sets -i demo01.json
-python main.py info -i demo01.json --main-enzyme-sets
-python main.py write -i demo01.json --main-enzyme-set 1
-```
-
-`main-enzyme` 会从设计清单自动识别普通 KEGG 步骤和 RetroPath 预测步骤，不需要再传
-候选排名或搜索深度。普通步骤继续使用 KEGG、Rhea、KO、文献和 Selenzyme 证据；预测
-步骤会综合来源酶注释、反应映射和结构相似性检索。未运行 GEM 验证时也可以检索主酶；
-验证通过后，系统会优先使用补全后的完整反应和精确数据库映射。
-
-主要输出：
-
-```text
-outputs/C00811/main_protein_selection/
-├── main_enzyme_selection.json
-├── step_main_enzyme_candidates.csv
-├── step_main_enzyme_candidate_audit.csv
-├── retropath_enzyme_requirements.json
-└── retropath_selenzyme_evidence.json
-```
-
-检索优先使用精确的 KEGG/Rhea 反应映射，其次使用预测规则附带的 EC、Rhea 和 UniProt
-来源信息，最后才使用反应结构查询 SelenzymeRF。结构相似结果始终只是预测性证据，
-即使相似度为 1 也需要人工复核。这类候选可以进入主酶组合并继续后续设计，但系统不会
-把它标记成已经通过实验验证的酶活。
-
-## 8. 选择并写入路线
-
-选择路线 1 后即可执行；GEM 验证可在写入前按需运行：
+确认路线后写入设计清单：
 
 ```powershell
 python main.py write -i demo01.json --solution 1 -d 0
 ```
 
-该命令会：
+`1` 是示例路线编号。需要通量验证时，在写入前参考 [路线验证](#32-验证路线)；
+验证是可选步骤。没有合适路线时，可尝试 [底盘扩展](#31-扩展底盘可达集合) 或 [RetroPath](#33-使用-retropath)。
 
-- 核对目标化合物、搜索深度和路线编号；
-- 拒绝含阻断反应或不可推荐的路线；
-- 读取可选的独立 GEM 验证结果；没有结果时记录为 `not_run`；
-- 将路线按实际生物合成方向重新编号；
-- 将路线和电子系统信息写入 `design_manifest.json`；
-- 清除与旧路线绑定的主酶、辅助蛋白、CDS、表达、质粒和组装选择。
+**同一批路线的搜索、查看、验证和写入必须使用相同的 `-d`。** `-d 0` 表示原始底盘集合。
 
-manifest 路径为：
+### 2.3 选择主酶
 
-```text
-outputs/C00811/design_manifest.json
-```
-
-## 9. 主酶选择
-
-### 9.1 生成主酶候选
-
-路线写入 manifest 后执行：
+生成各反应的主酶候选，并查看结果：
 
 ```powershell
 python main.py main-enzyme -i demo01.json
-```
-
-默认每个异源步骤保留 5 个主酶候选。可以调整数量：
-
-```powershell
-python main.py main-enzyme -i demo01.json --top-n 10
-```
-
-需要为标准数据库未覆盖的步骤检索论文实验酶活证据时：
-
-```powershell
-python main.py main-enzyme -i demo01.json --literature-search
-```
-
-主要输出位于：
-
-```text
-outputs/C00811/main_protein_selection/
-├── main_enzyme_selection.json
-├── step_main_enzyme_candidates.csv
-├── step_main_enzyme_candidate_audit.csv
-├── main_enzyme_candidates.csv
-├── reaction_evidence.json
-├── direction_evidence.json
-├── ko_evidence.json
-├── taxonomy_evidence.json
-├── selenzyme_evidence.json
-└── route_repair_requests.json
-```
-
-`main-enzyme` 只生成候选与证据，不直接修改 manifest。
-
-候选蛋白综合评分默认使用以下权重：反应功能 40%、来源分类学适配 25%、
-表达风险 20%、UniProt/实验依据 15%。用户可以在 `src/config/run_config.py` 中修改
-`candidate_protein_scoring_weights`：
-
-```python
-self.candidate_protein_scoring_weights = {
-    "function": 0.40,    # 反应功能
-    "evidence": 0.15,    # UniProt/实验依据
-    "expression": 0.20,  # 表达风险
-    "host": 0.25,        # 来源分类学适配
-}
-```
-
-四个键必须完整，权重必须为有限非负数且总和为 1；配置错误时 `main-enzyme`
-会在检索和写文件前直接报错。该配置应用于 `main-enzyme` 的所有候选来源，包括
-所选 RetroPath 路线中的预测步骤，但不改变独立 RetroPath P9 候选流程。
-
-来源适配不再依赖写死的物种名称顺序：系统读取
-底盘和候选蛋白的 UniProt taxon lineage，按最近共同祖先（LCA）所在的 strain、
-species、genus、family、order、class、phylum、kingdom 或 domain 层级评分。
-实际生效权重会写入 `main_enzyme_selection.json`，也会由候选信息命令展示。
-`taxonomy_evidence.json` 保存底盘 taxon、完整 ranked lineage、评分表、权重及数据来源；
-逐步候选 CSV 还会记录每个候选的共同祖先、匹配层级和分类来源分。
-
-分类学信息缺失时使用中性分 50，并明确标记为 `unknown`；数据缺失不会被误判为
-远缘，也不会单独阻断主酶选择。分类亲缘性只是排序因素，反应、方向、底物/产物
-特异性以及辅助蛋白风险仍优先。当前代谢底盘仍固定为 *E. coli* MG1655/iML1515，
-本次改动只将分类学评分内核通用化，并未开放与 GEM 不一致的任意底盘参数。
-
-本版输出格式为 `main_enzyme_selection.v3` 和 `main_enzyme_sets.v3`。已有 v2 结果不会
-静默迁移；升级后需要依次重新运行 `main-enzyme`、`main-enzyme-sets`，并重新执行
-`write --main-enzyme-set N`。
-
-查看所有步骤的候选：
-
-```powershell
 python main.py info -i demo01.json --main-enzyme-candidates
 ```
 
-只查看第 1 步候选：
-
-```powershell
-python main.py info -i demo01.json --main-enzyme-candidates --step 1
-```
-
-查看第 1 步排名第 2 的候选详情：
-
-```powershell
-python main.py info -i demo01.json --main-enzyme-candidate 2 --step 1
-```
-
-### 9.2 生成主酶组合
-
-根据逐步候选生成能够覆盖路线的主酶组合：
+生成组合，查看后选择一个组合：
 
 ```powershell
 python main.py main-enzyme-sets -i demo01.json
-```
-
-默认最多输出 20 个组合：
-
-```powershell
-python main.py main-enzyme-sets -i demo01.json --max-sets 20
-```
-
-主要输出：
-
-```text
-outputs/C00811/main_protein_selection/
-├── main_enzyme_sets.json
-├── main_enzyme_sets.csv
-└── main_enzyme_set_members.csv
-```
-
-查看组合列表：
-
-```powershell
 python main.py info -i demo01.json --main-enzyme-sets
-```
-
-查看排名第 1 的组合详情：
-
-```powershell
-python main.py info -i demo01.json --main-enzyme-set 1
-```
-
-### 9.3 写入主酶组合
-
-确认组合后写入 manifest：
-
-```powershell
 python main.py write -i demo01.json --main-enzyme-set 1
 ```
 
-系统会核对组合与当前路线、步骤、反应和候选文件是否一致，并写入
-`main_enzyme_selection`。选择主酶组合后，才能导入手动辅助蛋白或运行辅助蛋白研究。
+需要辅助蛋白时，先按 [辅助蛋白](#34-添加辅助蛋白) 添加，再生成 CDS。
 
-## 10. 辅助蛋白处理
+### 2.4 生成并查看 CDS
 
-主酶组合写入后，有三种已实现的处理方式：
-
-1. 不添加辅助蛋白，直接运行 `protein-to-cds`；
-2. 用户把辅助蛋白氨基酸或 CDS 文件放入 `inputs` 并手动导入；
-3. 运行辅助蛋白研究流程，再将研究结果写入 manifest。
-
-### 10.1 手动导入氨基酸序列
-
-将文件放入 `inputs`，例如 `inputs/helper.txt`，内容可以是纯氨基酸文本：
-
-```text
-MALWMRLLPLLALLALWGPDPAAA
-```
-
-导入：
-
-```powershell
-python main.py add-auxiliary-protein -i demo01.json `
-  --protein-file helper.txt --sequence-type protein
-```
-
-`protein` 表示该序列是氨基酸序列，后续 `protein-to-cds` 会为它生成密码子优化 CDS。
-
-### 10.2 手动导入 CDS
-
-例如将 `helper_cds.fasta` 放入 `inputs`：
-
-```powershell
-python main.py add-auxiliary-protein -i demo01.json `
-  --protein-file helper_cds.fasta --sequence-type cds
-```
-
-`cds` 表示直接使用上传序列，后续跳过密码子优化。导入阶段只删除空白并转为大写，
-不检查字符集合、长度是否为 3 的倍数、起始和终止密码子或内部终止密码子。
-
-### 10.3 FASTA 和纯文本规则
-
-- 支持 FASTA、FAA 和纯文本；实际识别依据文件内容；
-- 以 `>` 开头时按 FASTA 解析，并支持多条记录；
-- FASTA 的 ID 取 header 的第一个字段；
-- 非 FASTA 文件作为一条序列，ID 取文件名去除扩展名后的部分；
-- ID 会转为大写，并将不适合文件名的字符替换为下划线；
-- 多条 FASTA 记录归一化为相同 ID 时，最后一条生效；
-- 多次导入会累积；同 ID 再次导入时，以最后一次上传的类型和内容为准；
-- 系统在项目输出目录中保存规范化 FASTA 快照，`inputs` 原文件保持不变。
-
-手动导入命令会直接更新 manifest，不需要再运行 `write --auxiliary-protein`。
-
-### 10.4 查看蛋白
-
-查看当前 manifest 中的全部主酶和辅助蛋白：
-
-```powershell
-python main.py info -i demo01.json --proteins
-```
-
-查看指定蛋白，例如 `HELPER`：
-
-```powershell
-python main.py info -i demo01.json --protein HELPER
-```
-
-列表会显示蛋白来源、序列类型、负责步骤、CDS 状态、是否可删除以及对应删除命令。
-详情默认只显示序列长度和短预览，不输出完整长序列。
-
-### 10.5 删除手动辅助蛋白
-
-删除一个蛋白：
-
-```powershell
-python main.py remove-auxiliary-protein -i demo01.json --protein-id HELPER
-```
-
-一次删除多个蛋白：
-
-```powershell
-python main.py remove-auxiliary-protein -i demo01.json `
-  --protein-id HELPER --protein-id CPR
-```
-
-删除会移除 manifest 记录和项目中的当前、历史序列快照，并清除旧的 CDS、表达、质粒
-和组装选择；不会删除 `inputs` 中的原始文件。删除最后一个手动辅助蛋白后，整个
-`auxiliary_protein_selection` 区段会被移除。
-
-### 10.6 辅助蛋白研究流程
-
-运行平衡研究模式：
-
-```powershell
-python main.py auxiliary-protein -i demo01.json
-```
-
-运行更全面但耗时更长的模式：
-
-```powershell
-python main.py auxiliary-protein -i demo01.json --research-mode deep
-```
-
-结果写入：
-
-```text
-outputs/C00811/protein_selection/auxiliary_protein_research.json
-```
-
-研究结果允许继续后，写入 manifest：
-
-```powershell
-python main.py write -i demo01.json --auxiliary-protein
-```
-
-## 11. 生成或接收 CDS
-
-主酶组合已经写入后执行：
+根据已选蛋白生成 CDS：
 
 ```powershell
 python main.py protein-to-cds -i demo01.json
-```
-
-明确使用 CPU：
-
-```powershell
-python main.py protein-to-cds -i demo01.json --device cpu
-```
-
-额外统计指定 DNA motif 的出现次数，可重复传入（只检测，不自动消除）：
-
-```powershell
-python main.py protein-to-cds -i demo01.json --device cpu `
-  --forbidden-motif GAATTC --forbidden-motif GGATCC
-```
-
-处理规则：
-
-- 主酶根据 manifest 中的 accession 读取本地缓存或从 UniProt 下载氨基酸序列；
-- 手动上传的氨基酸直接从项目快照读取，由 CodonTransformer 生成 CDS；
-- 手动上传的 CDS 保留上传快照，同时保存 raw 原始副本、optimized 工作副本及来源报告；
-- 未添加辅助蛋白时，只处理主酶；
-- `protein-to-cds` 只运行 CodonTransformer，不自动运行 DNA Chisel 或额外的宿主密码子修正；
-- 模型生成的 CDS 必须保持翻译一致，并通过字符、长度、起止密码子和内部终止密码子检查；
-- GC、CAI、稀有密码子簇、指定 motif 和同聚物等指标仅统计和记录，不阻止原始 CDS 保存；
-- 用户直接上传的 CDS 不经过密码子优化门禁。
-
-原有 `optimize_protein_cds` / `repair_cds` 修正能力仍保留，供后续独立编辑流程调用。
-独立的 `optimize` 命令支持整体/局部 GC 调整、指定限制酶位点消除和超长同聚物消除。
-
-输出目录：
-
-```text
-outputs/C00811/protein_to_cds/
-├── uploaded_sequences/manifest_revision_*/<id>.<type>.fasta
-├── protein_sequences/<accession>.fasta
-├── raw_cds/<accession>.raw.fasta
-├── optimized_cds/<accession>.fasta            # 当前工作文件，初始与 raw 序列相同
-├── reports/<accession>.generation.json       # 当前生成报告
-├── reports/<accession>.uploaded.json         # 上传 CDS 来源及 raw 记录
-├── reports/<accession>.restriction_optimization.json # 禁止酶位点消除报告
-├── reports/<accession>.homopolymer_optimization.json # 同聚物消除报告
-├── reports/<accession>.optimization.json     # 以前的修正报告如已存在则保留
-└── run_summary.json
-```
-
-运行结果整体写入 manifest 的 `cds_selection`：
-
-模型生成成功后同时保存独立的 raw 和 optimized 两份 FASTA，所有后续编辑只操作 optimized。
-manifest 只登记当前 `optimized_cds` 的路径、哈希、长度、指标及报告引用，不再保存 `raw_cds` 字段；
-raw 的路径、哈希及原始指标保存在报告中。初始工作副本标记
-`processing_mode=codon_transformer_only`、`constraint_repair_applied=false`，修改密码子数量为 0。
-再次成功执行 `protein-to-cds` 会以原始生成结果覆盖 optimized，即使命中模型生成缓存也会重置工作副本。
-手动上传的 CDS 同样保留上传原件，生成独立 raw、工作副本及来源报告，不自动执行 DNA Chisel。
-上传报告的 `status=IMPORTED` 表示保存成功；不完整或含非法字符的上传序列仍可保存，
-但执行编辑前必须通过完整 CDS 校验。上传和生成的有效 CDS 都支持 GC 与禁止酶位点编辑。
-报告顶层 `status=PASS` 表示生成及编码检查成功；指标中的 `gate_status` 仍是已有质量阈值的
-评估结果，即使为 `FAIL` 也不代表本次生成失败。重新生成成功且蛋白名单不变时，保留已选表达盒
-分组和上传元件，更新其 CDS 来源；旧 OSTIR 预测、表达盒检查、GenBank、质粒和组装记录失效。
-蛋白名单变化、生成结果不完整或原分组无法对应当前蛋白时，原分组和元件关联失效，但上传快照保留。
-
-- `complete`：全部成功，CLI 退出码为 0；
-- `partial`：部分成功，成功产物和失败原因都会保留，CLI 退出码为 2；
-- `failed`：全部失败，失败原因写入 manifest，CLI 退出码为 2。
-
-### 11.1 查看原始或优化后的 CDS 指标
-
-```powershell
 python main.py info -i demo01.json --cds
+```
+
+系统保存两份序列：
+
+| 序列 | 用途 |
+|---|---|
+| `raw_cds` | 保留生成或上传的原始序列，供查看 |
+| `optimized_cds` | 当前工作副本，所有后续编辑都作用于它 |
+
+初始两份序列相同。`protein-to-cds` 不自动运行 DNA Chisel。
+**再次成功执行该命令会覆盖 optimized，即使命中生成缓存，也会重置已有编辑。**
+
+查看原始指标：
+
+```powershell
 python main.py info -i demo01.json --cds --raw
 ```
 
-`--cds` 显示已登记的 optimized 工作结果，包括模型生成后的初始副本；不要求先执行 GC 优化。
-六列为：蛋白 ID、CDS 长度（nt）、GC（%）、CAI、禁止位点数、修改密码子数量。
-`--cds --raw` 显示生成或上传的原始 CDS，保留前五列，不显示修改密码子数量。
-`--raw` 不能与其他信息查看类型配合使用。表格下列出对应文件目录，GC 保留两位小数，CAI 保留四位小数。
+### 2.5 按需编辑 CDS
 
-当前视图读取 manifest 中的当前指标，raw 视图读取报告中的原始指标；兼容旧 manifest 中的原始记录。
-缺失指标显示“未评估”，不使用另一阶段的数值代替。
-“禁止位点数”在用户尚未显式配置时显示“未配置”，旧报告中的默认 7 种酶不视为用户选择。
-当前通过 `protein-to-cds --forbidden-motif <序列>` 显式指定的 motif 会单独统计，后续 GC 优化沿用该选择；
-只统计所选 motif（含反向互补），已配置且未检出时显示 `0`，已配置但统计缺失时显示“未评估”。
-配置 `optimize --enzyme` 后，该列优先展示用户所选酶的独立位点数量；没有对应检查记录时显示
-“未评估”，并提示需重新检查。旧 `--forbidden-motif` 仍仅统计，不作为位点消除约束。
-旧结果没有明确选择记录时显示“未配置”，不从默认位点总数推断用户选择。
-修改密码子数量始终是当前优化序列与原始 raw 的净差异，不是各轮编辑次数之和。
-上传 CDS 同样进入 raw 和当前工作副本视图；缺少报告的旧上传结果需要重新运行 `protein-to-cds`。
-raw 视图会列出生成失败原因；没有工作文件时提示运行 `protein-to-cds`。
-该命令只展示 manifest 和报告中已记录的结果，不重新优化、计算指标或校验序列文件完整性。
+DNA Chisel 支持整体 GC、局部 GC、指定限制酶位点和同聚物消除。按需要分别执行：
 
-### 11.2 单独调整整体 GC
+| 功能 | 命令示例 |
+|---|---|
+| 单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
+| 单条 CDS 局部 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
+| 全部 CDS 禁止酶位点消除 | `python main.py optimize -i demo01.json --enzyme EcoRI HindIII` |
+| 全部 CDS 同聚物消除 | `python main.py optimize -i demo01.json --homopolymer-max 6` |
 
-```powershell
-python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60
-```
+- 蛋白编号从 `info --proteins` 查看；表中的范围和阈值都是示例，需要自行指定。
+- GC 单位为百分比；`--window` 是连续窗口长度，必须为正整数且不超过 CDS 长度。
+- 酶名忽略大小写；没有选择酶时，不启用默认禁止酶。`--enzyme none` 清空酶选择，不恢复原序列。
+- 同聚物是连续相同碱基；最大长度 6 表示允许 6 个，7 个及以上需要打断。
+- 三种编辑模式分开执行，后续编辑仍需满足已经设置的其他约束。
 
-一次处理一个蛋白编号；上下限均必填，单位是百分比，要求 `0 <= gc-min <= gc-max <= 100`。
-40～60 仅为使用示例，不是程序默认范围或大肠杆菌的统一最佳范围。
+编辑保持编码蛋白、长度及原始起止密码子不变。要求无法满足时，本次编辑不保存。
+不需要这些调整时，可以直接进入表达盒分组。
 
-每次从 manifest 登记的当前 optimized 工作文件继续编辑，结果保存为
-`protein_to_cds/optimized_cds/P21683.fasta`，raw 始终不变。
-旧 manifest 尚指向 raw 时，在首次编辑时建立独立工作副本；已登记的旧优化序列继续作为输入，
-原有 `P21683.optimized.fasta` 文件保留。当前文件缺失、外部修改或 raw 来源变化时会报错，
-不会静默从 raw 重建；重新执行 `protein-to-cds` 可覆盖重建工作文件。
+### 2.6 选择表达盒分组
 
-不传 `--window` 时，本次上下限用于整体 GC；DNA Chisel 保持长度、编码蛋白、起始及终止密码子
-不变，并尽量减少改动。若此前已经配置局部 GC，本次整体调整也必须同时满足该局部要求。
-GC 调整同时满足 manifest 中已选择的限制酶禁止要求；只有 GC 和酶位点约束都达标才直接保留序列。
-若已经设置同聚物最大长度，GC 调整也必须满足该长度要求；未设置时仍只统计同聚物。
-不自动执行 CAI 修正，未选择限制酶时不启用默认禁止酶。
-优化后独立复核精确 GC 数量，不用四舍五入后的显示值判定。不可满足时不放宽范围。
-CAI 等指标继续统计，因此可能出现 CAI 下降；用户已选择酶的内部识别位点必须为零。
-
-成功后将该编号的当前 CDS 引用更新到新文件，保留表达盒分组及用户上传的启动子、RBS、终止子，
-清除旧 OSTIR 预测，并使依赖 CDS 的检查、元件组合和下游构建记录失效；上传快照不删除。
-结果表与 `info --cds` 共用六列，仅展示本次指定编号。报告保存为
-`protein_to_cds/reports/P21683.gc_optimization.json`，记录本轮输入、raw 基准、范围及修改量。
-相同请求且来源和产物一致时复用，不重复更新 manifest。提交失败会回滚文件和报告，失败退出码为 2。
-若进程被强制终止而遗留 `.gc_optimization.lock`，确认没有优化进程运行后再人工清理该锁文件。
-
-### 11.3 调整局部 GC
-
-```powershell
-python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50
-```
-
-传入 `--window` 后，本次上下限用于每个连续窗口。例中依次检查第 1～50、2～51、3～52 nt，
-直到最后一个完整窗口；每次移动 1 nt，不按互不重叠的块划分。30～70 和 50 仅为示例，
-程序不会在未传入 `--window` 时默认启用局部优化。
-
-窗口必须为正整数且不超过当前 CDS 长度，可以等于 CDS 长度，不要求是 3 的倍数。
-每个窗口的 GC 数量必须满足精确整数上下限；范围内没有可取整数或求解器未找到满足要求的序列时，
-命令失败并保留原工作文件、报告和 manifest，不缩短窗口、不放宽范围。
-
-整体和局部设置分别保存在当前 `optimized_cds.gc_settings`。再次调整同一类型会替换该类型的
-参数，并保留另一类型；已有整体 GC 范围时，局部优化同时满足它。范围 0～100 可以放宽对应类型
-的限制；重新成功执行 `protein-to-cds` 会覆盖工作副本并重置这些 GC 设置，不自动运行 DNA Chisel。
-
-报告仍保存为 `<accession>.gc_optimization.json`，新报告为 v2，兼容读取旧 v1 整体结果。
-记录有效范围、窗口、优化前后局部 GC 最小/最大值、越界窗口数量与从 1 开始的闭区间位置。
-请求的窗口检查与原有固定 50 nt 的质量指标分开，不用默认质量指标判定本次请求成功。
-
-优化命令和 `info --cds` 保留六列 CDS 表，追加已配置局部 GC 的窗口、范围、越界窗口前后数量，
-以及当前局部 GC 最小/最大值。raw 视图只显示原始指标，不显示当前局部编辑摘要。
-局部编辑成功后，同样保留有效表达盒分组和上传元件，清除旧预测并使下游构建记录失效。
-
-### 11.4 消除用户指定的限制酶识别位点
-
-```powershell
-python main.py optimize -i demo01.json --enzyme EcoRI HindIII
-```
-
-一次处理 manifest 当前全部待表达蛋白的 `optimized_cds`，包括上传 CDS，不固定条数。
-该批量模式不能与 `--cds`、`--gc-min`、`--gc-max` 或 `--window` 同次使用；已有整体、局部 GC 设置仍保留并满足。
-已设置的同聚物最大长度同样保留并满足；不能同次传入 `--homopolymer-max`。
-参数和库名均通过小写匹配，`ecori`、`ECORI` 和 `EcoRI` 等价，最终保存库中的标准名称。
-重复酶名自动去重，未知或没有可用识别序列的酶会报错。
-
-选择写入 `cds_selection.restriction_enzymes`，首次未选时为空，不启用默认七种酶。
-再次指定用新列表替换旧列表；后续单条 GC 调整沿用当前酶选择，防止重新引入禁止位点。
-以下命令取消酶禁止要求，不还原已经修改的 CDS：
-
-```powershell
-python main.py optimize -i demo01.json --enzyme none
-```
-
-DNA Chisel 通过同义替换保持长度、蛋白质和原始起止密码子，并尽量少改当前工作序列。
-上传 CDS 按遗传密码表 11 校验，允许该表合法起始密码子且保持原密码子不变；不完整、含内部终止
-或非法字符的 CDS 无法编辑。全部结果独立复核双链、简并和重叠识别位点以及精确 GC 要求。
-任何一条失败都不保存本次结果或酶选择；提交失败、来源或 manifest 变化也会回滚整批。
-
-每条报告保存为 `reports/<accession>.restriction_optimization.json`，包含各酶识别位点数量、
-从 1 开始的闭区间位置、方向、输入与输出校验值，以及相对 raw 和本次输入的修改量。
-CLI 共用 CDS 信息表，并展示位点数量前后变化；相同选择且全部当前产物仍满足要求时直接复用。
-成功更新保留表达盒分组与上传 parts，让旧预测和下游构建记录失效。
-
-重新运行 `protein-to-cds` 仍覆盖 optimized 并清除旧 GC 设置；保留酶选择，但消除状态需重新检查。
-后续完整表达盒检查读取同一份酶选择，检查启动子、RBS、CDS、终止子及元件连接处，冲突报告酶名、
-位置和相关元件，不自动修改上传 parts。克隆两端的有意位点在最终组装阶段处理；本命令不添加两端或改变克隆方法。
-
-手动上传元件齐全后，上传命令将该表达盒的禁止酶位点检查写入草稿，返回冲突位置；
-即使存在冲突，也保留本次上传结果。`info --expression-box` 显示酶名、位置及涉及的元件。
-CDS 编辑使草稿检查失效；再次上传对应元件时会使用当前 CDS 重新检查。
-
-### 11.5 消除超长同聚物
-
-```powershell
-python main.py optimize -i demo01.json --homopolymer-max 6
-```
-
-同聚物指连续相同碱基，例如 `AAAAAAAAA`。最大长度为 6 时，连续 6 个允许，7 个及以上需要
-通过同义替换打断。短串可以保留，编码蛋白、长度及原始起止密码子不变。
-6 与现有完整表达盒门槛一致，仅作为使用示例，必须显式指定；未配置时不自动消除 CDS 同聚物。
-
-一次处理当前全部 `optimized_cds`，包括有效上传 CDS。最大长度必须为正整数，可以大于 CDS 长度；
-不能与 `--cds`、`--enzyme`、GC 或窗口参数同次混用。第一版只支持设置、调整，不提供 `none` 关闭取值。
-阈值记录到 `cds_selection.homopolymer_max`，再次指定替换旧值，不恢复以前的原始序列。
-
-同聚物消除同时满足各 CDS 已有整体/局部 GC 设置和所选限制酶禁止要求；后续 GC、酶位点编辑也保持
-同聚物阈值。通过 DNA Chisel 的四种超长单碱基模式约束求解，并独立复核所有活动约束。不可满足时不放宽
-长度；任何一条失败、来源变化或提交失败，整批不保存。相同策略且全部当前工作文件仍满足要求时直接复用。
-
-报告保存为 `reports/<accession>.homopolymer_optimization.json`，记录原始、本次输入和最终的最长串、
-违规片段数量、碱基、长度及从 1 开始的闭区间位置。连续 9 个 A 算一个违规片段，不按重叠窗口重复计数。
-报告同时保存输入/输出校验值、相对 raw 与本次输入的修改量及有效 GC、酶设置；兼容现有来源报告。
-新报告中的同聚物检查按用户阈值计算，旧报告的默认门槛不恢复为活动 CDS 编辑约束。
-
-`optimize` 与 `info --cds` 保留六列表格，下方追加最长串和超长片段数量前后变化；raw 视图显示原始最长串，
-不显示当前编辑摘要。重新运行 `protein-to-cds` 保留用户阈值，但覆盖工作副本、重置检查状态并提示需重新检查，
-不自动执行 DNA Chisel。
-
-成功更新保留表达盒分组和上传 parts，让旧检查、预测及构建失效。元件齐全后，上传命令检查完整草稿的
-同聚物，包括元件连接处，即使未选择限制酶也执行。表达盒使用已选最大长度，未配置时保持原有最多 6 个的
-门槛。冲突保留上传结果并记录位置和相关元件，`info --expression-box` 可查看；CDS 更新后旧检查失效，
-再次上传对应元件或执行 `expression --assemble` 时重新检查，不自动修改或挑选 parts。
-
-## 12. 表达盒分组
-
-CDS 阶段完成后生成表达盒分组候选：
+分组决定哪些蛋白放在同一个表达盒，以及 CDS 的排列顺序：
 
 ```powershell
 python main.py expression --design --box -i demo01.json
-```
-
-结果写入：
-
-```text
-outputs/C00811/expression_box/expression_box_designs.json
-```
-
-查看终端输出的 `design_id`，例如选择方案 1：
-
-```powershell
 python main.py write -i demo01.json --expression-box 1
-```
-
-该步骤只确定蛋白如何分组，不选择 promoter、RBS 和 terminator。选择结果写入 manifest
-的 `expression_box_selection`。
-
-也可以直接指定每个表达盒包含的蛋白。每个方括号代表一个表达盒，括号内蛋白的顺序
-就是后续 CDS 的排列顺序：
-
-```powershell
-python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003] [P00004]
-```
-
-`--custom` 会校验当前 CDS 选择中的全部蛋白是否恰好出现一次，并将分组直接写入
-manifest，无需再运行 `write --expression-box`。未知、重复、遗漏的蛋白或不完整的
-方括号会导致命令失败，manifest 不会被修改。若分组或顺序发生变化，已有的表达元件、
-质粒和最终组装结果将失效，需要重新生成。
-
-写入表达盒后，可以随时查看当前分组和实际组装顺序：
-
-```powershell
 python main.py info -i demo01.json --expression-box
 ```
 
-在尚未选择表达元件时，输出以“未设置”显示每个表达盒的 promoter、每个蛋白对应的
-RBS 和 terminator；CDS 及蛋白顺序仍会完整显示。选择表达元件后，同一命令会在原位置
-显示元件 ID、长度、来源、OSTIR 结果、完整序列检查和 GenBank 构建状态。
+此时只确定分组，启动子、RBS 和终止子在下一步准备。也可使用 [自定义分组](#35-自定义表达盒分组)。
 
-如果一次写入了多个表达元件方案，默认显示主方案，也可以查看指定的已选方案：
+### 2.7 上传表达元件
 
-```powershell
-python main.py info -i demo01.json --expression-box --parts-design 3
-```
+将元件文件放在 `inputs/parts/`。每个表达盒需要一个启动子和终止子，每个蛋白需要一个 RBS。
 
-`--parts-design` 可查看已经确认的推荐方案，以及统一构建后登记的已选方案。命令不会输出
-完整 DNA 序列；若方案文件丢失、被修改或与当前表达盒不一致，会保留表达盒分组视图，
-并将表达元件状态显示为“信息不可用”。
-
-## 13. 表达元件推荐与选择
-
-### 13.1 手动上传启动子、RBS 和终止子
-
-先将启动子文件放入 `inputs/parts`。例如：
-
-```text
-inputs/parts/promoter_1.txt
-```
-
-然后指定表达盒编号和文件名：
+下面示范为表达盒 1 和蛋白 `P21683` 上传元件：
 
 ```powershell
 python main.py expression -i demo01.json --promoter 1 promoter_1.txt
-```
-
-文件名不能包含目录。支持 `.txt`、`.fa`、`.fasta` 和 `.fna`；TXT 直接包含 DNA，
-FASTA 必须恰好包含一条记录。序列会去除空白并转为大写，且只能包含 A、C、G、T。
-FASTA 使用记录 ID 作为启动子 ID，TXT 使用文件名主干。
-
-上传结果保存到 manifest 的 `expression_parts_draft`，同时在项目输出目录保存标准化 FASTA
-快照。再次为同一表达盒上传启动子会替换当前值；相同内容重复上传不会增加 manifest
-版本。上传后可查看部分配置：
-
-终止子使用相同规则，参数后依次填写表达盒编号和 `inputs/parts` 下的文件名：
-
-```powershell
+python main.py expression -i demo01.json --rbs P21683 rbs_1.txt
 python main.py expression -i demo01.json --terminator 1 terminator_1.txt
 ```
 
-再次为同一表达盒上传终止子会替换当前值。启动子和终止子保存在同一个草稿中，上传其中
-一个不会覆盖另一个。
+启动子和终止子按**表达盒编号**定位，RBS 按**蛋白编号**定位。
+对其余表达盒和蛋白重复上传，直到所有元件齐全。
 
-RBS 使用蛋白 accession 定位，系统会自动找到该蛋白所属的表达盒：
+文件要求：
 
-```powershell
-python main.py expression -i demo01.json --rbs P21683 rbs_1.txt
-```
+- 参数只填 `inputs/parts` 下的文件名。
+- 支持 `.txt`、`.fa`、`.fasta`、`.fna`；TXT 放 DNA 序列，FASTA 只放一条记录。
+- 序列只能包含 A、C、G、T，空白和大小写会自动处理。
+- 同一位置再次上传会替换该元件；RBS 上传时会计算翻译起始率，预测失败则不保存。
 
-RBS 文件同样从 `inputs/parts` 读取并使用相同的格式和 DNA 校验规则。上传时系统立即按
-表达盒顺序构建上下文：首个蛋白使用 `RBS + 当前 CDS 起始段`，后续蛋白使用
-`前一个 CDS 末端 + RBS + 当前 CDS 起始段`。OSTIR 必须返回唯一、有效且大于 0 的翻译
-起始率，否则不保存快照或草稿。
+上传后查看缺项、预测结果和序列冲突：
 
 ```powershell
 python main.py info -i demo01.json --expression-box
 ```
 
-信息表格始终包含“翻译起始率”列：未配置 RBS 以及非 RBS 组件显示 `-`，已配置 RBS
-显示 OSTIR 结果。启动子和终止子上传本身不运行 OSTIR；元件齐全后，草稿记录完整表达盒的
-限制酶位点与同聚物检查，保留存在冲突的上传结果，不自动编辑元件，也不会建立完整的 `parts_selection`。若已有完整表达元件、质粒或组装
-结果，上传或替换任一表达元件都会使这些下游结果失效。
+若希望系统推荐元件，使用 [元件推荐](#36-使用系统推荐元件) 替代本节上传步骤。
 
-GC 编辑或重新生成 CDS 后，蛋白名单不变且分组仍有效时，上传元件保持原 ID、来源和快照文件，
-不需要重新选择或上传启动子和终止子。旧 RBS 翻译起始率显示“需重新评估”，不会自动运行 OSTIR。
-需要重新评估某个 RBS 时，再次执行原 `expression --rbs <蛋白编号> <文件名>` 命令；
-同一文件会复用上传快照，只更新预测结果，其他 RBS 的过期状态不变。
+### 2.8 构建完整表达序列
 
-### 13.2 系统推荐表达元件
-
-表达盒分组写入后，从远端 Milvus 推荐 promoter、RBS 和 terminator：
-
-```powershell
-python main.py expression --design --parts -i demo01.json
-```
-
-默认请求 12 个方案，也可以请求 3 到 96 个：
-
-```powershell
-python main.py expression --design --parts -i demo01.json --n-designs 24
-```
-
-每个 RBS 会结合对应 CDS 上下文重新计算翻译起始率，完整表达盒还会接受同聚物
-和禁用酶切位点检查。整体 GC 和固定 50 nt 窗口的局部 GC 最小/最大值仅统计，不使用旧的
-整体 30%～70%、局部 20%～80% 门槛筛选候选或阻止完整构建。只有通过其他序列检查且
-稳定表达评分不低于 70 分的唯一组合会进入结果；单条 CDS 的用户指定 GC 优化范围继续生效。
-
-候选文件：
-
-```text
-outputs/C00811/expression_box/expression_parts_designs.json
-```
-
-写入单个方案：
-
-```powershell
-python main.py write -i demo01.json --expression-parts 1
-```
-
-写入多个方案或闭区间：
-
-```powershell
-python main.py write -i demo01.json --expression-parts 1 3 5
-python main.py write -i demo01.json --expression-parts 1:12
-python main.py write -i demo01.json --expression-parts 1:4 7 9:12
-```
-
-`start:end` 包含两端，重复编号自动去重。确认推荐方案只保存元件准备记录和独立的
-元件快照，不再立即拼接或生成 GenBank；重新推荐不会覆盖已经确认的元件。
-
-### 13.4 统一构建完整表达序列
-
-手动上传齐全，或确认一个/多个推荐方案后，都使用同一个入口：
+元件上传齐全，或确认推荐方案后，都执行同一个命令：
 
 ```powershell
 python main.py expression -i demo01.json --assemble
 ```
 
-命令不需要指定元件来源。它读取当前准备记录和当前 `optimized_cds`，每个表达盒按
-“启动子 + 各基因的 RBS、CDS + 终止子”排列，再将同一方案的全部表达盒按编号直接串联；
-选择多个推荐方案时，每个方案分别生成一个线性完整构建。
-
-构建前检查元件完整性、快照校验值及 CDS 是否为完整有效编码序列；旧 OSTIR 上下文
-失效时自动重新预测，无需重新上传 RBS，也不重新推荐或替换元件。构建检查完整序列，包括片段和表达盒连接处的所选限制酶
-禁止位点与同聚物。整体/局部 GC 只统计。缺少元件、预测失败或序列冲突时不提交正式
-构建；冲突信息包含位置及涉及元件，用户可修改相应输入后重试。
-
-上传方案不计算推荐成功评分。后续质粒模块需要的表达负担沿用现有估算模型：缺少
-启动子活性和 OSTIR 参考分布时使用中性百分位 50，并记录估算来源、参考数量及置信度。
-推荐方案保留原始推荐信息；CDS 编辑后旧评分标记失效，按当前序列刷新预测和负担信息。
-
-导出目录：
+每个表达盒按下面的顺序拼接，同一方案中的全部表达盒再按编号串联：
 
 ```text
-outputs/C00811/expression_constructs/
-├── design_001.gb
-├── design_002.gb
-└── ...
+启动子 + RBS₁ + CDS₁ + RBS₂ + CDS₂ + … + 终止子
 ```
 
-共同准备数据保存为 `expression_parts_draft.v2`，其中 `source_type` 区分
-`recommended` 和 `user_uploaded`，`designs` 保存一个或多个方案；上传未齐全为 `partial`，
-齐全或推荐已确认为 `ready`。`ready` 表示元件齐全，不代表完整序列检查已经通过。
-兼容旧的 `expression_parts_draft.v1`，成功上传、CDS 编辑或构建时转换为新结构。
+系统使用当前 optimized CDS，刷新失效的 RBS 预测，检查完整序列及所有连接处的禁止酶位点和同聚物。
+完整构建的整体与局部 GC 只统计。缺少元件、预测失败或存在序列冲突时，不登记新构建。
 
-只有统一构建成功后，manifest 的 `parts_selection.v2` 才登记正式方案摘要，
-`assembled_expression_constructs.v1` 登记文件、哈希、元件坐标及完整序列检查。
-已选方案内容单独保存为 `expression_box/selected_expression_parts.json`，信息展示与
-后续质粒模块读取这些正式结果。共同准备记录仍保留，CDS 编辑时保留所选元件和分组，
-让旧预测、构建及后续质粒结果失效，再运行 `expression --assemble` 即可重建。
+成功后导出 `expression_constructs/design_001.gb`，并登记到 manifest。
+多个已选元件方案分别生成构建文件。此时尚未添加接入质粒的克隆末端。
 
-GenBank 导出后会回读验证序列和特征坐标。文件和 manifest 提交失败时恢复原有结果；
-重复执行且输入未变化时复用，导出文件缺失或损坏时修复。构建不添加克隆末端，接入
-质粒的处理仍由后续质粒与最终组装流程决定。
+### 2.9 选择质粒并完成理论组装
 
-## 14. 质粒骨架推荐与选择
-
-表达构建生成后执行：
+推荐骨架，根据结果选择一个：
 
 ```powershell
 python main.py plasmid --recommend -i demo01.json
-```
-
-默认返回 5 个候选，可使用以下参数：
-
-```powershell
-python main.py plasmid --recommend -i demo01.json --n-candidates 10
-python main.py plasmid --recommend -i demo01.json --priority balanced
-python main.py plasmid --recommend -i demo01.json --preferred-resistance kanamycin
-python main.py plasmid --recommend -i demo01.json `
-  --exclude-resistance ampicillin tetracycline
-```
-
-`--n-candidates` 范围为 1 到 20。`--priority` 支持：
-
-- `stability`：默认，轻微偏向低拷贝稳定性；
-- `balanced`：不增加额外拷贝类型偏置；
-- `expression`：轻微偏向中、高拷贝，但仍考虑表达负担。
-
-候选结果：
-
-```text
-outputs/C00811/plasmid_selection/
-├── plasmid_candidates.json
-└── candidates/
-    ├── candidate_001.gb
-    ├── candidate_002.gb
-    └── ...
-```
-
-例如选择排名第 1 的候选：
-
-```powershell
 python main.py write -i demo01.json --plasmid 1
 ```
 
-选定骨架会复制为：
-
-```text
-outputs/C00811/plasmid_selection/selected_backbone.gb
-```
-
-选择的是供全部表达构建共同使用的骨架模板。每个表达构建会在最终阶段分别与该骨架
-组成一个完整质粒设计。
-
-## 15. 最终组装
-
-### 15.1 生成组装计划
-
-自动为每个表达构建推荐 Gibson 或双酶切方案：
+生成完整组装计划，查看终端结果，确认后接受并执行：
 
 ```powershell
 python main.py assembly --plan -i demo01.json
-```
-
-也可以统一指定方法：
-
-```powershell
-python main.py assembly --plan -i demo01.json --method restriction
-python main.py assembly --plan -i demo01.json --method gibson
-```
-
-结果写入：
-
-```text
-outputs/C00811/final_assemble_plan/assembly_plan_recommendations.json
-```
-
-指定方法时，如果任一 design 不可行，结果会标记为 `partial` 并禁止写入 manifest，
-系统不会自动切换到另一种方法。
-
-### 15.2 接受整套计划
-
-计划完整生成后执行：
-
-```powershell
 python main.py write -i demo01.json --assembly-plan
-```
-
-整套计划写入 manifest 的 `final_assembly_plan`。计划记录每个表达构建的插入或替换
-坐标、骨架线性化方式、限制酶或 Gibson 参数、预计长度、评分、警告和稳定指纹。
-
-### 15.3 执行理论组装
-
-```powershell
 python main.py assembly --execute -i demo01.json
 ```
 
-执行阶段会检查计划指纹、骨架和 insert 文件哈希、限制酶位点、Gibson 同源臂以及
-最终输出序列的一致性。
+系统自动选择可行的 Gibson 或双酶切方法。计划必须完整才能接受；
+需要指定方法或抗性时，见 [可选参数速查](GLADE部署教程.md#8-可选用法速查)。
 
-输出：
+主要交付结果位于 `final_assembly/`：
 
-```text
-outputs/C00811/final_assembly/
-├── design_001_final.gb
-├── design_001_final.fasta
-├── design_001_assembly.json
-├── ...
-├── run_summary.json
-└── final_design_report_zh.md
-```
+- `design_001_final.gb`：带注释的完整质粒。
+- `design_001_final.fasta`：质粒 DNA 序列。
+- `final_design_report_zh.md`：中文设计报告。
 
-结果状态：
+这些是计算设计结果，仍需实验验证。
 
-- `complete`：全部 design 生成成功；
-- `partial`：部分 design 失败，成功文件保留；
-- `failed`：没有 design 成功，但仍保存摘要和失败报告。
+## 3. 可选功能
 
-执行结果写入 manifest 的 `final_assembly` 和 `final_design_report`。
+### 3.1 扩展底盘可达集合
 
-## 16. `info` 查看命令速查
-
-| 目的 | 命令 |
-|---|---|
-| 查看原始底盘分析 | `python main.py info -i demo01.json --chassis` |
-| 查看深度 1 底盘扩展 | `python main.py info -i demo01.json --chassis -d 1` |
-| 查看路线摘要 | `python main.py info -i demo01.json --gap -d 0` |
-| 查看路线 1 | `python main.py info -i demo01.json --solution 1 -d 0` |
-| 查看路线 1 第 2 步 | `python main.py info -i demo01.json --solution 1 --step 2 -d 0` |
-| 查看 RetroPath 运行和候选摘要 | `python main.py info -i demo01.json --retropath -d 0` |
-| 查看 RetroPath 候选 1 | `python main.py info -i demo01.json --retropath-candidate 1 -d 0` |
-| 查看 RetroPath 候选 1 第 2 步 | `python main.py info -i demo01.json --retropath-candidate 1 --step 2 -d 0` |
-| 查看全部主酶候选 | `python main.py info -i demo01.json --main-enzyme-candidates` |
-| 查看第 1 步主酶候选 | `python main.py info -i demo01.json --main-enzyme-candidates --step 1` |
-| 查看第 1 步候选 2 | `python main.py info -i demo01.json --main-enzyme-candidate 2 --step 1` |
-| 查看主酶组合 | `python main.py info -i demo01.json --main-enzyme-sets` |
-| 查看组合 1 | `python main.py info -i demo01.json --main-enzyme-set 1` |
-| 查看全部蛋白 | `python main.py info -i demo01.json --proteins` |
-| 查看蛋白 HELPER | `python main.py info -i demo01.json --protein HELPER` |
-| 查看最终 CDS 指标 | `python main.py info -i demo01.json --cds` |
-| 查看原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
-| 查看表达盒和当前表达元件 | `python main.py info -i demo01.json --expression-box` |
-| 为表达盒 1 上传启动子 | `python main.py expression -i demo01.json --promoter 1 promoter_1.txt` |
-| 为蛋白 P21683 上传 RBS | `python main.py expression -i demo01.json --rbs P21683 rbs_1.txt` |
-| 为表达盒 1 上传终止子 | `python main.py expression -i demo01.json --terminator 1 terminator_1.txt` |
-| 调整单条 CDS 整体 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
-| 调整单条 CDS 局部 GC | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
-| 批量消除指定限制酶位点 | `python main.py optimize -i demo01.json --enzyme EcoRI HindIII` |
-| 批量消除超长同聚物 | `python main.py optimize -i demo01.json --homopolymer-max 6` |
-
-RetroPath 搜索失败时，也可以用 `info --retropath` 查看失败位置和原因。只有成功找到
-候选后，才能使用 `info --retropath-candidate N` 查看排名第 `N` 的预测详情。该编号
-只表示候选排名；验证和写入时要使用候选详情中显示的 GLADE 路线编号。
-
-系统会检查目标、搜索深度和结果文件是否匹配。出现“候选文件校验失败”时，应重新运行
-同一深度的 `gap --retropath`；需要验证时再使用对应路线编号运行 `validate -s N`，不要
-手动修改结果 CSV。
-
-## 17. 完整命令示例
-
-下面示例使用原始底盘深度 0、路线 1、主酶组合 1、手动上传一个辅助蛋白，并选择
-12 个表达元件方案：
+没有合适路线时，可先扩展底盘集合，再使用同一深度搜索：
 
 ```powershell
-# 1. 底盘和路线
-python main.py chassis -i demo01.json
-python main.py gap -i demo01.json -d 0
-python main.py info -i demo01.json --gap -d 0
-python main.py info -i demo01.json --solution 1 -d 0
+python main.py expand -i demo01.json -d 1
+python main.py gap -i demo01.json -d 1
+python main.py info -i demo01.json --gap -d 1
+```
 
-# 2. 可选验证并选择路线
-# 如果暂时不需要 GEM 验证，可以省略下一行
+扩展深度必须大于等于 1。扩展结果表示补充相应反应和辅助系统后可达，不表示底盘天然具备这些能力。
+
+### 3.2 验证路线
+
+验证路线在当前代谢模型和培养基中的通量可行性：
+
+```powershell
 python main.py validate -i demo01.json -s 1 -m per -c strict -d 0
-python main.py write -i demo01.json --solution 1 -d 0
-
-# 3. 主酶
-python main.py main-enzyme -i demo01.json
-python main.py info -i demo01.json --main-enzyme-candidates
-python main.py main-enzyme-sets -i demo01.json
-python main.py info -i demo01.json --main-enzyme-sets
-python main.py write -i demo01.json --main-enzyme-set 1
-
-# 4. 可选：手动辅助蛋白
-python main.py add-auxiliary-protein -i demo01.json `
-  --protein-file helper.txt --sequence-type protein
-python main.py info -i demo01.json --proteins
-
-# 5. CDS 和表达设计
-python main.py protein-to-cds -i demo01.json
-python main.py expression --design --box -i demo01.json
-python main.py write -i demo01.json --expression-box 1
-# 或者自定义分组并直接写入（无需执行上一行 write 命令）
-# python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
-# 可选：从 inputs/parts 为表达盒 1 上传启动子
-# python main.py expression -i demo01.json --promoter 1 promoter_1.txt
-# 可选：从 inputs/parts 为蛋白 P21683 上传 RBS
-# python main.py expression -i demo01.json --rbs P21683 rbs_1.txt
-# 可选：从 inputs/parts 为表达盒 1 上传终止子
-# python main.py expression -i demo01.json --terminator 1 terminator_1.txt
-python main.py info -i demo01.json --expression-box
-python main.py expression --design --parts -i demo01.json --n-designs 12
-python main.py write -i demo01.json --expression-parts 1:12
-# 上传路线无需以上推荐与确认两行；全部元件上传齐全后执行同一命令
-python main.py expression -i demo01.json --assemble
-
-# 6. 质粒和最终组装
-python main.py plasmid --recommend -i demo01.json
-python main.py write -i demo01.json --plasmid 1
-python main.py assembly --plan -i demo01.json
-python main.py write -i demo01.json --assembly-plan
-python main.py assembly --execute -i demo01.json
 ```
 
-如果不需要辅助蛋白，省略第 4 部分即可。如果使用用户上传的 CDS，将
-`--sequence-type protein` 改为 `--sequence-type cds`。
+`-s` 指定路线编号。验证失败或未验证的路线仍可写入，但需要人工复核。
+多路线验证见 [验证速查](GLADE部署教程.md#8-可选用法速查)，RetroPath 验证数据准备见 [部署教程](GLADE部署教程.md#33-mnxref)。
 
-KEGG 无解后改用 RetroPath 时，路线与主酶阶段为：
+### 3.3 使用 RetroPath
+
+先按 [部署教程](GLADE部署教程.md#32-retropath-规则与服务) 启动本地服务，再运行：
 
 ```powershell
 python main.py gap -i demo01.json --retropath -d 0
-python main.py info -i demo01.json --retropath -d 0
-
-# 查看候选排名 1，并记下其中显示的 GLADE 路线编号 N
+python main.py info -i demo01.json --gap -d 0
 python main.py info -i demo01.json --retropath-candidate 1 -d 0
-python main.py info -i demo01.json --solution N -d 0
-
-# 可选：验证路线 N；不验证也可以直接写入
-python main.py validate -i demo01.json -s N -m per -c strict -d 0
-python main.py write -i demo01.json --solution N -d 0
-
-python main.py main-enzyme -i demo01.json
-python main.py main-enzyme-sets -i demo01.json
-python main.py info -i demo01.json --main-enzyme-sets
-python main.py write -i demo01.json --main-enzyme-set 1
 ```
 
-## 18. 结果一致性与重新运行规则
+候选详情会给出 GLADE 路线编号。后续查看、验证和 `write --solution` 使用这个编号，
+不要直接使用候选排名。默认预测最多 3 步，可用 `--step 5` 等参数调整。
 
-### 18.1 深度必须一致
+### 3.4 添加辅助蛋白
 
-假设搜索时使用 `-d 3`，后续查看、验证和写入这批路线时也都要使用 `-d 3`。这里的
-`-d` 是搜索深度，`-s` 是路线编号，两者不是同一个值。例如验证路线 7：
+在选择主酶组合后、生成 CDS 前添加。将序列文件放在 `inputs`：
 
 ```powershell
-python main.py validate -i demo01.json -s 7 -m per -d 3
+python main.py add-auxiliary-protein -i demo01.json --protein-file helper.fasta --sequence-type protein
 ```
 
-`info --gap`、`info --retropath`、`info --retropath-candidate`、`info --solution` 和
-`write --solution` 同样要使用搜索时的深度。路线写入设计清单后，`main-enzyme` 不再需要
-深度参数。
+上传的是 CDS 时，将类型改为 `cds`。这类序列不经过 CodonTransformer，
+后续仍会保存 raw 和 optimized；DNA Chisel 只编辑 optimized。
 
-### 18.2 上游变化会使下游结果失效
+支持 FASTA、FAA 和纯文本；FASTA ID 或纯文本文件名作为蛋白编号。
+同 ID 再次导入会替换已有内容，导入后无需再执行 `write`。
 
-典型情况包括：
-
-- 重新选择路线后，需要重新运行主酶选择以及全部后续阶段；
-- 重新选择主酶组合后，需要重新确认辅助蛋白并重新生成 CDS；
-- 新增、替换或删除手动辅助蛋白后，需要重新运行 CDS、表达、质粒和组装阶段；
-- CDS 更新且蛋白名单不变时，保留原分组和上传元件，重新评估 RBS 并生成下游构建结果；
-- 表达盒分组或顺序变化后，需要重新配置元件关联，并重新生成质粒和组装结果；
-- 表达元件选择变化后，需要重新推荐质粒和生成组装计划；
-- 质粒选择变化后，需要重新生成、接受并执行组装计划。
-
-系统使用 manifest revision、输入指纹和文件哈希检测过期结果。出现“输入已经过期”、
-“路线已经变化”或“候选文件不一致”等提示时，应从提示所指的上游阶段重新运行，
-不要手动复制旧结果规避检查。
-
-### 18.3 重复执行
-
-对于相同且仍然完整的输入，多个写入和生成阶段会复用已有文件；相同选择通常不会
-增加 manifest revision。文件缺失或损坏时，支持自愈的阶段会重新生成文件。
-`protein-to-cds` 即使命中模型缓存也会覆盖 optimized 工作文件；分组有效且蛋白名单不变时，
-上传元件保留，旧预测和构建记录失效。
-
-## 19. 常见问题
-
-### 19.1 提示找不到输入文件
-
-确认文件位于 `inputs`，并且 `-i` 后只写文件名：
+查看当前蛋白：
 
 ```powershell
-python main.py chassis -i demo01.json
+python main.py info -i demo01.json --proteins
 ```
 
-### 19.2 提示 target 格式错误
+也可让系统研究辅助蛋白，或删除已上传的辅助蛋白，命令见 [可选用法速查](GLADE部署教程.md#8-可选用法速查)。
 
-检查 `target_name` 是否为大写 `Cxxxxx`，例如 `C00811`。
+### 3.5 自定义表达盒分组
 
-### 19.3 `gap` 提示缺少 chassis 结果
-
-先执行：
+每个方括号表示一个表达盒，蛋白顺序就是组装顺序：
 
 ```powershell
-python main.py chassis -i demo01.json
+python main.py expression --design --box -i demo01.json --custom [P00001 P00002] [P00003]
 ```
 
-如果使用 `gap -d 1`，还必须先执行 `expand -d 1`。
+替换为自己的蛋白编号，当前全部蛋白必须恰好出现一次。
+该命令直接登记分组，无需再执行 `write --expression-box`。
 
-### 19.4 RetroPath 提示本地服务不可用
+### 3.6 使用系统推荐元件
 
-先确认 Docker Desktop 正在运行，然后启动服务：
+用下面两条命令替代手动上传，之后回到 [统一构建](#28-构建完整表达序列)：
 
 ```powershell
-docker compose -f compose.retropath.yml up -d retropath
-Invoke-RestMethod http://127.0.0.1:8765/health
+python main.py expression --design --parts -i demo01.json
+python main.py write -i demo01.json --expression-parts 1
 ```
 
-如果容器无法启动，检查规则文件是否存在：
+默认请求 12 个方案；`write` 只确认选择，不立即生成 GenBank。
+可选择多个方案，例如 `--expression-parts 1:3`，区间包含两端。
+
+重新推荐不会覆盖已确认的元件。上传元件缺少活性数据时，表达负担使用有记录的中性估算；
+推荐评分和负担估算都不等同于实验表现。
+
+## 4. 结果与重新运行
+
+### 常用结果位置
+
+结果统一保存在 `outputs/C00811/`，其他目标使用自己的编号：
+
+| 内容 | 相对该目录的位置 |
+|---|---|
+| 底盘可提供的代谢物 | `chassis_result/producible_kegg_compounds.csv` |
+| 路线列表 | `kegg_gap_C00811/depth0/solutions.csv` |
+| 原始 CDS | `protein_to_cds/raw_cds/` |
+| 当前 CDS | `protein_to_cds/optimized_cds/` |
+| 完整表达构建 | `expression_constructs/` |
+| 最终质粒与设计报告 | `final_assembly/` |
+| 项目状态和文件引用 | `design_manifest.json` |
+
+日常通过 `info` 查看结果即可，不需要手动编辑 manifest 或报告文件。
+
+### 常用查看命令
+
+| 查看内容 | 命令 |
+|---|---|
+| 底盘分析 | `python main.py info -i demo01.json --chassis` |
+| 所有蛋白 | `python main.py info -i demo01.json --proteins` |
+| 单个蛋白 | `python main.py info -i demo01.json --protein P21683` |
+| 当前 CDS 指标 | `python main.py info -i demo01.json --cds` |
+| 原始 CDS 指标 | `python main.py info -i demo01.json --cds --raw` |
+| 表达盒、元件与构建状态 | `python main.py info -i demo01.json --expression-box` |
+| 已确认元件方案 2 | `python main.py info -i demo01.json --expression-box --parts-design 2` |
+
+### 上游修改后从哪里继续
+
+| 修改内容 | 后续操作 |
+|---|---|
+| 更换路线 | 重新选择主酶，并执行后续流程 |
+| 更换蛋白名单或添加、删除辅助蛋白 | 重新生成 CDS、确认分组并准备元件，再构建和组装 |
+| 编辑或重新生成 CDS，蛋白名单和分组有效 | 保留分组和元件；重新 `expression --assemble`，再选择质粒并组装 |
+| 修改表达盒分组 | 重新配置元件，再构建、选择质粒并组装 |
+| 上传或更换元件、确认不同元件方案 | 重新构建、选择质粒并组装 |
+| 更换质粒骨架 | 重新生成、接受并执行组装计划 |
+
+相同有效输入通常会复用结果；**`protein-to-cds` 会覆盖 optimized**。
+旧预测和构建失效后，应重新执行对应步骤。
+
+## 5. 常见问题
+
+| 问题 | 处理方法 |
+|---|---|
+| 找不到配置文件 | 确认文件在 `inputs`，`-i` 后只填文件名 |
+| 目标格式错误 | 使用大写 `C` 加五位数字，例如 `C00811` |
+| 没有候选路线 | 检查目标与底盘结果，尝试扩展或 RetroPath |
+| 提示结果已过期 | 使用相同深度，从提示指定的上游步骤重新运行 |
+| 主酶检索或推荐服务失败 | 检查网络及服务配置，见进阶说明 |
+| DNA Chisel 要求无法满足 | 根据提示调整范围、窗口或约束组合；原工作序列保留 |
+| RBS 上传预测失败 | 检查 RBS 与 CDS 是否合适、CDS 是否完整，处理后重新上传 |
+| 完整构建发现位点或同聚物冲突 | 根据位置和元件名称处理对应输入，再执行统一构建 |
+| `protein-to-cds` 退出码为 2 | 查看 `protein_to_cds/run_summary.json` 中的失败原因 |
+
+其他参数可通过命令帮助查看：
 
 ```powershell
-Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
-docker compose -f compose.retropath.yml logs --tail 100 retropath
+python main.py --help
+python main.py optimize --help
 ```
 
-健康检查中的 `ready` 为 `true` 后，再重新运行 `gap --retropath`。
-
-### 19.5 验证 RetroPath 路线时提示缺少 MNXref
-
-安装并检查计量补全数据：
-
-```powershell
-python -m src.pathway_analyze.retropath_mnxref install
-python -m src.pathway_analyze.retropath_mnxref status
-```
-
-### 19.6 路线无法写入设计清单
-
-确认：
-
-- 路线在 `solutions.csv` 中标记为可以推荐；
-- 路线没有阻断反应；
-- `write --solution` 使用了相同深度。
-
-GEM 验证不是写入前置条件。未验证或验证失败只会保留状态和人工复核警告。如果已经
-运行验证，还应确认验证结果属于当前路线和当前搜索深度，并且没有手动修改上游文件。
-
-### 19.7 主酶候选为空或网络检索失败
-
-检查 KEGG、Rhea、UniProt 和 Selenzyme 服务是否可访问；如果启用了
-`--literature-search`，同时检查 `.env` 中的模型配置。
-
-RetroPath 结构检索不可用时，已经获得的来源模板候选仍会保留，但缺少候选的预测步骤
-不会假装完成。检查 `.env` 中的 `SELENZYME_REST_URL` 后重新运行统一的
-`main-enzyme -i demo01.json`。`--literature-search` 仍用于现有 KEGG 步骤；预测步骤继续
-使用可审计的来源模板和结构证据。
-
-### 19.8 辅助蛋白研究失败
-
-检查 `.env` 中的 `MODEL_PROVIDER`、`AGENT_LLM_MODEL`、`API_KEY` 和 `BASE_URL`，
-以及外部数据库网络连接。也可以使用手动上传方式添加已知辅助序列。
-
-### 19.9 表达元件或质粒推荐失败
-
-检查 `MILVUS_HOST`、`MILVUS_PORT`、可选认证信息，以及远端 collection 的名称和
-schema 是否与当前程序匹配。
-
-### 19.10 `protein-to-cds` 返回退出码 2
-
-查看 `outputs/C00811/protein_to_cds/run_summary.json` 和 manifest 的
-`cds_selection`。退出码 2 表示 `partial` 或 `failed`，成功项目和失败原因都会保留。
-
-## 20. 结果解释
-
-GLADE 输出的是计算设计与候选工程方案。路线搜索、GEM 通量可行性、主酶评分、表达
-评分、质粒适配评分和理论组装结果都不等同于湿实验验证，也不能单独证明目标产物能够
-在实际培养条件下稳定合成。进入实验前，应复核反应方向、辅因子与电子伙伴、酶活性、
-蛋白表达、细胞毒性、质粒稳定性和组装策略，并根据实验结果迭代设计。
+部署与服务配置见 [部署教程](GLADE部署教程.md)，详细验证和更多参数见其中的 [可选用法速查](GLADE部署教程.md#8-可选用法速查)。

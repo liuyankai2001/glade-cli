@@ -359,3 +359,82 @@ uv sync --frozen
 docker compose -f compose.retropath.yml up -d retropath
 curl -fsS http://127.0.0.1:8765/health | python -m json.tool
 ```
+
+## 8. 可选用法速查
+
+以下命令使用主文档中的 `demo01.json`。使用 uv 时，将 `python main.py` 换成
+`uv run python main.py`。常规完整流程见 [用户使用说明](GLADE用户使用说明.md)。
+
+### 路线验证
+
+指定多条路线；省略 `-s` 时验证当前深度的全部路线：
+
+```powershell
+python main.py validate -i demo01.json -s 1 2 3 -m per -c strict -d 0
+```
+
+| 参数 | 用途 |
+|---|---|
+| `-m per` | 独立验证每条路线，默认模式 |
+| `-m pooled` / `-m both` | KEGG 路线联合验证 / 独立加联合验证 |
+| `-c strict` / `-c relaxed` | 严格辅因子模式 / 放宽辅因子以诊断阻断 |
+
+包含 RetroPath 路线时使用 `-m per`，并先完成第 3.3 节的 MNXref 安装。
+验证、查看和写入使用与搜索相同的 `-d`。未验证或验证失败仍可选择，但需要人工复核。
+
+查看路线更多信息：
+
+```powershell
+python main.py info -i demo01.json --solution 1 --step 2 -d 0
+python main.py info -i demo01.json --solution 1 --all -d 0
+python main.py info -i demo01.json --solution 1 --all --verbose -d 0
+```
+
+`--all` 展示培养基有机底物到目标的完整路线，需要保留模型、培养基和底盘结果，
+不能与 `--step` 同用。`--verbose` 进一步显示反应和通量详情。
+
+### 辅助蛋白研究与删除
+
+在选择主酶组合后研究辅助蛋白，完成后接受结果：
+
+```powershell
+python main.py auxiliary-protein -i demo01.json
+python main.py write -i demo01.json --auxiliary-protein
+python main.py info -i demo01.json --proteins
+```
+
+研究命令可加 `--research-mode deep`。接受结果后再生成 CDS；手动上传无需此接受命令。
+
+删除手动上传的辅助蛋白，多个 ID 可重复传入 `--protein-id`：
+
+```powershell
+python main.py remove-auxiliary-protein -i demo01.json --protein-id HELPER
+```
+
+### 更多可选参数
+
+| 目的 | 命令示例 |
+|---|---|
+| 每步保留 10 个主酶候选 | `python main.py main-enzyme -i demo01.json --top-n 10` |
+| 检索主酶文献证据 | `python main.py main-enzyme -i demo01.json --literature-search` |
+| 最多生成 10 个主酶组合 | `python main.py main-enzyme-sets -i demo01.json --max-sets 10` |
+| 查看第 1 步的主酶候选 2 | `python main.py info -i demo01.json --main-enzyme-candidate 2 --step 1` |
+| 使用 CPU 生成 CDS | `python main.py protein-to-cds -i demo01.json --device cpu` |
+| 请求 24 个元件方案 | `python main.py expression --design --parts -i demo01.json --n-designs 24` |
+| 请求 10 个质粒候选 | `python main.py plasmid --recommend -i demo01.json --n-candidates 10` |
+| 优先卡那霉素抗性 | `python main.py plasmid --recommend -i demo01.json --preferred-resistance kanamycin` |
+| 排除指定抗性 | `python main.py plasmid --recommend -i demo01.json --exclude-resistance ampicillin tetracycline` |
+| 指定双酶切 / Gibson 组装 | `python main.py assembly --plan -i demo01.json --method restriction` / `--method gibson` |
+
+元件方案数量范围 3～96、默认 12；质粒候选数量范围 1～20、默认 5。
+质粒优先级支持 `--priority stability`、`balanced`、`expression`，默认 `stability`。
+指定组装方法后，任一方案不可行都会使计划不完整，需要处理后才能接受。
+
+CDS 生成阶段还可附加 motif 统计：
+
+```powershell
+python main.py protein-to-cds -i demo01.json --forbidden-motif GAATTC --forbidden-motif GGATCC
+```
+
+这个参数只统计，实际位点消除使用 `optimize --enzyme`。
+重新生成 CDS 会覆盖 optimized，已有编辑需要重新执行。

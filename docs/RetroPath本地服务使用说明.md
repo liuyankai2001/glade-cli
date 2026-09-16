@@ -14,7 +14,9 @@
 | RetroRules | rr02-rp2-hs |
 | RR02 retro SHA-256 | e24eb97d3172195d03abed6e7da07a4cfd53965553853d126aaa8a93b4bc552f |
 
-服务只监听 `127.0.0.1:8765`，不会暴露到局域网。GLADE 暂未在 P0 阶段调用该接口。
+服务只监听 `127.0.0.1:8765`，不会暴露到局域网。GLADE 的 `gap --retropath`
+会自动准备输入并调用服务。常规搜索见 [用户使用说明](GLADE用户使用说明.md#33-使用-retropath)，
+第 4 节用于单独调试服务接口。
 
 上游 3.9.1 conda 包中的 Python 元数据会误报为 3.9.0；健康检查以
 conda 安装清单确认实际版本，并额外返回 `wrapper_reported_version` 保留该差异。
