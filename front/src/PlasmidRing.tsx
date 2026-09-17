@@ -16,6 +16,8 @@ import {
 } from "./componentOrder";
 import { palette } from "./palette";
 import { segmentName } from "./display";
+import { buildAnnotationModel } from "./annotationLayout";
+import { AnnotationDetails, ExpressionAnnotations } from "./ExpressionAnnotations";
 
 type Segment = {
   id: string;
@@ -148,9 +150,7 @@ export function PlasmidRing({
   }, []);
   const angle = (bp: number) =>
     -Math.PI / 2 + ((Math.max(1, bp) - 1) / Math.max(1, length)) * Math.PI * 2;
-  const genes = features.filter(
-    (feature) => feature.type === "CDS" || feature.kind === "gene",
-  );
+  const annotationModel = buildAnnotationModel(features, outer as Preview["segments"], length);
   const sites = features.filter((feature) => feature.kind === "restriction");
   const blocks = componentBlocks({ segments: outer as Preview["segments"] });
   const dragging = !!drag;
@@ -557,26 +557,7 @@ export function PlasmidRing({
                 </g>
               );
             })()}
-          {annotations &&
-            genes.map((feature, index) => {
-              const a = angle(
-                feature.strand < 0 ? feature.start_bp : feature.end_bp + 1,
-              );
-              return (
-                <g key={`feature-${index}`}>
-                  {draw({ ...feature, id: `feature-${index}` }, 103, 12, false)}
-                  {feature.strand !== 0 && (
-                    <polygon
-                      data-testid="strand-arrow"
-                      data-strand={feature.strand}
-                      points="-4,-4 4,0 -4,4"
-                      fill="#e7edf6"
-                      transform={`translate(${220 + 103 * Math.cos(a)} ${220 + 103 * Math.sin(a)}) rotate(${(a * 180) / Math.PI + (feature.strand > 0 ? 90 : -90)})`}
-                    />
-                  )}
-                </g>
-              );
-            })}
+          {annotations && <ExpressionAnnotations model={annotationModel} length={length} reserved={occupied} />}
           {sites.map((site, index) => {
             const a = angle(site.start_bp);
             return (
@@ -663,20 +644,7 @@ export function PlasmidRing({
           基因注释
         </button>
       </div>
-      {annotations && (
-        <details className="annotation-details">
-          <summary>注释详情 · {features.length} 项</summary>
-          <ul className="feature-legend">
-            {features.map((feature, index) => (
-              <li key={index}>
-                <i style={{ background: palette[feature.kind] || "#77839a" }} />{" "}
-                {feature.label} · {feature.start_bp}–{feature.end_bp} bp{" "}
-                {feature.strand === 1 ? "→" : feature.strand === -1 ? "←" : ""}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      {annotations && <AnnotationDetails model={annotationModel} features={features} />}
     </div>
   );
 }

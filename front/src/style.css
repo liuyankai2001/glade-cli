@@ -565,6 +565,79 @@ summary span {
 .annotation-details > summary {
   text-align: center;
 }
+.annotation-key {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: #8b949e;
+  font-size: 10px;
+}
+.annotation-key span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.annotation-scroll {
+  max-height: 145px;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+.annotation-scroll h3 {
+  margin-top: 8px;
+  color: #c9d1d9;
+  font-size: 11px;
+}
+.annotation-scroll small {
+  display: block;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.annotation-scroll .feature-legend {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+}
+.annotation-original-name {
+  margin: 2px 0 0 13px;
+  color: #8b949e;
+}
+.annotation-item {
+  cursor: help;
+}
+.ring .annotation-symbol {
+  font-size: 8px;
+  font-weight: 700;
+  pointer-events: auto;
+}
+.ring .annotation-gene-name {
+  fill: #0d1117;
+  font-size: 9px;
+  font-weight: 600;
+  pointer-events: auto;
+  cursor: help;
+}
+.ring .cassette-name {
+  fill: #c9d1d9;
+  font-size: 8px;
+  paint-order: stroke;
+  stroke: #0d1117;
+  stroke-width: 2px;
+  pointer-events: auto;
+}
+.cassette-band {
+  opacity: 0.65;
+}
+.ring .annotation-leader-name {
+  fill: #63d6d0;
+  font-size: 10px;
+  paint-order: stroke;
+  stroke: #0d1117;
+  stroke-width: 3px;
+  pointer-events: auto;
+  cursor: help;
+}
 .feature-legend {
   max-height: 115px;
   margin: 8px 0 0;

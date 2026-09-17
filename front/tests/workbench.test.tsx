@@ -558,7 +558,7 @@ describe("Workbench", () => {
     expect(
       container.querySelector("[data-testid=full-segment]"),
     ).toHaveAttribute("r", "138");
-    expect(container.querySelectorAll("path")).toHaveLength(2);
+    expect(container.querySelectorAll("path[data-start-bp]")).toHaveLength(2);
     expect(
       container.querySelector("[data-testid=strand-arrow]"),
     ).toHaveAttribute("data-strand", "1");
