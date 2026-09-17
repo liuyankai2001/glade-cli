@@ -95,6 +95,24 @@ it("adds three independent gaps, removes only the middle instance, and previews 
   )).toBe(true));
 });
 
+it("inspects a ring module without changing the saved assembly or requesting another preview", async () => {
+  const fetcher = install();
+  const { container } = render(<Workbench />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择 amp" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择 ori" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled());
+  const before = localStorage.getItem("plasmid:gap-demo");
+  const previewCount = fetcher.mock.calls.filter(([url]) => url === "/api/preview").length;
+  const module = container.querySelector('[data-ring-component="resistance"]')!;
+  fireEvent.click(module);
+  expect(module).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByTestId("module-direction")).toBeInTheDocument();
+  expect(localStorage.getItem("plasmid:gap-demo")).toBe(before);
+  expect(fetcher.mock.calls.filter(([url]) => url === "/api/preview")).toHaveLength(previewCount);
+  expect(fetcher.mock.calls.filter(([url]) => url === "/api/generate")).toHaveLength(0);
+  expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled();
+});
+
 it("keeps v2 gapless selections gapless and expands legacy owners with deterministic collision-safe IDs", () => {
   const v2 = restoreComponents({ assembly_schema_version: 2, components: [
     { instance_id: "replication", component_type: "replication", module_id: "ori" },

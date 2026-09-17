@@ -517,6 +517,41 @@ summary span {
 .component-row.sorting {
   cursor: grabbing;
 }
+.ring-component:focus-visible {
+  outline: none;
+}
+.ring-component:focus-visible > path,
+.ring-component:focus-visible > circle {
+  stroke: #58a6ff;
+}
+.ring-component:focus-visible > path {
+  stroke-width: 3;
+}
+.ring .ring-prime-label {
+  font-size: 14px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #0d1117;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.ring-direction-hint {
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  padding-top: 4px;
+  pointer-events: none;
+}
+.gap-leader,
+.terminator-leader {
+  cursor: grab;
+}
+.ring .gap-callout,
+.ring .terminator-callout {
+  pointer-events: auto;
+  user-select: none;
+}
 .component-row {
   position: relative;
 }

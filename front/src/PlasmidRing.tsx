@@ -40,6 +40,17 @@ function arc(radius: number, start: number, end: number, width: number) {
   return `M ${x1} ${y1} A ${radius + width / 2} ${radius + width / 2} 0 ${large} 1 ${x2} ${y2} L ${x3} ${y3} A ${radius - width / 2} ${radius - width / 2} 0 ${large} 0 ${x4} ${y4} Z`;
 }
 
+function selectable(part: Segment) {
+  return !!segmentComponent(part) && !["restriction", "linker"].includes(part.kind);
+}
+
+function selectionKey(part: Segment) {
+  // Provisional expression geometry uses the construct ID; validated geometry
+  // uses "expression". Both describe the same selected expression instance.
+  const id = segmentComponent(part) === "expression" ? "expression" : part.id;
+  return JSON.stringify([segmentInstance(part), id]);
+}
+
 export function PlasmidRing({
   preview,
   construct,
@@ -54,6 +65,8 @@ export function PlasmidRing({
 }) {
   const [view, setView] = useState({ zoom: 1, rotate: 0 });
   const [annotations, setAnnotations] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const skipClick = useRef(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{
     type: string;
@@ -79,6 +92,30 @@ export function PlasmidRing({
         ]
       : []);
   const features = preview?.features || construct?.features || [];
+  const focused = outer.find(
+    (part) => selectable(part) && selectionKey(part) === selected,
+  );
+  const sourceFingerprint = useRef(preview?.source_fingerprint);
+  useEffect(() => {
+    if (selected && !focused) setSelected(null);
+  }, [selected, !!focused]);
+  useEffect(() => {
+    const next = preview?.source_fingerprint;
+    // A provisional geometry has no fingerprint; arriving validation should not
+    // discard its selection. A changed verified source does invalidate it.
+    if (next && sourceFingerprint.current && next !== sourceFingerprint.current) {
+      setSelected(null);
+    }
+    if (next) sourceFingerprint.current = next;
+  }, [preview?.source_fingerprint]);
+  useEffect(() => setSelected(null), [construct?.sequence_sha256]);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, []);
   const angle = (bp: number) =>
     -Math.PI / 2 + ((Math.max(1, bp) - 1) / Math.max(1, length)) * Math.PI * 2;
   const genes = features.filter(
@@ -105,6 +142,7 @@ export function PlasmidRing({
     // Polling may deliver new objects with identical coordinates. Cancel only
     // when the geometry/source/view actually changes during a gesture.
     if (dragRef.current) {
+      skipClick.current = true;
       dragRef.current = null;
       setDrag(null);
     }
@@ -112,8 +150,24 @@ export function PlasmidRing({
   useEffect(() => {
     if (!dragging) return;
     const position = (event: MouseEvent) => {
+      const current = dragRef.current;
+      if (!current) return;
+      const moved =
+        current.moved ||
+        Math.hypot(
+          event.clientX - origin.current.x,
+          event.clientY - origin.current.y,
+        ) > 4;
+      if (moved) {
+        skipClick.current = true;
+        setSelected(null);
+      }
       const box = svgRef.current?.getBoundingClientRect();
-      if (!box || !box.width || !box.height || !dragRef.current) return;
+      if (!box || !box.width || !box.height) {
+        dragRef.current = { ...current, moved };
+        setDrag(dragRef.current);
+        return;
+      }
       // SVG defaults to xMidYMid meet; undo letterboxing and the centered view transform.
       const scale = Math.min(box.width, box.height) / 440;
       const x =
@@ -128,31 +182,27 @@ export function PlasmidRing({
         (Math.PI * 2);
       const bp = fraction * length + 1;
       const remaining = blocks.filter(
-        (block) => block.type !== dragRef.current!.type,
+        (block) => block.type !== current.type,
       );
       const insertion = remaining.filter(
         (block) => (block.start_bp + block.end_bp) / 2 < bp,
       ).length;
       const marker = remaining[insertion]?.start_bp || length + 1;
-      const moved =
-        dragRef.current.moved ||
-        Math.hypot(
-          event.clientX - origin.current.x,
-          event.clientY - origin.current.y,
-        ) > 4;
-      const next = { ...dragRef.current, angle: a, insertion, marker, moved };
+      const next = { ...current, angle: a, insertion, marker, moved };
       dragRef.current = next;
       setDrag(next);
     };
     const cancel = () => {
+      if (dragRef.current) skipClick.current = true;
       dragRef.current = null;
       setDrag(null);
     };
     const release = (event: MouseEvent) => {
       position(event);
       const current = dragRef.current;
-      cancel();
-      if (current?.moved) {
+      dragRef.current = null;
+      setDrag(null);
+      if (current?.moved && onReorder) {
         const remaining = blocks.filter((block) => block.type !== current.type);
         // Hidden unselected groups retain their relative order; insert adjacent to
         // the visible group at the chosen boundary.
@@ -183,11 +233,13 @@ export function PlasmidRing({
   }, [dragging]);
   const startDrag = (event: ReactMouseEvent, part: Segment) => {
     const type = segmentInstance(part);
-    if (event.button !== 0 || !type || !onReorder) return;
+    if (event.button !== 0 || !type) return;
+    const block = blocks.find((block) => block.type === type);
+    if (!block) return;
     event.preventDefault();
     event.stopPropagation();
+    skipClick.current = false;
     origin.current = { x: event.clientX, y: event.clientY };
-    const block = blocks.find((block) => block.type === type)!;
     const next = {
       type,
       angle: angle(block.start_bp),
@@ -197,6 +249,21 @@ export function PlasmidRing({
     };
     dragRef.current = next;
     setDrag(next);
+  };
+
+  const toggleSelection = (part: Segment) => {
+    if (!selectable(part)) return;
+    const key = selectionKey(part);
+    setSelected((current) => (current === key ? null : key));
+  };
+  const clickModule = (event: ReactMouseEvent, part: Segment) => {
+    event.stopPropagation();
+    if (event.button !== 0) return;
+    if (skipClick.current) {
+      skipClick.current = false;
+      return;
+    }
+    toggleSelection(part);
   };
 
   // Keep short independent components named even with gene annotations hidden.
@@ -221,7 +288,32 @@ export function PlasmidRing({
     x: 220 + 187 * Math.cos(angle(site.start_bp)),
     y: 220 + 187 * Math.sin(angle(site.start_bp)),
   }));
-  callouts.forEach((callout) => {
+  // Also reserve the names on long modules, not just short-module callouts.
+  outer
+    .filter(
+      (part) => selectable(part) &&
+        !["t0", "t1"].includes(segmentComponent(part) || "") &&
+        ((part.end_bp - part.start_bp + 1) / Math.max(1, length)) * 360 > 22,
+    )
+    .forEach((part) => {
+      const a = (angle(part.start_bp) + angle(part.end_bp + 1)) / 2;
+      occupied.push({ x: 220 + 176 * Math.cos(a), y: 220 + 176 * Math.sin(a) });
+    });
+  const directions = focused
+    ? [
+        { end: "5", label: "5′", bp: focused.start_bp, a: angle(focused.start_bp), color: "#58a6ff" },
+        { end: "3", label: "3′", bp: focused.end_bp, a: angle(focused.end_bp + 1), color: "#f2cc60" },
+      ].map((end) => {
+        const side = Math.cos(end.a) >= 0 ? 1 : -1;
+        return {
+          ...end,
+          side,
+          x: side > 0 ? 412 : 28,
+          y: Math.max(44, Math.min(396, 220 + 176 * Math.sin(end.a))),
+        };
+      })
+    : [];
+  const placeLabel = (callout: { x: number; y: number }) => {
     const free = (y: number) =>
       occupied.every(
         (label) =>
@@ -234,8 +326,16 @@ export function PlasmidRing({
     callout.y =
       candidates.find((y) => y >= 44 && y <= 396 && free(y)) ?? callout.y;
     occupied.push({ x: callout.x, y: callout.y });
-  });
+  };
+  // Give the two ends priority so even a very short gap has distinct labels.
+  directions.forEach(placeLabel);
+  callouts.forEach(placeLabel);
   const draw = (part: Segment, radius: number, width: number, label = true) => {
+    const outerModule = radius === 138;
+    const canSelect = outerModule && selectable(part);
+    const active = canSelect && selectionKey(part) === selected;
+    const drawnRadius = active ? 142 : radius;
+    const drawnWidth = active ? 34 : width;
     const start = angle(part.start_bp),
       end = angle(part.end_bp + 1);
     const independentTerminator = ["t0", "t1"].includes(
@@ -257,8 +357,30 @@ export function PlasmidRing({
           radius === 138 ? segmentInstance(part) || undefined : undefined
         }
         className={
-          radius === 138 && onReorder && segmentComponent(part)
-            ? "ring-component"
+          outerModule && (canSelect || (onReorder && segmentComponent(part)))
+            ? `ring-component${active ? " ring-component-selected" : ""}`
+            : undefined
+        }
+        role={canSelect ? "button" : undefined}
+        tabIndex={canSelect ? 0 : undefined}
+        aria-label={
+          canSelect
+            ? `${segmentName(part)} · ${part.start_bp}–${part.end_bp} bp · 参考链方向`
+            : undefined
+        }
+        aria-pressed={canSelect ? active : undefined}
+        onClick={outerModule ? (event) => clickModule(event, part) : undefined}
+        onKeyDown={
+          canSelect
+            ? (event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) {
+                  skipClick.current = false;
+                  toggleSelection(part);
+                }
+              }
             : undefined
         }
         onMouseDown={
@@ -270,23 +392,23 @@ export function PlasmidRing({
             data-testid="full-segment"
             cx="220"
             cy="220"
-            r={radius}
+            r={drawnRadius}
             fill="none"
             stroke={palette[part.kind] || "#77839a"}
-            strokeWidth={width}
+            strokeWidth={drawnWidth}
           />
         ) : (
           <path
             data-start-bp={part.start_bp}
             data-end-bp={part.end_bp}
             d={arc(
-              radius,
+              drawnRadius,
               start,
               independentTerminator ? Math.max(end, start + 0.015) : end,
-              width,
+              drawnWidth,
             )}
             fill={palette[part.kind] || "#77839a"}
-            stroke="#0d1117"
+            stroke={active ? "#e6edf3" : "#0d1117"}
             strokeWidth={independentTerminator ? "0.4" : "1.5"}
           />
         )}
@@ -314,6 +436,15 @@ export function PlasmidRing({
         viewBox="0 0 440 440"
         aria-label="质粒环图"
         role="img"
+        onMouseDown={(event) => {
+          // A cancelled gesture may end outside the SVG without a click.
+          // A new background press starts a fresh, intentional click.
+          if (event.button === 0) skipClick.current = false;
+        }}
+        onClick={() => {
+          if (skipClick.current) skipClick.current = false;
+          else setSelected(null);
+        }}
       >
         <g
           transform={`rotate(${view.rotate} 220 220) scale(${view.zoom}) translate(${220 / view.zoom - 220} ${220 / view.zoom - 220})`}
@@ -336,6 +467,7 @@ export function PlasmidRing({
                   : "terminator-leader"
               }
               onMouseDown={(event) => startDrag(event, part)}
+              onClick={(event) => clickModule(event, part)}
             >
               <path
                 d={`M ${220 + 153 * Math.cos(a)} ${220 + 153 * Math.sin(a)} L ${x - side * 40} ${y - 4} L ${x - side * 4} ${y - 4}`}
@@ -361,7 +493,7 @@ export function PlasmidRing({
               </text>
             </g>
           ))}
-          {drag?.moved &&
+          {drag?.moved && onReorder &&
             (() => {
               const block = blocks.find((block) => block.type === drag.type)!;
               const kind = segmentComponent(
@@ -440,6 +572,37 @@ export function PlasmidRing({
               </g>
             );
           })}
+          {focused && (
+            <g
+              className="ring-direction-overlay"
+              data-testid="module-direction"
+              data-instance={segmentInstance(focused)}
+              pointerEvents="none"
+              aria-hidden="true"
+            >
+              {directions.map(({ end, label, bp, a, color, side, x, y }) => (
+                <g key={end} data-testid={`module-${end}-prime`} data-bp={bp}>
+                  <circle cx={220 + 159 * Math.cos(a)} cy={220 + 159 * Math.sin(a)} r="3" fill={color} />
+                  <path
+                    d={`M ${220 + 159 * Math.cos(a)} ${220 + 159 * Math.sin(a)} L ${x - side * 40} ${y - 4} L ${x - side * 4} ${y - 4}`}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="1.5"
+                  />
+                  <text
+                    data-testid={`module-${end}-prime-label`}
+                    className="ring-prime-label"
+                    x={x}
+                    y={y - 8}
+                    textAnchor={side > 0 ? "end" : "start"}
+                    style={{ fill: color }}
+                  >
+                    {label}
+                  </text>
+                </g>
+              ))}
+            </g>
+          )}
         </g>
         <circle cx="220" cy="220" r="78" fill="#0d1117" />
         <text x="220" y="214" textAnchor="middle" className="ring-number">
@@ -449,6 +612,12 @@ export function PlasmidRing({
           bp
         </text>
       </svg>
+      {focused && (
+        <p className="ring-direction-hint" role="status">
+          <span>{segmentName(focused)} · </span>
+          <span>参考链方向 · 5′ → 3′</span>
+        </p>
+      )}
       <div className="ring-controls">
         <button
           aria-label="缩小环图"

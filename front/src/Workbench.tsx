@@ -813,6 +813,7 @@ export function Workbench() {
             </div>
           </div>
           <PlasmidRing
+            key={context?.project.target || "no-project"}
             preview={ringPreview}
             construct={context?.construct || null}
             enzymes={context?.restriction_enzymes || []}
