@@ -107,7 +107,13 @@ class LocalApiTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200)
         self.assertEqual(
             preview.json()["component_order"],
-            ["t1", "expression", "t0", "replication", "resistance"],
+            [
+                "expression",
+                "replication",
+                "legacy-gap-1-replication",
+                "resistance",
+                "legacy-gap-2-resistance",
+            ],
         )
         self.assertEqual(preview.json()["segments"][0]["kind"], "restriction")
         before = self.config.manifest_output_path.read_bytes()
@@ -131,6 +137,7 @@ class LocalApiTests(unittest.TestCase):
         return {
             "expected_revision": project["manifest_revision"],
             "source_fingerprint": project["source_fingerprint"],
+            "assembly_schema_version": 2,
             "components": [
                 {
                     "instance_id": "t1-a",

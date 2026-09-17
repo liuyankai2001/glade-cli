@@ -35,6 +35,7 @@ from src.web_api.jobs import JobManager
 
 class DesignRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    assembly_schema_version: StrictInt = Field(default=1, ge=1, le=2)
     resistance_id: str | None = Field(default=None, min_length=1, max_length=120)
     replication_id: str | None = Field(default=None, min_length=1, max_length=120)
     t0_id: str | None = Field(default=None, min_length=1, max_length=120)

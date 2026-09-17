@@ -129,14 +129,10 @@ class MolecularDesignTests(unittest.TestCase):
         ]
         insert = expression_record()
         blocks = {
-            "amp-a": self.catalog.get_resistance("basic_seva_ap").sequence
-            + self.catalog.scaffold["resistance_to_replication"],
-            "amp-b": self.catalog.get_resistance("basic_seva_ap").sequence
-            + self.catalog.scaffold["resistance_to_replication"],
-            "kan": self.catalog.get_resistance("basic_seva_km").sequence
-            + self.catalog.scaffold["resistance_to_replication"],
-            "ori": self.catalog.get_replication("basic_seva_p15a").sequence
-            + self.catalog.scaffold["replication_to_t1"],
+            "amp-a": self.catalog.get_resistance("basic_seva_ap").sequence,
+            "amp-b": self.catalog.get_resistance("basic_seva_ap").sequence,
+            "kan": self.catalog.get_resistance("basic_seva_km").sequence,
+            "ori": self.catalog.get_replication("basic_seva_p15a").sequence,
             "source": "GAATTC" + str(insert.seq) + "AAGCTT",
             "t0-a": self.catalog.get_terminator("basic_seva_t0").sequence,
             "t0-b": self.catalog.get_terminator("basic_seva_t0").sequence,
@@ -147,7 +143,11 @@ class MolecularDesignTests(unittest.TestCase):
             ordered = components[rotation:] + components[:rotation]
             with self.subTest(rotation=rotation):
                 design = self.m.build_design(
-                    self.catalog, insert, ["EcoRI", "HindIII"], components=ordered
+                    self.catalog,
+                    insert,
+                    ["EcoRI", "HindIII"],
+                    components=ordered,
+                    assembly_schema_version=2,
                 )
                 self.assertTrue(design.preview["valid"], design.preview["issues"])
                 self.assertEqual(design.preview["terminator_warnings"], [])
@@ -300,7 +300,18 @@ class MolecularDesignTests(unittest.TestCase):
                 self.assertEqual(
                     str(design.final_record.seq), "".join(blocks[k] for k in order)
                 )
-                self.assertEqual(design.preview["component_order"], list(order))
+                self.assertEqual(
+                    design.preview["component_order"],
+                    [
+                        piece
+                        for i, kind in enumerate(order)
+                        for piece in (
+                            [kind, f"legacy-gap-{i}-{kind}"]
+                            if kind in ("resistance", "replication")
+                            else [kind]
+                        )
+                    ],
+                )
                 self.assertEqual(
                     [
                         s["component_type"]
@@ -384,6 +395,20 @@ class MolecularDesignTests(unittest.TestCase):
                 "landing_pad_spacer": "CCCC",
             },
         )
+        intervals = {
+            "native-res": Module(
+                "native-res",
+                "res gap",
+                "gap",
+                "CCCC",
+                aliases=("resistance_to_replication",),
+            ),
+            "native-rep": Module(
+                "native-rep", "rep gap", "gap", "GAA", aliases=("replication_to_t1",)
+            ),
+        }
+        catalog.gap = intervals
+        catalog.get_gap = intervals.__getitem__
         before = self.m.build_design(
             catalog, expression_record(), ["EcoRI", "HindIII"], "res", "rep", 1
         )

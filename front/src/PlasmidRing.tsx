@@ -199,10 +199,12 @@ export function PlasmidRing({
     setDrag(next);
   };
 
-  // Keep short independent terminators named even with gene annotations hidden.
+  // Keep short independent components named even with gene annotations hidden.
   // Place leaders in side columns and keep their labels away from enzyme labels.
   const callouts = outer
-    .filter((part) => ["t0", "t1"].includes(segmentComponent(part) || ""))
+    .filter((part) =>
+      ["t0", "t1", "gap"].includes(segmentComponent(part) || ""),
+    )
     .map((part) => {
       const a = (angle(part.start_bp) + angle(part.end_bp + 1)) / 2;
       const side = Math.cos(a) >= 0 ? 1 : -1;
@@ -328,17 +330,29 @@ export function PlasmidRing({
           {callouts.map(({ part, a, side, x, y }) => (
             <g
               key={`callout-${part.instance_id || part.id}`}
-              className="terminator-leader"
+              className={
+                segmentComponent(part) === "gap"
+                  ? "gap-leader"
+                  : "terminator-leader"
+              }
               onMouseDown={(event) => startDrag(event, part)}
             >
               <path
                 d={`M ${220 + 153 * Math.cos(a)} ${220 + 153 * Math.sin(a)} L ${x - side * 40} ${y - 4} L ${x - side * 4} ${y - 4}`}
                 fill="none"
-                stroke={palette.terminator}
+                stroke={palette[segmentComponent(part) || part.kind] || "#77839a"}
                 strokeWidth="1"
               />
               <text
-                className="terminator-callout"
+                className={
+                  segmentComponent(part) === "gap"
+                    ? "gap-callout"
+                    : "terminator-callout"
+                }
+                style={{
+                  fill:
+                    palette[segmentComponent(part) || part.kind] || "#77839a",
+                }}
                 x={x}
                 y={y - 8}
                 textAnchor={side > 0 ? "end" : "start"}
@@ -375,8 +389,10 @@ export function PlasmidRing({
                     y1={220 + 116 * Math.sin(markerAngle)}
                     x2={220 + 178 * Math.cos(markerAngle)}
                     y2={220 + 178 * Math.sin(markerAngle)}
-                    stroke="#f0f6fc"
-                    strokeWidth="4"
+                    style={{
+                      stroke: palette[kind || ""] || "#77839a",
+                      strokeWidth: 4,
+                    }}
                   />
                 </g>
               );

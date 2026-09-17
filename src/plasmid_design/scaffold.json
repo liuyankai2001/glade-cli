@@ -1,8 +1,11 @@
 {
-  "_schema_version": 2,
-  "resistance_to_replication": "GACCCTTGTCGGCTCGGCCCACTTGTGTGTCTCGTACAATTCTGAGGTCCACACAGATAGTGTCCGTAGGCCGGCC",
-  "replication_to_t1": "GGCGCGCCCAGCTG",
-  "landing_pad_spacer": "CTCGGCCCACTTGTGTGTCTCGTA",
+  "_schema_version": 3,
+  "version": "basic_seva_gap_references.v2",
+  "gap_ids": {
+    "resistance_to_replication": "gap_30911c7c81b6e843ccbb269bc95ab86938e861f689fe410a5d93462f4c8ca846",
+    "replication_to_t1": "gap_227ef72aca86669d35fc73e9dbf1fe38ab43c775303c925b3b9f0724c2ef5dfc",
+    "landing_pad_spacer": "gap_0774044bcbf147babae8d74d0b23e220a5adba6a11dfc2e94003158ce07bee39"
+  },
   "provenance": {
     "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
     "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",

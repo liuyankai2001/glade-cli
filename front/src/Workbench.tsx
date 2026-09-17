@@ -42,7 +42,11 @@ const slotTitle = (type: ModuleRole) =>
     ? "抗性标记"
     : type === "replication"
       ? "复制起始位点"
-      : type.toUpperCase();
+      : type === "gap"
+        ? "间隔区段"
+        : type.toUpperCase();
+const evidenceLabel = (status?: string) =>
+  status === "source_sequence_verified" ? "来源序列已核对" : status;
 function IssueList({ issues }: { issues: Issue[] }) {
   return (
     <>
@@ -60,7 +64,8 @@ export function Workbench() {
     resistance: Module[];
     replication: Module[];
     terminator: Module[];
-  }>({ resistance: [], replication: [], terminator: [] });
+    gap: Module[];
+  }>({ resistance: [], replication: [], terminator: [], gap: [] });
   const [context, setContext] = useState<Context | null>(null);
   const [chosen, setChosen] = useState<ComponentInstance[]>(initialComponents);
   const componentOrder = useMemo(
@@ -164,7 +169,8 @@ export function Workbench() {
         api<{
           resistance: Module[];
           replication: Module[];
-          terminator?: Module[];
+          terminator: Module[];
+          gap: Module[];
         }>("/api/modules"),
         api<Context>("/api/context"),
       ]);
@@ -177,7 +183,11 @@ export function Workbench() {
           nextContext.project.manifest_revision ||
         previous.project.source_fingerprint !==
           nextContext.project.source_fingerprint;
-      setLibrary({ ...modules, terminator: modules.terminator || [] });
+      setLibrary({
+        ...modules,
+        terminator: modules.terminator || [],
+        gap: modules.gap || [],
+      });
       if (changed) {
         setConfirmWarnings(null);
         requestVersion.current += 1;
@@ -202,6 +212,7 @@ export function Workbench() {
           restoreComponents(saved || nextContext.selection, {
             ...modules,
             terminator: modules.terminator || [],
+            gap: modules.gap || [],
           }),
         );
         setJob(nextContext.active_job);
@@ -250,7 +261,7 @@ export function Workbench() {
       try {
         localStorage.setItem(
           `plasmid:${context.project.target}`,
-          JSON.stringify({ components: chosen }),
+          JSON.stringify({ assembly_schema_version: 2, components: chosen }),
         );
       } catch {
         /* Optional persistence. */
@@ -276,6 +287,7 @@ export function Workbench() {
       method: "POST",
       body: JSON.stringify({
         components: chosen,
+        assembly_schema_version: 2,
         expected_revision: revision,
         source_fingerprint: fingerprint,
       }),
@@ -349,6 +361,7 @@ export function Workbench() {
         method: "POST",
         body: JSON.stringify({
           components: chosen,
+          assembly_schema_version: 2,
           expected_revision: revision,
           source_fingerprint: fingerprint,
         }),
@@ -391,7 +404,7 @@ export function Workbench() {
     possibleResult &&
     context?.ready &&
     sameComponents(
-      possibleResult.components || restoreComponents(possibleResult, library),
+      restoreComponents(possibleResult, library),
       chosen,
     ) &&
     possibleResult.source_fingerprint === context.project.source_fingerprint
@@ -399,7 +412,7 @@ export function Workbench() {
       : null;
   const items = (type: Module["type"]) =>
     library[type].filter((item) =>
-      `${item.name} ${item.antibiotic || ""} ${item.host_range || ""}`
+      `${item.name} ${item.antibiotic || ""} ${item.host_range || ""} ${item.purpose || ""} ${item.evidence_status || ""} ${(item.aliases || []).join(" ")} ${(item.notes || []).join(" ")}`
         .toLowerCase()
         .includes(filter.toLowerCase()),
     );
@@ -439,7 +452,12 @@ export function Workbench() {
       ? type === "t0" || type === "t1"
         ? library.terminator.filter((item) => item.role === type)
         : library[type]
-      : [...library.resistance, ...library.replication, ...library.terminator];
+      : [
+          ...library.resistance,
+          ...library.replication,
+          ...library.terminator,
+          ...library.gap,
+        ];
     const item = candidates.find((candidate) => candidate.id === id);
     endDrag();
     if (item) choose(item);
@@ -667,7 +685,7 @@ export function Workbench() {
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
-          {(["replication", "resistance", "terminator"] as const).map(
+           {(["replication", "resistance", "terminator", "gap"] as const).map(
             (type) => (
               <section className="category" key={type}>
                 <button
@@ -686,7 +704,9 @@ export function Workbench() {
                       ? "抗性模块"
                       : type === "replication"
                         ? "复制模块（ori）"
-                        : "终止子"}
+                         : type === "gap"
+                           ? "间隔区段"
+                           : "终止子"}
                   </span>
                   <span>{collapsed[type] ? "›" : "⌄"}</span>
                 </button>
@@ -806,8 +826,9 @@ export function Workbench() {
             {[
               ["replication", "复制模块"],
               ["resistance", "抗性模块"],
-              ["expression", "表达构建"],
-              ["terminator", "T0 / T1"],
+               ["expression", "表达构建"],
+               ["terminator", "T0 / T1"],
+               ["gap", "间隔区段"],
             ].map(([kind, label]) => (
               <span key={kind}>
                 <i style={{ background: palette[kind] }} />
@@ -944,10 +965,17 @@ export function Workbench() {
                 <section className="module-detail" key={instanceId}>
                   <b>{moduleName(item!)}</b>
                   <p>{item!.name}</p>
-                  <p>
-                    {item!.antibiotic || item!.host_range} ·{" "}
-                    {item!.resistance_gene || item!.copy_number}
-                  </p>
+                  {(item!.purpose || item!.evidence_status) && (
+                    <p>
+                      {item!.purpose} · {evidenceLabel(item!.evidence_status)}
+                    </p>
+                  )}
+                  {(item!.antibiotic || item!.host_range || item!.resistance_gene || item!.copy_number) && (
+                    <p>
+                      {item!.antibiotic || item!.host_range} ·{" "}
+                      {item!.resistance_gene || item!.copy_number}
+                    </p>
+                  )}
                   <p>
                     {item!.length_bp.toLocaleString()} bp · GC{" "}
                     {item!.gc_percent.toFixed(2)}%

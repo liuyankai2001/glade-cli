@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "_sources": {
     "collection": {
       "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
@@ -10,17 +10,27 @@
       "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_66-11_%26_69-11.gb",
       "source_sha256": "6d5e5b1cafbc688a0f4fa3cf2a9eb16482bf39b89afd9970022ae11e4dade90f",
       "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e"
+    },
+    "standard_linkers": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b"
+    },
+    "pkd46_core": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/sequences/genbank_files/BASIC_SEVA_collection/misc_seqs/BS_x7x_pKD46_core_seq.gb",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "8e613d39260e50f1da498882678a1ed53f08ad4d4aaec6ba0a460a3651fcc707"
     }
   },
   "basic_seva_ap": {
-    "sha256": "508ab58b2c8b5252d93d06f7164734806c8caedefb438eaeeb8277615bedce93",
+    "sha256": "ab14bcddcec1db800438d7ff11882f3a970a286db2ef0e2e9d5b09284b5cefa2",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 26,
-            "end": 1065,
+            "start": 0,
+            "end": 1039,
             "strand": 1
           }
         ],
@@ -50,17 +60,65 @@
       "source_record": "BASIC_SEVA_15a.10",
       "start_1based": 167,
       "end_1based": 1231
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTAAATTAGTAGCCCGCCTAATGAGCGGGCTTTTTTTTAATTCCCCTATTTGTTTATTTTTCTAAATACATTCAAATATGTATCCGCTCATGAGACAATAACCCTGATAAATGCTTCAATAATATTGAAAAAGGAAGAGTATGAGCATTCAGCATTTTCGTGTGGCGCTGATTCCGTTTTTTGCGGCGTTTTGCCTGCCGGTGTTTGCGCATCCGGAAACCCTGGTGAAAGTGAAAGATGCGGAAGATCAACTGGGTGCGCGCGTGGGCTATATTGAACTGGATCTGAACAGCGGCAAAATTCTGGAATCTTTTCGTCCGGAAGAACGTTTTCCGATGATGAGCACCTTTAAAGTGCTGCTGTGCGGTGCGGTTCTGAGCCGTGTGGATGCGGGCCAGGAACAACTGGGCCGTCGTATTCATTATAGCCAGAACGATCTGGTGGAATATAGCCCGGTGACCGAAAAACATCTGACCGATGGCATGACCGTGCGTGAACTGTGCAGCGCGGCGATTACCATGAGCGATAACACCGCGGCGAACCTGCTGCTGACGACCATTGGCGGTCCGAAAGAACTGACCGCGTTTCTGCATAACATGGGCGATCATGTGACCCGTCTGGATCGTTGGGAACCGGAACTGAACGAAGCGATTCCGAACGATGAACGTGATACCACCATGCCGGCAGCAATGGCGACCACCCTGCGTAAACTGCTGACGGGTGAGCTGCTGACCCTGGCAAGCCGCCAGCAACTGATTGATTGGATGGAAGCGGATAAAGTGGCGGGTCCGCTGCTGCGTAGCGCGCTGCCGGCTGGCTGGTTTATTGCGGATAAAAGCGGTGCGGGCGAACGTGGCAGCCGTGGCATTATTGCGGCGCTGGGCCCGGATGGTAAACCGAGCCGTATTGTGGTGATTTATACCACCGGCAGCCAGGCGACGATGGATGAACGTAACCGTCAGATTGCGGAAATTGGCGCGAGCCTGATTAAACATTGGTAAACCGATACAATTAAAGGCTCCTTTTGGAGCCTTTTTTTTTGGAC",
+      "original_sha256": "508ab58b2c8b5252d93d06f7164734806c8caedefb438eaeeb8277615bedce93",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 26,
+              "end": 1065,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Ap"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 26,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 27,
+          "original_end_1based": 1065,
+          "module_start_1based": 1,
+          "module_end_1based": 1039,
+          "source_start_1based": 193,
+          "source_end_1based": 1231
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 27,
+          "end_1based": 1065,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_km": {
-    "sha256": "88af20597c943df693f4ab4beb9cb8eed8812b642f1c169137ab9938d8a2fce8",
+    "sha256": "8eac5e46ff21210298cf843254f0ff98422ecdf598b55ee789a2d26e6f11b65e",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 26,
-            "end": 953,
+            "start": 0,
+            "end": 927,
             "strand": 1
           }
         ],
@@ -90,17 +148,65 @@
       "source_record": "BASIC_SEVA_25a.10",
       "start_1based": 167,
       "end_1based": 1119
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTAAATTTGTGTCTCAAAATCTCTGATGTTACATTGCACAAGATAAAAATATATCATCATGAACAATAAAACTGTCTGCTTACATAAACAGTAATACAAGGGGTGTTATGAGCCATATTCAGCGTGAAACGAGCTGTAGCCGTCCGCGTCTGAACAGCAACATGGATGCGGATCTGTATGGCTATAAATGGGCGCGTGATAACGTGGGTCAGAGCGGCGCGACCATTTATCGTCTGTATGGCAAACCGGATGCGCCGGAACTGTTTCTGAAACATGGCAAAGGCAGCGTGGCGAACGATGTGACCGATGAAATGGTGCGTCTGAACTGGCTGACCGAATTTATGCCGCTGCCGACCATTAAACATTTTATTCGCACCCCGGATGATGCGTGGCTGCTGACCACCGCGATTCCGGGCAAAACCGCGTTTCAGGTGCTGGAAGAATATCCGGATAGCGGCGAAAACATTGTGGATGCGCTGGCCGTGTTTCTGCGTCGTCTGCATAGCATTCCGGTGTGCAACTGCCCGTTTAACAGCGATCGTGTGTTTCGTCTGGCCCAGGCGCAGAGCCGTATGAACAACGGCCTGGTGGATGCGAGCGATTTTGATGATGAACGTAACGGCTGGCCGGTGGAACAGGTGTGGAAAGAAATGCATAAACTGCTGCCGTTTAGCCCGGATAGCGTGGTGACCCACGGCGATTTTAGCCTGGATAACCTGATTTTCGATGAAGGCAAACTGATTGGCTGCATTGATGTGGGCCGTGTGGGCATTGCGGATCGTTATCAGGATCTGGCCATTCTGTGGAACTGCCTGGGCGAATTTAGCCCGAGCCTGCAAAAACGTCTGTTTCAGAAATATGGCATTGATAATCCGGATATGAACAAACTGCAATTTCATCTGATGCTGGATGAATTTTTCTAATAATTAATTG",
+      "original_sha256": "88af20597c943df693f4ab4beb9cb8eed8812b642f1c169137ab9938d8a2fce8",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 26,
+              "end": 953,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Km"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 26,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 27,
+          "original_end_1based": 953,
+          "module_start_1based": 1,
+          "module_end_1based": 927,
+          "source_start_1based": 193,
+          "source_end_1based": 1119
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 27,
+          "end_1based": 953,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_cm": {
-    "sha256": "5fa70394dafd7472b83b1f6928650d20519125a468ad6493203e0534b08ba28e",
+    "sha256": "34afaa3076169e6b4d717fcfa9c697f1efd7a66525002b9aff0044adb87ebc2a",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 26,
-            "end": 809,
+            "start": 0,
+            "end": 783,
             "strand": 1
           }
         ],
@@ -130,17 +236,65 @@
       "source_record": "BASIC_SEVA_35a.10",
       "start_1based": 167,
       "end_1based": 975
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTAAATTGGCGAAAATGAGACGTTGATCGGCACGTAAGAGGTTCCAACTTTCACCATAATGAAATAAGATCACTACCGGGCGTATTTTTTGAGTTATCGAGATTTTCAGGAGCTAAGGAAGCTAAAATGGAGAAAAAAATCACTGGATATACCACCGTTGATATATCCCAATGGCATCGTAAAGAACATTTTGAGGCATTTCAGTCAGTTGCTCAATGTACCTATAACCAGACCGTTCAGCTGGATATTACGGCCTTTTTAAAGACCGTAAAGAAAAATAAGCACAAGTTTTATCCGGCCTTTATTCACATTCTTGCCCGCCTGATGAATGCTCATCCGGAATTTCGTATGGCAATGAAAGACGGTGAGCTGGTGATATGGGATAGTGTTCACCCTTGTTACACCGTTTTCCATGAGCAAACTGAAACGTTTTCATCGCTCTGGAGTGAATACCACGACGATTTCCGGCAGTTTCTACACATATATTCGCAAGATGTGGCGTGTTACGGTGAAAACCTGGCCTATTTCCCTAAAGGGTTTATTGAGAATATGTTTTTCGTCTCAGCCAATCCCTGGGTGAGTTTCACCAGTTTTGATTTAAACGTGGCCAATATGGACAACTTCTTCGCCCCCGTTTTCACCATGGGCAAATATTATACGCAAGGCGACAAGGTGCTGATGCCGCTGGCGATTCAGGTTCATCATGCCGTTTGTGATGGCTTCCATGTCGGCAGAATGCTTAATGAATTACAACAGTACTGCGATGAGTGGCAGGGCGGGGCGTAATTT",
+      "original_sha256": "5fa70394dafd7472b83b1f6928650d20519125a468ad6493203e0534b08ba28e",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 26,
+              "end": 809,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Cm"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 26,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 27,
+          "original_end_1based": 809,
+          "module_start_1based": 1,
+          "module_end_1based": 783,
+          "source_start_1based": 193,
+          "source_end_1based": 975
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 27,
+          "end_1based": 809,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_sm_sp": {
-    "sha256": "2899d3ba2dadc5c2099449231b7cc64b5741ab59be496673e48f16a7111ee9d4",
+    "sha256": "da24b066e4ccfb64865951ef3656879a7bbf3628291c1e7f9c01e9bccac26795",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 34,
-            "end": 1023,
+            "start": 0,
+            "end": 989,
             "strand": 1
           }
         ],
@@ -170,17 +324,65 @@
       "source_record": "BASIC_SEVA_45a.10",
       "start_1based": 167,
       "end_1based": 1189
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTACGTATTTAAATGAACCTTGACCGAACGCAGCGGTGGTAACGGCGCAGTGGCGGTTTTCATGGCTTGTTATGACTGTTTTTTTGGGGTACAGTCTATGCCTCGGGCATCCAAGCAGCAAGCGCGTTACGCCGTGGGTCGATGTTTGATGTTATGGAGCAGCAACGATGTTACGCAGCAGGGCAGTCGCCCTAAAACAAAGTTAAACATCATGAGGGAAGCGGTGATCGCCGAAGTATCGACTCAACTATCAGAGGTAGTTGGCGTCATCGAGCGCCATCTCGAACCGACGTTGCTGGCCGTACATTTGTACGGCTCCGCAGTGGATGGCGGCCTGAAGCCACACAGTGATATTGATTTGCTGGTTACGGTGACCGTAAGGCTTGATGAAACAACGCGGCGAGCTTTGATCAACGACCTTTTGGAAACTTCGGCTTCCCCTGGAGAGAGCGAGATTCTCCGCGCTGTAGAAGTCACCATTGTTGTGCACGACGACATCATTCCGTGGCGTTATCCAGCTAAGCGCGAACTGCAATTTGGAGAATGGCAGCGCAATGACATTCTTGCAGGTATCTTCGAGCCAGCCACGATCGACATTGATCTGGCTATCTTGCTGACAAAAGCAAGAGAACATAGCGTTGCCTTGGTAGGTCCAGCGGCGGAGGAACTCTTTGATCCGGTTCCTGAACAGGATCTATTTGAGGCGCTAAATGAAACCTTAACGCTATGGAACTCGCCGCCCGACTGGGCTGGCGATGAGCGAAATGTAGTGCTTACGTTGTCCCGCATTTGGTACAGCGCAGTAACCGGCAAAATCGCGCCGAAGGATGTCGCTGCCGACTGGGCAATGGAGCGCCTGCCGGCCCAGTATCAGCCCGTCATACTTGAAGCTAGACAGGCTTATCTTGGACAAGAAGAAGATCGCTTGGCCTCGCGCGCAGATCAGTTGGAAGAATTTGTCCACTACGTGAAAGGCGAGATCACCAAGGTAGTCGGCAAATAA",
+      "original_sha256": "2899d3ba2dadc5c2099449231b7cc64b5741ab59be496673e48f16a7111ee9d4",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 34,
+              "end": 1023,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Sm/Sp"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 34,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_031641ff6ec60f2544b884d18402435883fdf6f231abfd790df0e30d7fe70218"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 35,
+          "original_end_1based": 1023,
+          "module_start_1based": 1,
+          "module_end_1based": 989,
+          "source_start_1based": 201,
+          "source_end_1based": 1189
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 35,
+          "end_1based": 1023,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_tet_5a": {
-    "sha256": "3c4d1d221af727ccc8f2451bce6a8da94e749ee2799f775d2218fb617d750995",
+    "sha256": "8879e9f7ef95caf830df263edce06760e5c250689d0167ad6b67bc1280c29eb3",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 34,
-            "end": 1301,
+            "start": 0,
+            "end": 1267,
             "strand": 1
           }
         ],
@@ -210,17 +412,65 @@
       "source_record": "BASIC_SEVA_5a5a.10",
       "start_1based": 167,
       "end_1based": 1467
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTACGTATTTAAATTTGACAGCTTATCATCGATAAACTGTAATGCGGTAGTTTATCACAGTTAAATTGCTAACGCAGTCAGGCACCGTGTATGAAATCTAACAATGCGCTCATCGTCATCCTCGGCACCGTCACCCTGGATGCTGTAGGCATAGGCTTGGTTATGCCGGTACTGCCGGGCCTCTTGCGGGATATCGTCCATTCCGACAGCATCGCCAGTCACTATGGCGTGCTGCTAGCGCTATATGCGTTGATGCAATTTCTATGCGCACCCGTTCTCGGAGCACTGTCCGACCGCTTTGGCCGCCGCCCAGTCCTGCTCGCTTCGCTACTTGGAGCCACTATCGACTACGCGATCATGGCGACCACACCCGTCCTGTGGATTCTCTACGCCGGACGCATCGTGGCCGGCATCACCGGCGCCACAGGTGCGGTTGCTGGCGCCTATATCGCCGACATCACCGATGGGGAAGATCGGGCTCGCCACTTCGGGCTCATGAGCGCTTGTTTCGGCGTGGGTATGGTGGCAGGCCCCGTGGCCGGGGGACTGTTGGGCGCCATCTCCCTGCACGCACCATTCCTTGCGGCGGCGGTGCTCAACGGCCTCAACCTACTACTGGGCTGCTTCCTAATGCAGGAGTCGCATAAGGGAGAGCGCCGTCCGATGCCCTTGAGAGCCTTCAACCCAGTCAGCTCCTTCCGGTGGGCGCGGGGCATGACCATTGTGGCCGCACTTATGACTGTCTTCTTTATCATGCAACTCGTAGGACAGGTGCCGGCAGCGCTCTGGGTCATTTTCGGCGAGGACCGCTTTCGCTGGAGCGCGACGATGAGCGGCCTGTCGCTTGCGGTATTCGGAATCTTGCACGCCCTCGCTCAAGCCTTCGTCACTGGTCCCGCCACCAAACGTTTCGGCGAGAAGCAGGCCATTATCGCCGGCATGGCGGCCGACGCGCTGGGCTACGTCTTGCTGGCGTTCGCGACGCGAGGCTGGATGGCCTTCCCCATTATGATTCTTCTCGCTTCCGGCGGCATCGGGATGCCCGCGTTGCAGGCCATGCTGTCCAGGCAGGTAGATGACGACCATCAGGGACAGCTTCAAGGATCGCTCGCGGCTCTTACCAGCCTAACTTCGATCACTGGACCGCTGATCGTCACGGCGATTTATGCCGCCTCGGCGAGCACATGGAACGGGTTGGCATGGATTGTAGGCGCCGCCCTATACCTTGTCTGCCTCCCCGCGTTGCGTCGCGGTGCATGGAGCCGGGCCACCTCGACCTGA",
+      "original_sha256": "3c4d1d221af727ccc8f2451bce6a8da94e749ee2799f775d2218fb617d750995",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 34,
+              "end": 1301,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Tet(5axx)"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 34,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_031641ff6ec60f2544b884d18402435883fdf6f231abfd790df0e30d7fe70218"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 35,
+          "original_end_1based": 1301,
+          "module_start_1based": 1,
+          "module_end_1based": 1267,
+          "source_start_1based": 201,
+          "source_end_1based": 1467
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 35,
+          "end_1based": 1301,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_gm": {
-    "sha256": "b6d48f406f3461399ae3cee9d3a2e283fea743072ba6ded9f93d7926da1184dc",
+    "sha256": "78c6afbf2e0fdf54f6aadbdb56c7c9629cac0a147eb530186cd3ffbbeabd64dc",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 26,
-            "end": 831,
+            "start": 0,
+            "end": 805,
             "strand": 1
           }
         ],
@@ -250,17 +500,65 @@
       "source_record": "BASIC_SEVA_65a.10",
       "start_1based": 167,
       "end_1based": 997
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTAAATTTGACATAAGCCTGTTCGGTTCGTAAACTGTAATGCAAGTAGCGTATGCGCTCACGCAACTGGTCCAGAACCTTGACCGAACGCAGCGGTGGTAACGGCGCAGTGGCGGTTTTCATGGCTTGTTATGACTGTTTTTTTGTACAGCCTATGCCTCGGGCATCCAAGCAGCAAGCGCGTTACGCCGTGGGTCGATGTTTGATGTTATGGAGCAGCAACGATGTTACGCAGCAGCAACGATGTTACGCAGCAGGGCAGTCGCCCTAAAACAAAGTTAGGTGGCTCAAGTATGGGCATCATTCGCACATGTAGGCTCGGCCCTGACCAAGTCAAATCCATGCGGGCTGCTCTTGATCTTTTCGGTCGTGAGTTCGGAGACGTAGCCACCTACTCCCAACATCAGCCGGACTCCGATTACCTCGGGAACTTGCTCCGTAGTAAGACATTCATCGCGCTTGCTGCCTTCGACCAAGAAGCGGTTGTTGGCGCTCTCGCGGCTTACGTTCTGCCCAAGTTTGAGCAGCCGCGTAGTGAGATCTATATCTATGATCTCGCAGTCTCCGGAGAGCACCGGAGGCAGGGCATTGCCACCGCGCTCATCAATCTCCTCAAGCATGAGGCCAACGCGCTTGGTGCTTATGTGATCTACGTGCAAGCAGATTACGGTGACGATCCCGCAGTGGCTCTCTATACAAAGTTGGGCATACGGGAAGAAGTGATGCACTTTGATATCGACCCAAGTACCGCCACCTAACAATTCGTTCAAGCCGAGATCGGCTTCCCGGCCGCGGAGTTGTTCGGTAAATTG",
+      "original_sha256": "b6d48f406f3461399ae3cee9d3a2e283fea743072ba6ded9f93d7926da1184dc",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 26,
+              "end": 831,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Gm"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 26,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 27,
+          "original_end_1based": 831,
+          "module_start_1based": 1,
+          "module_end_1based": 805,
+          "source_start_1based": 193,
+          "source_end_1based": 997
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 27,
+          "end_1based": 831,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_gm_11": {
-    "sha256": "20aa394489add21fb3612ea2e5d7806f1013227640cdd73e01525e603f6fe790",
+    "sha256": "e08cf2b57a0e62727c88560376c2d5d063402cc42e64200631cc59804aca2436",
     "features": [
       {
         "type": "misc_feature",
         "parts": [
           {
-            "start": 26,
-            "end": 850,
+            "start": 0,
+            "end": 824,
             "strand": 1
           }
         ],
@@ -290,6 +588,54 @@
       "source_record": "BASIC_SEVA_66.11",
       "start_1based": 165,
       "end_1based": 1014
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "GGGTCCCCAATAATTACGATTTAAATTTGACATAAGCCTGTTCGGTTCGTAAACTGTAATGCAAGTAGCGTATGCGCTCACGCAACTGGTCCAGAACCTTGACCGAACGCAGCGGTGGTAACGGCGCAGTGGCGGTTTTCATGGCTTGTTATGACTGTTTTTTTGTACAGCCTATGCCTCGGGCATCCAAGCAGCAAGCGCGTTACGCCGTGGGTCGATGTTTGATGTTATGGAGCAGCAACGATGTTACGCAGCAGCAACGATGTTACGCAGCAGCAACGATGTTACGCAGCAGGGCAGTCGCCCTAAAACAAAGTTAGGTGGCTCAAGTATGGGCATCATTCGCACATGTAGGCTCGGCCCTGACCAAGTCAAATCCATGCGGGCTGCTCTTGATCTTTTCGGTCGTGAGTTCGGAGACGTAGCCACCTACTCCCAACATCAGCCGGACTCCGATTACCTCGGGAACTTGCTCCGTAGTAAGACATTCATCGCGCTTGCTGCCTTCGACCAAGAAGCGGTTGTTGGCGCTCTCGCGGCTTACGTTCTGCCCAAGTTTGAGCAGCCGCGTAGTGAGATCTATATCTATGATCTCGCAGTCTCCGGAGAGCACCGGAGGCAGGGCATTGCCACCGCGCTCATCAATCTCCTCAAGCATGAGGCCAACGCGCTTGGTGCTTATGTGATCTACGTGCAAGCAGATTACGGTGACGATCCCGCAGTGGCTCTCTATACAAAGTTGGGCATACGGGAAGAAGTGATGCACTTTGATATCGACCCAAGTACCGCCACCTAACAATTCGTTCAAGCCGAGATCGGCTTCCCGGCCGCGGAGTTGTTCGGTAAATTG",
+      "original_sha256": "20aa394489add21fb3612ea2e5d7806f1013227640cdd73e01525e603f6fe790",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 26,
+              "end": 850,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_Gm"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1,
+          "end_1based": 26,
+          "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval.",
+          "gap_id": "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b"
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 27,
+          "original_end_1based": 850,
+          "module_start_1based": 1,
+          "module_end_1based": 824,
+          "source_start_1based": 191,
+          "source_end_1based": 1014
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 27,
+          "end_1based": 850,
+          "reason": "Source defines this entire resistance cassette as functional; uncovered promoter/terminator/regulatory DNA is retained, not inferred to be gap."
+        }
+      ]
     }
   },
   "basic_seva_rsf1010": {
@@ -321,6 +667,41 @@
       "source_record": "BASIC_SEVA_15a.10",
       "start_1based": 1308,
       "end_1based": 4978
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "TCAGCCTGCCGCCTTGGGCCGGGTGATGTCGTACTTGCCCGCCGCGAACTCGGTTACCGTCCAGCCCAGCGCGACCAGCTCCGGCAACGCCTCGCGCACCCGCTGGCGGCGCTTGCGCATGGTCGAACCACTGGCCTCTGACGGCCAGACATAGCCGCACAAGGTATCTATGGAAGCCTTGCCGGTTTTGCCGGGGTCGATCCAGCCACACAGCCGCTGGTGCAGCAGGCGGGCGGTTTCGCTGTCCAGCGCCCGCACCTCGTCCATGCTGATGCGCACATGCTGGCCGCCACCCATGACGGCCTGCGCGATCAAGGGGTTCAGGGCCACGTACAGGCGCCCGTCCGCCTCGTCGCTGGCGTACTCCGACAGCAGCCGAAACCCCTGCCGCTTGCGGCCATTCTGGGCGATGATGGATACCTTCCAAAGGCGCTCGATGCAGTCCTGTATGTGCTTGAGCGCCCCACCACTATCGACCTCTGCCCCGATTTCCTTTGCCAGCGCCCGATAGCTACCTTTGACCACCATGGCATCAGCGGTGACGGCCTCCCACTTGGGTTCCAGGAACAGCCGGAGCTGCCGTCCGCCTTCGGTCTTGGGTTCCGGGCCAAGCACTAGGCCATTAGGCCCAGCCATGGCCACCAGCCCTTGCAGGATGCGCAGATCATCAGCGCCCAGCGGCTCCGGGCCGCTGAACTCGATCCGCTTGCCGTCGCCGTAGTCATACGTCACGTCCAGCTTGCTGCGCTTGCGCTCGCCCCGCTTGAGGGCACGGAACAGGCCGGGGGCCAGACAGTGCGCCGGGTCGTGCCGGACGTGGCTGAGGCTGTGCTTGTTCTTAGGCTTCACCACGGGGCACCCCCTTGCTCTTGCGCTGCCTCTCCAGCACGGCGGGCTTGAGCACCCCGCCGTCATGCCGCCTGAACCACCGATCAGCGAACGGTGCGCCATAGTTGGCCTTGCTCACACCGAAGCGGACGAAGAACCGGCGCTGGTCGTCGTCCACACCCCATTCCTCGGCCTCGGCGCTGGTCATGCTCGACAGGTAGGACTGCCAGCGGATGTTATCGACCAGTACCGAGCTGCCCCGGCTGGCCTGCTGCTGGTCGCCTGCGCCCATCATGGCCGCGCCCTTGCTGGCATGGTGCAGGAACACGATAGAGCACCCGGTATCGGCGGCGATGGCCTCCATGCGACCGATGACCTGGGCCATGGGGCCGCTGGCGTTTTCTTCCTCGATGTGGAACCGGCGCAGCGTGTCCAGCACCATCAGGCGGCGGCCCTCGGCGGCGCGCTTGAGGCCGTCGAACCACTCCGGGGCCATGATGTTGGGCAGGCTGCCGATCAGCGGCTGGATCAGCAGGCCGTCAGCCACGGCTTGCCGTTCCTCGGCGCTGAGGTGCGCCCCAAGGGCGTGCAGGCGGTGATGAATGGCGGTGGGCGGGTCTTCGGCGGGCAGGTAGATCACCGGGCCGGTGGGCAGTTCGCCCACCTCCAGCAGATCCGGCCCGCCTGCAATCTGTGCGGCCAGTTGCAGGGCCAGCATGGATTTACCGGCACCACCGGGCGACACCAGCGCCCCGACCGTACCGGCCACCATGTTGGGCAAAACGTAGTCCAGCGGTGGCGGCGCTGCTGCGAACGCCTCCAGAATATTGATAGGCTTATGGGTAGCCATTGATTGCCTCCTTTGCAGGCAGTTGGTGGTTAGGCGCTGGCGGGGTCACTACCCCCGCCCTGCGCCGCTCTGAGTTCTTCCAGGCACTCGCGCAGCGCCTCGTATTCGTCGTCGGTCAGCCAGAACTTGCGCTGACGCATCCCTTTGGCCTTCATGCGCTCGGCATATCGCGCTTGGCGTACAGCGTCAGGGCTGGCCAGCAGGTCGCCGGTCTGCTTGTCCTTTTGGTCTTTCATATCAGTCACCGAGAAACTTGCCGGGGCCGAAAGGCTTGTCTTCGCGGAACAAGGACAAGGTGCAGCCGTCAAGGTTAAGGCTGGCCATATCAGCGACTGAAAAGCGGCCAGCCTCGGCCTTGTTTGACGTATAACCAAAGCCACCGGGCAACCAATAGCCCTTGTCACTTTTGATCAGGTAGACCGACCCTGAAGCGCTTTTTTCGTATTCCATAAAACCCCCTTCTGTGCGTGAGTACTCATAGTATAACAGGCGTGAGTACCAACGCAAGCACTACATGCTGAAATCTGGCCCGCCCCTGTCCATGCCTCGCTGGCGGGGTGCCGGTGCCCGTGCCAGCTCGGCCCGCGCAAGCTGGACGCTGGGCAGACCCATGACCTTGCTGACGGTGCGCTCGATGTAATCCGCTTCGTGGCCGGGCTTGCGCTCTGCCAGCGCTGGGCTGGCCTCGGCCATGGCCTTGCCGATTTCCTCGGCACTGCGGCCCCGGCTGGCCAGCTTCTGCGCGGCGATAAAGTCGCACTTGCTGAGGTCATCACCGAAGCGCTTGACCAGCCCGGCCATCTCGCTGCGGTACTCGTCCAGCGCCGTGCGCCGGTGGCGGCTAAGCTGCCGCTCGGGCAGTTCGAGGCTGGCCAGCCTGCGGGCCTTCTCCTGCTGCCGCTGGGCCTGCTCGATCTGCTGGCCAGCCTGCTGCACCAGCGCCGGGCCAGCGGTGGCGGTCTTGCCCTTGGATTCACGCAGCAGCACCCACGGCTGATAACCGGCGCGGGTGGTGTGCTTGTCCTTGCGGTTGGTGAAGCCCGCCAAGCGGCCATAGTGGCGGCTGTCGGCGCTGGCCGGGTCGGCGTCGTACTCGCTGGCCAGCGTCCGGGCAATCTGCCCCCGAAGTTCACCGCCTGCGGCGTCGGCCACCTTGACCCATGCCTGATAGTTCTTCGGGCTGGTTTCCACTACCAGGGCAGGCTCCCGGCCCTCGGCTTTCATGTCATCCAGGTCAAACTCGCTGAGGTCGTCCACCAGCACCAGACCATGCCGCTCCTGCTCGGCGGGCCTGATATACACGTCATTGCCCTGGGCATTCATCCGCTTGAGCCATGGCGTGTTCTGGAGCACTTCGGCGGCTGACCATTCCCGGTTCATCATCTGGCCGGTGGTGGCGTCCCTGACGCCGATATCGAAGCGCTCACAGCCCATGGCCTTGAGCTGTCGGCCTATGGCCTGCAAAGTCCTGTCGTTCTTCATCGGGCCACCAAGCGATTCCCACACATTATACGAGCCGGAAGCATAAAGTGTAGCTAGATCCGAAGGATGAGCCGGGCTGAATGATCGACCGAGACAGGCCCTGCGGGGCTGCACACGCGCCCCCACCCTTCGGGTAGGGGGAAAGGCCGCTAAAGCGGCTAAAAGCGCTCCAGCGTATTTCTGCGGGGTTTGGTGTGGGGTTTAGCGGGCTTTGCCCGCCTTTCCCCCTGCCGCGCAGCGGTGGGGCGGTGTGTAGCCTAGCGCAGCGAATAGACCAGCTATCCGGCCTCTGGCCGGGCATATTGGGCAAGGGCAGCAGCGCCCCACAAGGGCGCTGATAACCGCGCCTAGTGGATTATTCTTAGATAATCATGGATGGATTTTTCCAACACCCCGCCAGCCCCCGCCCCTGCTGGGTTTGCAGGTTTGGGGGCGTGACAGTTATTGCAGGGGTTCGTGACAGTTATTGCAGGGGGGCGTGACAGTTATTGCAGGGGTTCGTGACAGTTAG",
+      "original_sha256": "72299a2593ac515cc6b6f906100c492dd7c9b034e0a18a09fd13eca30065e104",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 3671,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_RSF1010(x5ax)"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 3671,
+          "module_start_1based": 1,
+          "module_end_1based": 3671,
+          "source_start_1based": 1308,
+          "source_end_1based": 4978
+        }
+      ],
+      "pending_regions": []
     }
   },
   "basic_seva_p15a": {
@@ -352,6 +733,41 @@
       "source_record": "BASIC_SEVA_16.10",
       "start_1based": 1305,
       "end_1based": 2036
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "CTAGAAATATTTTATCTGATTAATAAGATGATCTTCTTGAGATCGTTTTGGTCTGCGCGTAATCTCTTGCTCTGAAAACGAAAAAACCGCCTTGCAGGGCGGTTTTTCGAAGGTTCTCTGAGCTACCAACTCTTTGAACCGAGGTAACTGGCTTGGAGGAGCGCAGTCACCAAAACTTGTCCTTTCAGTTTAGCCTTAACCGGCGCATGACTTCAAGACTAACTCCTCTAAATCAATTACCAGTGGCTGCTGCCAGTGGTGCTTTTGCATGTCTTTCCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGACTGAACGGGGGGTTCGTGCATACAGTCCAGCTTGGAGCGAACTGCCTACCCGGAACTGAGTGTCAGGCGTGGAATGAGACAAACGCGGCCATAACAGCGGAATGACACCGGTAAACCGAAAGGCAGGAACAGGAGAGCGCACGAGGGAGCCGCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCACTGATTTGAGCGTCAGATTTCGTGATGCTTGTCAGGGGGGCGGAGCCTATGGAAAAACGGCTTTGCCGCGGCCCTCTCACTTCCCTGTTAAGTATCTTCCTGGCATCTTCCAGGAAATCTCCGCCCCGTTCGTAAGCCATTTCCGCTCGCCGCAGTCGAACGACCGAGCGTAGCGAGTCAGTGAGCGAGGAAGCGGAATATATCC",
+      "original_sha256": "628e9c362fae347fc6f00e3e108380dd6090cceaf879f8a1153df07fb44a44dc",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 732,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_p15A"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 732,
+          "module_start_1based": 1,
+          "module_end_1based": 732,
+          "source_start_1based": 1305,
+          "source_end_1based": 2036
+        }
+      ],
+      "pending_regions": []
     }
   },
   "basic_seva_psc101": {
@@ -383,6 +799,41 @@
       "source_record": "BASIC_SEVA_17.10",
       "start_1based": 1305,
       "end_1based": 2764
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "TCAGATCCTTCCGTATTTAGCCAGTATGTTCTCTAGTGTGGTTCGTTGTTTTTGCGTGAGCCATGAGAACGAACCATTGAGATCATACTTACTTTGCATGTCACTCAAAAATTTTGCCTCAAAACTGGTGAGCTGAATTTTTGCAGTTAAAGCATCGTGTAGTGTTTTTCTTAGTCCGTTATGTAGGTAGGAATCTGATGTAATGGTTGTTGGTATTTTGTCACCATTCATTTTTATCTGGTTGTTCTCAAGTTCGGTTACGAGATCCATTTGTCTATCTAGTTCAACTTGGAAAATCAACGTATCAGTCGGGCGGCCTCGCTTATCAACCACCAATTTCATATTGCTGTAAGTGTTTAAATCTTTACTTATTGGTTTCAAAACCCATTGGTTAAGCCTTTTAAACTCATGGTAGTTATTTTCAAGCATTAACATGAACTTAAATTCATCAAGGCTAATCTCTATATTTGCCTTGTGAGTTTTCTTTTGTGTTAGTTCTTTTAATAACCACTCATAAATCCTCATAGAGTATTTGTTTTCAAAAGACTTAACATGTTCCAGATTATATTTTATGAATTTTTTTAACTGGAAAAGATAAGGCAATATCTCTTCACTAAAAACTAATTCTAATTTTTCGCTTGAGAACTTGGCATAGTTTGTCCACTGGAAAATCTCAAAGCCTTTAACCAAAGGATTCCTGATTTCCACAGTTCTCGTCATCAGCTCTCTGGTTGCTTTAGCTAATACACCATAAGCATTTTCCCTACTGATGTTCATCATCTGAGCGTATTGGTTATAAGTGAACGATACCGTCCGTTCTTTCCTTGTAGGGTTTTCAATCGTGGGGTTGAGTAGTGCCACACAGCATAAAATTAGCTTGGTTTCATGCTCCGTTAAGTCATAGCGACTAATCGCTAGTTCATTTGCTTTGAAAACAACTAATTCAGACATACATCTCAATTGGTCTAGGTGATTTTAATCACTATACCAATTGAGATGGGCTAGTCAATGATAATTACATGTCCTTTTCCTTTGAGTTGTGGGTATCTGTAAATTCTGCTAGACCTTTGCTGGAAAACTTGTAAATTCTGCTAGACCCTCTGTAAATTCCGCTAGACCTTTGTGTGTTTTTTTTGTTTATATTCAAGTGGTTATAATTTATAGAATAAAGAAAGAATAAAAAAAGATAAAAAGAATAGATCCCAGCCCTGTGTATAACTCACTACTTTAGTCAGTTCCGCAGTATTACAAAAGGATGTCGCAAACGCTGTTTGCTCCTCTACAAAACAGACCTTAAAACCCTAAAGGCTTAAGTAGCACCCTCGCAAGCTCGGGCAAATCGCTGAATATTCCTTTTGTCTCCGACCATCAGGCACCTGAGTCGCTGTCTTTTTCGTGACATTCAGTTCGCTGCGCTCACGGCTCTGGCAGTGAATGGGGGTAAATGGCACTACAGGCGC",
+      "original_sha256": "33cc72a4fb41192deadf2827361cf0969a21c45e6db9fa99ed9d779f92aea0b8",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 1460,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_pSC101"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 1460,
+          "module_start_1based": 1,
+          "module_end_1based": 1460,
+          "source_start_1based": 1305,
+          "source_end_1based": 2764
+        }
+      ],
+      "pending_regions": []
     }
   },
   "basic_seva_pbr322_rop": {
@@ -414,10 +865,45 @@
       "source_record": "BASIC_SEVA_19.10",
       "start_1based": 1305,
       "end_1based": 2689
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "CCGTAGAAAAGATCAAAGGATCTTCTTGAGATCCTTTTTTTCTGCGCGTAATCTGCTGCTTGCAAACAAAAAAACCACCGCTACCAGCGGTGGTTTGTTTGCCGGATCAAGAGCTACCAACTCTTTTTCCGAAGGTAACTGGCTTCAGCAGAGCGCAGATACCAAATACTGTCCTTCTAGTGTAGCCGTAGTTAGGCCACCACTTCAAGAACTCTGTAGCACCGCCTACATACCTCGCTCTGCTAATCCTGTTACCAGTGGCTGCTGCCAGTGGCGATAAGTCGTGTCTTACCGGGTTGGACTCAAGACGATAGTTACCGGATAAGGCGCAGCGGTCGGGCTGAACGGGGGGTTCGTGCACACAGCCCAGCTTGGAGCGAACGACCTACACCGAACTGAGATACCTACAGCGTGAGCTATGAGAAAGCGCCACGCTTCCCGAAGGGAGAAAGGCGGACAGGTATCCGGTAAGCGGCAGGGTCGGAACAGGAGAGCGCACGAGGGAGCTTCCAGGGGGAAACGCCTGGTATCTTTATAGTCCTGTCGGGTTTCGCCACCTCTGACTTGAGCGTCGATTTTTGTGATGCTCGTCAGGGGGGCGGAGCCTATGGAAAAACGCCAGCAACGCGGCCTTTTTACGGTTCCTGGCCTTTTGCTGGCCTTTTGCTCACATGTTCTTTCCTGCGTTATCCCCTGATTCTGTGGATAACCGTATTACCGCCTTTGAGTGAGCTGATACCGCTCGCCGCAGCCGAACGACCGAGCGCAGCGAGTCAGTGAGCGAGGAAGCGGAAGAGCGCCTGATGCGGTATTTTCTCCTTACGCATCTGTGCGGTATTTCACACCGCATATGGTGCACTCTCAGTACAATCTGCTCTGATGCCGCATAGTTAAGCCAGTATACACTCCGCTATCGCTACGTGACTGGGTCATGGCTGCGCCCCGACACCCGCCAACACCCGCTGACGCGCCCTGACGGGCTTGTCTGCTCCCGGCATCCGCTTACAGACAAGCTGTGACCGTCTCCGGGAGCTGCATGTGTCAGAGGTTTTCACCGTCATCACCGAAACGCGCGAGGCAGCTGCGGTAAAGCTCATCAGCGTGGTCGTGCAGCGATTCACAGATGTCTGCCTGTTCATCCGCGTCCAGCTCGTTGAGTTTCTCCAGAAGCGTTAATGTCTGGCTTCTGATAAAGCGGGCCATGTTAAGGGCGGTTTTTTCCTGTTTGGTCACTGATGCCTCCGTGTAAGGGGGATTTCTGTTCATGGGGGTAATGATACCGATGAAACGAGAGAGGATGCTCACGATACGGGTTACTGATGATGAACATGCCCGGTTACTGGAACGTTGTGAGGGTAAACAACTGGCGGTATGGATGCGGCGGG",
+      "original_sha256": "710ce464546a14b5817746881b6121f950e9a66c2978f1ad4614b60c7d246276",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 1385,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_pBR322-ROP"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 1385,
+          "module_start_1based": 1,
+          "module_end_1based": 1385,
+          "source_start_1based": 1305,
+          "source_end_1based": 2689
+        }
+      ],
+      "pending_regions": []
     }
   },
   "basic_seva_psc101_pkd46_ts": {
-    "sha256": "e30f01e55d59589a306a1c9da60244a23b02b91cc38f1fe646d3187d033e3368",
+    "sha256": "4e2a1dcd703295d14ef5ceaf2046505b16defcdb95d9e824dfdc823628eda9d4",
     "features": [
       {
         "type": "CDS",
@@ -461,6 +947,80 @@
       "source_record": "BASIC_SEVA_17_pKD46.10",
       "start_1based": 1297,
       "end_1based": 2847
+    },
+    "gap_extraction": {
+      "status": "confirmed_removed",
+      "original_sequence": "TGTTCTACTTTTGTTTGTTAGTCTTGATGCTTCACTGATAGATACAAGAGCCATAAGAACCTCAGATCCTTCCGTATTTAGCCAGTATGTTCTCTAGTGTGGTTCGTTGTTTTTGCGTGAGCCATGAGAACGAACCATTGAGATCATACTTACTTTGCATGTCACTCAAAAATTTTGCCTCAAAACTGGTGAGCTGAATTTTTGCAGTTAAAGCATCGTGTAGTGTTTTTCTTAGTCCGTTACGTAGGTAGGAATCTGATGTAATGGTTGTTGGTATTTTGTCACCATTCATTTTTATCTGGTTGTTCTCAAGTTCGGTTACGAGATCCATTTGTCTATCTAGTTCAACTTGGAAAATCAACGTATCAGTCGGGCGGCCTCGCTTATCAACCACCAATTTCATATTGCTGTAAGTGTTTAAATCTTTACTTATTGGTTTCAAAACCCATTGGTTAAGCCTTTTAAACTCATGGTAGTTATTTTCAAGCATTAACATGAACTTAAATTCATCAAGGCTAATCTCTATATTTGCCTTGTGAGTTTTCTTTTGTGTTAGTTCTTTTAATAACCACTCATAAATCCTCATAGAGTATTTGTTTTCAAAAGACTTAACATGTTCCAGATTATATTTTATGAATTTTTTTAACTGGAAAAGATAAGGCAATATCTCTTCACTAAAAACTAATTCTAATTTTTCGCTTGAGAACTTGGCATAGTTTGTCCACTGGAAAATCTCAAAGCCTTTAACCAAAGGATTCCTGATTTCCACAGTTCTCGTCATCAGCTCTCTGGTTGCTTTAGCTAATACACCATAAGCATTTTCCCTACTGATGTTCATCATCTGAGCGTATTGGTTATAAGTGAACGATACCGTCCGTTCTTTCCTTGTAGGGTTTTCAATCGTGGGGTTGAGTAGTGCCACACAGCATAAAATTAGCTTGGTTTCATGCTCCGTTAAGTCATAGCGACTAATCGCTAGTTCATTTGCTTTGAAAACAACTAATTCAGACATACATCTCAATTGGTCTAGGTGATTTTAATCACTATACCAATTGAGATGGGCTAGTCAATGATAATTACTAGTCCTTTTCCTTTGAGTTGTGGGTATCTGTAAATTCTGCTAGACCTTTGCTGGAAAACTTGTAAATTCTGCTAGACCCTCTGTAAATTCCGCTAGACCTTTGTGTGTTTTTTTTGTTTATATTCAAGTGGTTATAATTTATAGAATAAAGAAAGAATAAAAAAAGATAAAAAGAATAGATCCCAGCCCTGTGTATAACTCACTACTTTAGTCAGTTCCGCAGTATTACAAAAGGATGTCGCAAACGCTGTTTGCTCCTCTACAAAACAGACCTTAAAACCCTAAAGGCTTAAGTAGCACCCTCGCAAGCTCGGTTGCGGCCGCAATCGGGCAAATCGCTGAATATTCCTTTTGTCTCCGACCATCAGGCACCTGAGTCGCTGTCTTTTTCGTGACATTCAGTTCGCTGCGCTCACGGCTCTGGCAGTGAATGGGGGTAAATGGCACTACAGGCGCGGCGCGCCCAGCTG",
+      "original_sha256": "e30f01e55d59589a306a1c9da60244a23b02b91cc38f1fe646d3187d033e3368",
+      "original_features": [
+        {
+          "type": "CDS",
+          "parts": [
+            {
+              "start": 61,
+              "end": 1012,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "Rep101(pKD46)"
+            ]
+          }
+        },
+        {
+          "type": "rep_origin",
+          "parts": [
+            {
+              "start": 1059,
+              "end": 1282,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "pSC101 ori"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [
+        {
+          "start_1based": 1538,
+          "end_1based": 1551,
+          "gap_id": "gap_227ef72aca86669d35fc73e9dbf1fe38ab43c775303c925b3b9f0724c2ef5dfc",
+          "evidence": "Identical 14 bp native interface immediately preceding author-annotated SEVA_T1 in both collection and independent pKD46 core."
+        }
+      ],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 1537,
+          "module_start_1based": 1,
+          "module_end_1based": 1537,
+          "source_start_1based": 1297,
+          "source_end_1based": 2833
+        }
+      ],
+      "pending_regions": [
+        {
+          "start_1based": 1,
+          "end_1based": 61,
+          "reason": "Unannotated DNA may regulate replication; no evidence it is a removable gap."
+        },
+        {
+          "start_1based": 1013,
+          "end_1based": 1059,
+          "reason": "Unannotated DNA may regulate replication; no evidence it is a removable gap."
+        },
+        {
+          "start_1based": 1283,
+          "end_1based": 1537,
+          "reason": "Unannotated DNA may regulate replication; no evidence it is a removable gap."
+        }
+      ]
     }
   },
   "basic_seva_t0": {
@@ -493,6 +1053,41 @@
       "source_record": "BASIC_SEVA_15a.10",
       "start_1based": 64,
       "end_1based": 166
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "CTTGGACTCCTGTTGATAGATCCAGTAATGACCTCAGAACTCCATCTGGATTTGTTCAGAACGCTCGGTTGCCGCCGGGCGTTTTTTATTGGTGAGAATCCAG",
+      "original_sha256": "882acb3b9f853a887db6c502f5a8d239b3125f0fa267a65e5621f09a25c6307c",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 103,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_T0"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 103,
+          "module_start_1based": 1,
+          "module_end_1based": 103,
+          "source_start_1based": 64,
+          "source_end_1based": 166
+        }
+      ],
+      "pending_regions": []
     }
   },
   "basic_seva_t1": {
@@ -525,6 +1120,522 @@
       "source_record": "BASIC_SEVA_15a.10",
       "start_1based": 4993,
       "end_1based": 5097
+    },
+    "gap_extraction": {
+      "status": "no_confirmed_internal_gap",
+      "original_sequence": "TCTAGGGCGGCGGATTTGTCCTACTCAGGAGAGCGTTCACCGACAAACAACAGATAAAACGAAAGGCCCAGTCTTTCGACTGAGCCTTTCGTTTTATTTGATGCC",
+      "original_sha256": "ae2246d9435d4c7b95aa6c19206bd80c58aee4b9f6ad25538c19005df11de025",
+      "original_features": [
+        {
+          "type": "misc_feature",
+          "parts": [
+            {
+              "start": 0,
+              "end": 105,
+              "strand": 1
+            }
+          ],
+          "operator": null,
+          "qualifiers": {
+            "label": [
+              "SEVA_T1"
+            ]
+          }
+        }
+      ],
+      "removed_gaps": [],
+      "retained_segments": [
+        {
+          "original_start_1based": 1,
+          "original_end_1based": 105,
+          "module_start_1based": 1,
+          "module_end_1based": 105,
+          "source_start_1based": 4993,
+          "source_end_1based": 5097
+        }
+      ],
+      "pending_regions": []
     }
+  },
+  "gap_a8787c36cad8618bc4a6e5585779655c8b794230d6ab3c27278f173d75eecf51": {
+    "type": "gap",
+    "sha256": "a8787c36cad8618bc4a6e5585779655c8b794230d6ab3c27278f173d75eecf51",
+    "aliases": [
+      "L1"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L1",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L1",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_516e9c55ba6fafd48559773e15e5039ef72c7142a54195aadebe70e3834c1714": {
+    "type": "gap",
+    "sha256": "516e9c55ba6fafd48559773e15e5039ef72c7142a54195aadebe70e3834c1714",
+    "aliases": [
+      "L2"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L2",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L2",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_735b0a69bc58cab7138f27ecfd100fbcde2ee6eacb29e9e10df407f639cd9224": {
+    "type": "gap",
+    "sha256": "735b0a69bc58cab7138f27ecfd100fbcde2ee6eacb29e9e10df407f639cd9224",
+    "aliases": [
+      "L3"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L3",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L3",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_d7256e529ee39edb6d3e5bfd698912914b002e5226dc84ae6746c9431ae782b5": {
+    "type": "gap",
+    "sha256": "d7256e529ee39edb6d3e5bfd698912914b002e5226dc84ae6746c9431ae782b5",
+    "aliases": [
+      "L4"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L4",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L4",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_9a160b84b04004bbb8469e363bbedfae2247e4720676e95024d55adb87669a8b": {
+    "type": "gap",
+    "sha256": "9a160b84b04004bbb8469e363bbedfae2247e4720676e95024d55adb87669a8b",
+    "aliases": [
+      "L5"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L5",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L5",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_0a8e29582f26e77c3c264e44c7dbb941662879f64a49adcc26c6799b96e101e3": {
+    "type": "gap",
+    "sha256": "0a8e29582f26e77c3c264e44c7dbb941662879f64a49adcc26c6799b96e101e3",
+    "aliases": [
+      "L6"
+    ],
+    "purpose": "通用中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+      "source_key": "standard_linkers",
+      "source_record": "STANDARD_LINKERS.L6",
+      "start_1based": 1,
+      "end_1based": 53
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/biolegio_linkers.py",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "795d616289dcd26def2292102ff7f45b504df14d7b24154ece82685453efcd1b",
+        "source_key": "standard_linkers",
+        "source_record": "STANDARD_LINKERS.L6",
+        "start_1based": 1,
+        "end_1based": 53,
+        "evidence": "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter."
+      }
+    ],
+    "features": []
+  },
+  "gap_50d56b8fff4d6076f998c99b6506270fb7ca6d70cf8a12e66ef7d5ce951c849b": {
+    "type": "gap",
+    "sha256": "50d56b8fff4d6076f998c99b6506270fb7ca6d70cf8a12e66ef7d5ce951c849b",
+    "aliases": [
+      "BSEVA_L1"
+    ],
+    "purpose": "抗性与复制模块之间的中性 linker 候选",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "作者为抗性与复制模块间设计的中性 linker；其他位置组合尚未实验验证。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 1244,
+      "end_1based": 1296
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_15a.10",
+        "start_1based": 1244,
+        "end_1based": 1296,
+        "evidence": "Author BSEVA_L1 annotation; BASIC SEVA paper DOI 10.1093/synbio/ysac023."
+      }
+    ],
+    "features": []
+  },
+  "gap_30911c7c81b6e843ccbb269bc95ab86938e861f689fe410a5d93462f4c8ca846": {
+    "type": "gap",
+    "sha256": "30911c7c81b6e843ccbb269bc95ab86938e861f689fe410a5d93462f4c8ca846",
+    "aliases": [
+      "resistance_to_replication"
+    ],
+    "purpose": "来源原生模块接口（76 bp）",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源原生接口，不表示在任意上下文中都具有生物学中性。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 1232,
+      "end_1based": 1307
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_15a.10",
+        "start_1based": 1232,
+        "end_1based": 1307,
+        "evidence": "Pinned native scaffold coordinates, exact sequence hash verified."
+      }
+    ],
+    "features": []
+  },
+  "gap_227ef72aca86669d35fc73e9dbf1fe38ab43c775303c925b3b9f0724c2ef5dfc": {
+    "type": "gap",
+    "sha256": "227ef72aca86669d35fc73e9dbf1fe38ab43c775303c925b3b9f0724c2ef5dfc",
+    "aliases": [
+      "replication_to_t1",
+      "pkd46_tail_14"
+    ],
+    "purpose": "来源原生复制模块末端接口（14 bp）",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "来源原生接口，不表示在任意上下文中都具有生物学中性。",
+      "亦从 pKD46 来源记录尾部提取；复制功能注释与其余调控区保留。",
+      "pKD46 独立核心来源的同一接口。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 4979,
+      "end_1based": 4992
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_15a.10",
+        "start_1based": 4979,
+        "end_1based": 4992,
+        "evidence": "Pinned native scaffold coordinates, exact sequence hash verified."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_17_pKD46.10",
+        "start_1based": 2834,
+        "end_1based": 2847,
+        "evidence": "Identical 14 bp native interface immediately preceding author-annotated SEVA_T1 in both collection and independent pKD46 core."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/sequences/genbank_files/BASIC_SEVA_collection/misc_seqs/BS_x7x_pKD46_core_seq.gb",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_sha256": "8e613d39260e50f1da498882678a1ed53f08ad4d4aaec6ba0a460a3651fcc707",
+        "source_key": "pkd46_core",
+        "source_record": "BASIC_construct_BS_x7x_",
+        "start_1based": 1538,
+        "end_1based": 1551,
+        "evidence": "Identical 14 bp native interface immediately preceding author-annotated SEVA_T1 in both collection and independent pKD46 core."
+      }
+    ],
+    "features": []
+  },
+  "gap_0774044bcbf147babae8d74d0b23e220a5adba6a11dfc2e94003158ce07bee39": {
+    "type": "gap",
+    "sha256": "0774044bcbf147babae8d74d0b23e220a5adba6a11dfc2e94003158ce07bee39",
+    "aliases": [
+      "landing_pad_spacer"
+    ],
+    "purpose": "临时骨架占位片段（24 bp）",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "仅用于临时骨架占位；最终质粒只在用户明确选入时包含该片段。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 1244,
+      "end_1based": 1267
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_15a.10",
+        "start_1based": 1244,
+        "end_1based": 1267,
+        "evidence": "Pinned native scaffold coordinates, exact sequence hash verified."
+      }
+    ],
+    "features": []
+  },
+  "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b": {
+    "type": "gap",
+    "sha256": "012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b",
+    "aliases": [
+      "resistance_prefix_26"
+    ],
+    "purpose": "来源原生抗性模块前部接口",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "位于作者定义的完整抗性功能模块之外；保留来源接口用途，不作为通用中性 spacer。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_15a.10",
+      "start_1based": 167,
+      "end_1based": 192
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_15a.10",
+        "start_1based": 167,
+        "end_1based": 192,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_25a.10",
+        "start_1based": 167,
+        "end_1based": 192,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_35a.10",
+        "start_1based": 167,
+        "end_1based": 192,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_65a.10",
+        "start_1based": 167,
+        "end_1based": 192,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_66-11_%26_69-11.gb",
+        "source_sha256": "6d5e5b1cafbc688a0f4fa3cf2a9eb16482bf39b89afd9970022ae11e4dade90f",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "gm_11",
+        "source_record": "BASIC_SEVA_66.11",
+        "start_1based": 165,
+        "end_1based": 190,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      }
+    ],
+    "features": []
+  },
+  "gap_031641ff6ec60f2544b884d18402435883fdf6f231abfd790df0e30d7fe70218": {
+    "type": "gap",
+    "sha256": "031641ff6ec60f2544b884d18402435883fdf6f231abfd790df0e30d7fe70218",
+    "aliases": [
+      "resistance_prefix_34"
+    ],
+    "purpose": "来源原生抗性模块前部接口",
+    "evidence_status": "source_sequence_verified",
+    "notes": [
+      "位于作者定义的完整抗性功能模块之外；保留来源接口用途，不作为通用中性 spacer。"
+    ],
+    "provenance": {
+      "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+      "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+      "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+      "source_key": "collection",
+      "source_record": "BASIC_SEVA_45a.10",
+      "start_1based": 167,
+      "end_1based": 200
+    },
+    "sources": [
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_45a.10",
+        "start_1based": 167,
+        "end_1based": 200,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      },
+      {
+        "source_url": "https://raw.githubusercontent.com/LondonBiofoundry/basicsynbio/cad60c243aa2b12c6ed52ce36be454da3f357a6e/basicsynbio/parts_linkers/BASIC_SEVA_collection_v10.gb",
+        "source_sha256": "a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917",
+        "source_version": "cad60c243aa2b12c6ed52ce36be454da3f357a6e",
+        "source_key": "collection",
+        "source_record": "BASIC_SEVA_5a5a.10",
+        "start_1based": 167,
+        "end_1based": 200,
+        "evidence": "Pinned source whole resistance cassette annotation starts after this native boundary interval."
+      }
+    ],
+    "features": []
   }
 }

@@ -14,6 +14,14 @@ export const DEFAULT_ORDER: ComponentOrder = [
   "expression",
   "t0",
 ];
+export const COMPONENT_TYPES: ComponentType[] = [
+  "resistance",
+  "replication",
+  "expression",
+  "t0",
+  "t1",
+  "gap",
+];
 export function isComponentOrder(value: unknown): value is ComponentOrder {
   return (
     Array.isArray(value) &&
@@ -60,11 +68,11 @@ export function segmentComponent(segment: {
   kind: string;
   component_type?: ComponentType;
 }): ComponentType | null {
-  if (segment.component_type && DEFAULT_ORDER.includes(segment.component_type))
+  if (segment.component_type && COMPONENT_TYPES.includes(segment.component_type))
     return segment.component_type;
   if (segment.id === "basic_seva_t0") return "t0";
   if (segment.id === "basic_seva_t1") return "t1";
-  if (DEFAULT_ORDER.includes(segment.kind as ComponentType))
+  if (COMPONENT_TYPES.includes(segment.kind as ComponentType))
     return segment.kind as ComponentType;
   if (segment.id === "module_interval") return "resistance";
   if (["t1_interval", "t1"].includes(segment.id)) return "replication";

@@ -6,3 +6,5 @@
 !test_plasmid_web_api.py
 !test_manifest_concurrency.py
 !test_web_cli.py
+!test_gap_components.py
+!test_gap_curation.py

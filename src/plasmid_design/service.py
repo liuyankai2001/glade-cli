@@ -16,6 +16,7 @@ from src.plasmid_design.components import (
     LEGACY_SELECTION_FIELDS,
     legacy_components,
     normalize_components,
+    expand_legacy_gaps,
 )
 from src.plasmid_design.project import authenticate_request, read_project
 from src.plasmid_design.registration import committed_files, export_design
@@ -44,6 +45,7 @@ class DesignService:
             "resistance": [m.to_payload() for m in catalog.resistance.values()],
             "replication": [m.to_payload() for m in catalog.replication.values()],
             "terminator": [m.to_payload() for m in catalog.terminator.values()],
+            "gap": [m.to_payload() for m in catalog.gap.values()],
         }
 
     def context(self) -> dict:
@@ -161,6 +163,21 @@ class DesignService:
             response["result"] = self._result(snapshot)
         except DesignError as exc:
             response["issues"].append({"code": exc.code, "message": str(exc)})
+        if response["selection"] is not None:
+            selected = response["selection"]
+            if "components" not in selected:
+                selected["components"] = normalize_components(
+                    legacy_components(selected, selected["component_order"]),
+                    snapshot.catalog,
+                )
+            if component.get("assembly_schema_version", 1) == 1:
+                selected["components"] = expand_legacy_gaps(
+                    selected["components"], snapshot.catalog
+                )
+            selected["assembly_schema_version"] = 2
+            selected["component_order"] = [
+                c["instance_id"] for c in selected["components"]
+            ]
         return response
 
     def _prepare(self, request: dict):
@@ -185,6 +202,7 @@ class DesignService:
                 if "components" in request
                 else None
             ),
+            assembly_schema_version=request.get("assembly_schema_version", 1),
         )
         design.preview.update(
             {
@@ -364,6 +382,7 @@ class DesignService:
             "genbank",
         )
         return {
+            "assembly_schema_version": component.get("assembly_schema_version", 1),
             "id": generation_id,
             "resistance_id": component["resistance_id"],
             "replication_id": component["replication_id"],

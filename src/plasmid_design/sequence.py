@@ -21,7 +21,11 @@ from src.final_assemble_execute.common import (
 from src.final_assemble_execute.models import SequenceAssemblyResult
 from src.final_assemble_plan.common import enzyme_cut_positions, gc_percent
 from src.plasmid_design.errors import DesignError
-from src.plasmid_design.components import legacy_components, normalize_components
+from src.plasmid_design.components import (
+    legacy_components,
+    normalize_components,
+    expand_legacy_gaps,
+)
 
 LEGACY_COMPONENT_ORDER = ("resistance", "replication", "expression")
 DEFAULT_COMPONENT_ORDER = ("resistance", "replication", "t1", "expression", "t0")
@@ -336,7 +340,13 @@ def build_design(
     t0_id: str | None = None,
     t1_id: str | None = None,
     components: list[dict] | None = None,
+    assembly_schema_version: int = 1,
 ) -> MolecularDesign:
+    if type(assembly_schema_version) is not int or assembly_schema_version not in (
+        1,
+        2,
+    ):
+        raise DesignError("装配版本必须为 1 或 2。", code="invalid_components")
     legacy_order = (
         normalize_component_order(component_order) if components is None else None
     )
@@ -356,7 +366,9 @@ def build_design(
         ),
         catalog,
     )
-    order = legacy_order or [c["instance_id"] for c in components]
+    if assembly_schema_version == 1:
+        components = expand_legacy_gaps(components, catalog)
+    order = [c["instance_id"] for c in components]
     enzymes = resolve_enzymes(enzyme_names)
     modules = {}
     for component in components:
@@ -368,9 +380,13 @@ def build_design(
             catalog.get_terminator(identifier)
             if kind in ("t0", "t1")
             else (
-                catalog.get_resistance(identifier)
-                if kind == "resistance"
-                else catalog.get_replication(identifier)
+                catalog.get_gap(identifier)
+                if kind == "gap"
+                else (
+                    catalog.get_resistance(identifier)
+                    if kind == "resistance"
+                    else catalog.get_replication(identifier)
+                )
             )
         )
     resistances = [
@@ -437,24 +453,6 @@ def build_design(
                         module.sequence,
                     )
                 ]
-                if kind == "resistance":
-                    block.append(
-                        (
-                            "module_interval",
-                            "固定模块间隔",
-                            "linker",
-                            catalog.scaffold["resistance_to_replication"],
-                        )
-                    )
-                elif kind == "replication":
-                    block.append(
-                        (
-                            "t1_interval",
-                            "复制模块尾部间隔",
-                            "linker",
-                            catalog.scaffold["replication_to_t1"],
-                        )
-                    )
             pieces.extend((owner, kind, *piece) for piece in block)
         segments, features, cursor = [], [], 0
         for owner, component_type, identifier, label, kind, dna in pieces:
@@ -470,7 +468,7 @@ def build_design(
                     "length_bp": len(dna),
                 }
             )
-            if kind in ("resistance", "replication"):
+            if kind in ("resistance", "replication", "gap"):
                 features.extend(_module_features(modules[owner], cursor, owner))
             elif kind == "terminator":
                 # One source annotation per standalone terminator; no duplicate wrapper.
@@ -513,6 +511,7 @@ def build_design(
         right.name: bone_by_id["right_site"]["start_bp"],
     }
     plan = {
+        "assembly_schema_version": 2,
         "parts_design_id": design_id,
         "assembly_method": "restriction",
         "component_order": order,
@@ -654,6 +653,7 @@ def build_design(
         except DesignError as exc:
             issues.append({"code": exc.code, "message": str(exc)})
     preview = {
+        "assembly_schema_version": 2,
         "component_order": order,
         "components": components,
         "t0_id": t0_id,

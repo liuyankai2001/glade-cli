@@ -6,7 +6,7 @@ import re
 
 from src.plasmid_design.errors import DesignError
 
-COMPONENT_TYPES = {"resistance", "replication", "expression", "t0", "t1"}
+COMPONENT_TYPES = {"resistance", "replication", "expression", "t0", "t1", "gap"}
 LEGACY_SELECTION_FIELDS = {
     "resistance_id",
     "replication_id",
@@ -62,9 +62,13 @@ def normalize_components(value, catalog=None) -> list[dict]:
                         catalog.get_terminator(module_id)
                         if kind in ("t0", "t1")
                         else (
-                            catalog.get_resistance(module_id)
-                            if kind == "resistance"
-                            else catalog.get_replication(module_id)
+                            catalog.get_gap(module_id)
+                            if kind == "gap"
+                            else (
+                                catalog.get_resistance(module_id)
+                                if kind == "resistance"
+                                else catalog.get_replication(module_id)
+                            )
                         )
                     )
                 except (KeyError, ValueError) as exc:
@@ -87,6 +91,34 @@ def normalize_components(value, catalog=None) -> list[dict]:
             code="invalid_components",
         )
     return result
+
+
+def expand_legacy_gaps(components, catalog):
+    """Make legacy external intervals explicit once, with collision-free stable IDs."""
+    if any(c["component_type"] == "gap" for c in components):
+        return components
+    used = {c["instance_id"] for c in components}
+    expanded = []
+    for index, component in enumerate(components):
+        expanded.append(dict(component))
+        kind = component["component_type"]
+        alias = {
+            "resistance": "resistance_to_replication",
+            "replication": "replication_to_t1",
+        }.get(kind)
+        if alias is None:
+            continue
+        module = next(g for g in catalog.gap.values() if alias in g.aliases)
+        base = f"legacy-gap-{index}-{kind}"
+        identifier, suffix = base, 0
+        while identifier in used:
+            suffix += 1
+            identifier = f"{base}-{suffix}"
+        used.add(identifier)
+        expanded.append(
+            {"instance_id": identifier, "component_type": "gap", "module_id": module.id}
+        )
+    return expanded
 
 
 def legacy_components(selection: dict, order) -> list[dict]:

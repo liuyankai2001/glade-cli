@@ -16,6 +16,7 @@ _EXPECTED_COLUMNS = {
     "resistance": ("id", "name", "antibiotic", "resistance_gene", "sequence"),
     "replication": ("id", "name", "host_range", "copy_number", "sequence"),
     "terminator": ("id", "name", "sequence"),
+    "gap": ("id", "name", "sequence"),
 }
 _NOTES = {
     "basic_seva_gm": (
@@ -53,6 +54,9 @@ class Module:
     role: str | None = None
     notes: tuple[str, ...] = ()
     features: tuple[Mapping[str, Any], ...] = ()
+    aliases: tuple[str, ...] = ()
+    purpose: str | None = None
+    evidence_status: str | None = None
 
     @property
     def length_bp(self) -> int:
@@ -82,6 +86,12 @@ class Module:
             payload.update(host_range=self.host_range, copy_number=self.copy_number)
         elif self.type == "terminator":
             payload["role"] = self.role
+        elif self.type == "gap":
+            payload.update(
+                aliases=list(self.aliases),
+                purpose=self.purpose,
+                evidence_status=self.evidence_status,
+            )
         return payload
 
 
@@ -92,8 +102,9 @@ class ModuleCatalog:
         self.data_dir = Path(data_dir)
         package_dir = Path(__file__).parent
         self._feature_snapshot = self._read_json(package_dir / "source_features.json")
-        if self._feature_snapshot.get("_schema_version") != 2:
+        if self._feature_snapshot.get("_schema_version") != 3:
             raise ValueError("unsupported source feature schema version")
+        self._gap = MappingProxyType(self._load_type("gap"))
         self.scaffold = self._load_scaffold(package_dir / "scaffold.json")
         self._resistance = MappingProxyType(self._load_type("resistance"))
         self._replication = MappingProxyType(self._load_type("replication"))
@@ -116,6 +127,13 @@ class ModuleCatalog:
     @property
     def terminator(self) -> Mapping[str, Module]:
         return self._terminator
+
+    @property
+    def gap(self) -> Mapping[str, Module]:
+        return self._gap
+
+    def get_gap(self, module_id: str) -> Module:
+        return self._get(self.gap, module_id, "gap")
 
     def get_resistance(self, module_id: str) -> Module:
         return self._get(self.resistance, module_id, "resistance")
@@ -142,17 +160,23 @@ class ModuleCatalog:
 
     def _load_scaffold(self, path: Path) -> Mapping[str, Any]:
         scaffold = self._read_json(path)
-        if scaffold.get("_schema_version") != 2:
+        if scaffold.get("_schema_version") != 3:
             raise ValueError("unsupported scaffold schema version")
         provenance = scaffold.get("provenance")
         if not isinstance(provenance, dict):
-            raise ValueError("scaffold provenance is required")  # noqa: TRY004 - invalid persisted JSON data
+            raise ValueError(
+                "scaffold provenance is required"
+            )  # noqa: TRY004 - invalid persisted JSON data
         for key in (
             "resistance_to_replication",
             "replication_to_t1",
             "landing_pad_spacer",
         ):
-            sequence = scaffold.get(key)
+            module = self.get_gap(scaffold.get("gap_ids", {}).get(key))
+            if key not in module.aliases:
+                raise ValueError(f"invalid scaffold gap alias: {key}")
+            sequence = module.sequence
+            scaffold[key] = sequence
             details = provenance.get(key)
             if not isinstance(sequence, str) or not sequence or set(sequence) - _DNA:
                 raise ValueError(f"invalid scaffold sequence: {key}")
@@ -179,7 +203,7 @@ class ModuleCatalog:
         for row in rows:
             if None in row or any(value is None for value in row.values()):
                 raise ValueError(f"malformed CSV row in {path.name}")
-            for existing_type in ("resistance", "replication", "terminator"):
+            for existing_type in ("resistance", "replication", "terminator", "gap"):
                 existing = getattr(self, f"_{existing_type}", {})
                 if row["id"] in existing:
                     raise ValueError(
@@ -216,10 +240,27 @@ class ModuleCatalog:
             )
         if snapshot.get("type") != module_type:
             raise ValueError(f"source module type mismatch: {module_id}")
-        self._validate_provenance(module_id, sequence, snapshot.get("provenance"))
+        original = snapshot.get("gap_extraction", {}).get("original_sequence", sequence)
+        self._validate_provenance(module_id, original, snapshot.get("provenance"))
+        if module_type != "gap":
+            self._validate_gap_extraction(module_id, sequence, snapshot)
+        else:
+            if module_id != "gap_" + hashlib.sha256(sequence.encode()).hexdigest():
+                raise ValueError(f"invalid content-addressed gap id: {module_id}")
+            if (
+                not snapshot.get("aliases")
+                or not snapshot.get("purpose")
+                or not snapshot.get("evidence_status")
+                or not snapshot.get("sources")
+            ):
+                raise ValueError(f"missing gap source metadata: {module_id}")
+            for source in snapshot["sources"]:
+                self._validate_provenance(module_id, sequence, source)
         features = snapshot.get("features")
         if not isinstance(features, list):
-            raise ValueError(f"invalid feature snapshot for module: {module_id}")  # noqa: TRY004 - catalog data validation
+            raise ValueError(
+                f"invalid feature snapshot for module: {module_id}"
+            )  # noqa: TRY004 - catalog data validation
         for feature in features:
             self._validate_feature(module_id, sequence, feature)
         common = {
@@ -227,7 +268,7 @@ class ModuleCatalog:
             "name": name,
             "type": module_type,
             "sequence": sequence,
-            "notes": _NOTES.get(module_id, ()),
+            "notes": tuple(snapshot.get("notes", ())) + _NOTES.get(module_id, ()),
             "features": tuple(_freeze(feature) for feature in features),
         }
         if module_type == "resistance":
@@ -241,6 +282,13 @@ class ModuleCatalog:
             if role not in ("t0", "t1"):
                 raise ValueError(f"invalid terminator role for module: {module_id}")
             return Module(**common, role=role)
+        if module_type == "gap":
+            return Module(
+                **common,
+                aliases=tuple(snapshot["aliases"]),
+                purpose=snapshot["purpose"],
+                evidence_status=snapshot["evidence_status"],
+            )
         return Module(
             **common, host_range=row["host_range"], copy_number=row["copy_number"]
         )
@@ -249,7 +297,9 @@ class ModuleCatalog:
         self, module_id: str, sequence: str, provenance: Any
     ) -> None:
         if not isinstance(provenance, dict):
-            raise ValueError(f"source provenance is required: {module_id}")  # noqa: TRY004 - invalid persisted JSON data
+            raise ValueError(
+                f"source provenance is required: {module_id}"
+            )  # noqa: TRY004 - invalid persisted JSON data
         sources = self._feature_snapshot.get("_sources")
         source_key = provenance.get("source_key")
         source = (
@@ -258,7 +308,9 @@ class ModuleCatalog:
             else None
         )
         if not isinstance(source, dict):
-            raise ValueError(f"unknown pinned source for module: {module_id}")  # noqa: TRY004 - invalid persisted JSON data
+            raise ValueError(
+                f"unknown pinned source for module: {module_id}"
+            )  # noqa: TRY004 - invalid persisted JSON data
         for key, length in (("source_sha256", 64), ("source_version", 40)):
             value = provenance.get(key)
             if (
@@ -295,7 +347,9 @@ class ModuleCatalog:
             if derivation is None:
                 continue
             if not isinstance(derivation, dict):
-                raise ValueError(f"invalid source derivation: {module.id}")  # noqa: TRY004 - invalid persisted JSON data
+                raise ValueError(
+                    f"invalid source derivation: {module.id}"
+                )  # noqa: TRY004 - invalid persisted JSON data
             prefix = self.terminator.get(derivation.get("removed_prefix_module_id"))
             provenance = snapshot["provenance"]
             if (
@@ -307,13 +361,53 @@ class ModuleCatalog:
                 != hashlib.sha256(prefix.sequence.encode()).hexdigest()
                 or derivation.get("parent_sha256")
                 != hashlib.sha256(
-                    (prefix.sequence + module.sequence).encode()
+                    (
+                        prefix.sequence
+                        + snapshot["gap_extraction"]["original_sequence"]
+                    ).encode()
                 ).hexdigest()
                 or derivation.get("parent_start_1based")
                 != provenance["start_1based"] - prefix.length_bp
                 or derivation.get("parent_end_1based") != provenance["end_1based"]
             ):
                 raise ValueError(f"source derivation mismatch: {module.id}")
+
+    def _validate_gap_extraction(self, module_id, sequence, snapshot):
+        from src.plasmid_design.gap_curation import extract_reviewed_gaps
+
+        extraction = snapshot.get("gap_extraction")
+        if not isinstance(extraction, dict):
+            raise ValueError(f"missing gap audit: {module_id}")
+        original = extraction.get("original_sequence")
+        if not isinstance(original, str) or hashlib.sha256(
+            original.encode()
+        ).hexdigest() != extraction.get("original_sha256"):
+            raise ValueError(f"invalid original gap audit hash: {module_id}")
+        features = extraction.get("original_features")
+        if not isinstance(features, list):
+            raise ValueError(f"invalid original gap features: {module_id}")
+        for feature in features:
+            self._validate_feature(module_id, original, feature)
+        spans = extraction.get("removed_gaps", [])
+        clean, mapped, retained = extract_reviewed_gaps(original, features, spans)
+        if clean != sequence or mapped != snapshot.get("features"):
+            raise ValueError(f"gap extraction reconstruction mismatch: {module_id}")
+        provenance = snapshot["provenance"]
+        for segment in retained:
+            segment.update(
+                source_start_1based=provenance["start_1based"]
+                + segment["original_start_1based"]
+                - 1,
+                source_end_1based=provenance["start_1based"]
+                + segment["original_end_1based"]
+                - 1,
+            )
+        if retained != extraction.get("retained_segments"):
+            raise ValueError(f"gap coordinate map mismatch: {module_id}")
+        for span in spans:
+            gap = self.get_gap(span.get("gap_id"))
+            if original[span["start_1based"] - 1 : span["end_1based"]] != gap.sequence:
+                raise ValueError(f"extracted gap DNA mismatch: {module_id}")
 
     @staticmethod
     def _validate_feature(module_id: str, sequence: str, feature: Any) -> None:
@@ -322,7 +416,9 @@ class ModuleCatalog:
             or not isinstance(feature.get("type"), str)
             or not isinstance(feature.get("parts"), list)
         ):
-            raise ValueError(f"invalid feature metadata for module: {module_id}")  # noqa: TRY004 - catalog data validation
+            raise ValueError(
+                f"invalid feature metadata for module: {module_id}"
+            )  # noqa: TRY004 - catalog data validation
         for part in feature["parts"]:
             if not isinstance(part, dict) or not all(
                 isinstance(part.get(key), int) for key in ("start", "end")
@@ -337,6 +433,7 @@ class ModuleCatalog:
             self.data_dir / "resistance_modules.csv",
             self.data_dir / "replication_modules.csv",
             self.data_dir / "terminator_modules.csv",
+            self.data_dir / "gap_modules.csv",
             Path(__file__).parent / "scaffold.json",
             Path(__file__).parent / "source_features.json",
         ):

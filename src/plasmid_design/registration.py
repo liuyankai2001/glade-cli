@@ -23,7 +23,7 @@ from src.final_assemble_plan.get_final_assembly_context import (
 )
 from src.plasmid_selection.get_plasmid_context import stable_json_hash
 
-DESIGN_VERSION = "component_plasmid_design.v4"
+DESIGN_VERSION = "component_plasmid_design.v5"
 DESIGN_WARNING = "这些文件是计算拼接设计，实际质粒需制备并验证。"
 PROTECTIVE_WARNING = (
     "制备片段两端已加入 6 bp 保护碱基，实验前请核对所选酶的末端切割条件。"
@@ -125,6 +125,7 @@ def export_design(
         k: dict(v) if hasattr(v, "items") else v for k, v in source_provenance.items()
     }
     component_design = {
+        "assembly_schema_version": 2,
         "generation_id": generation_id,
         "algorithm_version": DESIGN_VERSION,
         "source_fingerprint": snapshot.fingerprint,
@@ -233,6 +234,7 @@ def export_design(
                 "replication": replication.id,
                 "component_order": design.preview["component_order"],
                 "components": components,
+                "assembly_schema_version": 2,
                 "t0_id": design.preview["t0_id"],
                 "t1_id": design.preview["t1_id"],
                 "enzymes": design.preview["enzymes"],
@@ -362,6 +364,7 @@ def export_design(
         "expression": "完整表达构建",
         "t0": "T0",
         "t1": "T1",
+        "gap": "Gap",
     }
     order_description = " → ".join(
         f"{order_labels[c['component_type']]}（{c.get('module_id', '当前项目')}；{c['instance_id']}）"
@@ -376,7 +379,7 @@ def export_design(
         or "未选择"
     )
     report_path.write_text(
-        f"# 质粒设计：{source.target_compound_id}\n\n抗性模块：{resistance_description}\n\n复制模块：{replication.name}；拷贝数类别：{replication.copy_number}\n\n表达构建：方案 {design_id}，{construct.length_bp} bp\n\n目标质粒：{len(final_sequence)} bp，GC {design.preview['gc_percent']:.2f}%，环状。\n\n保留来源中的模块间隔；终止子仅包含用户明确选入的 T0/T1。所选模块和表达构建序列完整保留。\n\n| 边界 | 酶 | 识别序列 | 末端 |\n| --- | --- | --- | --- |\n{rows}\n\n制备骨架和表达插入两个 DNA 片段，再用指定双酶切割并连接。骨架制备片段中的边界酶顺序为右酶→骨架→左酶，插入片段为左酶→表达构建→右酶。保护碱基在切割时去除；骨架占位序列不保留在目标质粒中。\n\n禁止位点检查覆盖各模块、表达构建、连接处及环状闭合处；只保留两个指定边界位点。序列、导出文件和插入区域已核对。\n\n"
+        f"# 质粒设计：{source.target_compound_id}\n\n抗性模块：{resistance_description}\n\n复制模块：{replication.name}；拷贝数类别：{replication.copy_number}\n\n表达构建：方案 {design_id}，{construct.length_bp} bp\n\n目标质粒：{len(final_sequence)} bp，GC {design.preview['gc_percent']:.2f}%，环状。\n\nGap 与终止子均按组件列表显式装配，不追加隐藏间隔。模块采用已审计拆出边界片段后的序列，表达构建完整保留。\n\n| 边界 | 酶 | 识别序列 | 末端 |\n| --- | --- | --- | --- |\n{rows}\n\n制备骨架和表达插入两个 DNA 片段，再用指定双酶切割并连接。骨架制备片段中的边界酶顺序为右酶→骨架→左酶，插入片段为左酶→表达构建→右酶。保护碱基在切割时去除；骨架占位序列不保留在目标质粒中。\n\n禁止位点检查覆盖各模块、表达构建、连接处及环状闭合处；只保留两个指定边界位点。序列、导出文件和插入区域已核对。\n\n"
         + f"组件顺序：{order_description}\n\n"
         + f"终止子引用：{terminator_description}。\n\n"
         + "\n".join(f"- {w}" for w in warnings)

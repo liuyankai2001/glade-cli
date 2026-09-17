@@ -1,5 +1,5 @@
 export type ComponentType =
-  "resistance" | "replication" | "expression" | "t0" | "t1";
+  "resistance" | "replication" | "expression" | "t0" | "t1" | "gap";
 export type ComponentOrder = string[];
 export type ComponentInstance = {
   instance_id: string;
@@ -18,7 +18,7 @@ export type Feature = {
 export type Module = {
   id: string;
   name: string;
-  type: "resistance" | "replication" | "terminator";
+  type: "resistance" | "replication" | "terminator" | "gap";
   role?: "t0" | "t1";
   sequence: string;
   length_bp: number;
@@ -27,6 +27,9 @@ export type Module = {
   resistance_gene?: string;
   host_range?: string;
   copy_number?: string;
+  aliases?: string[];
+  purpose?: string;
+  evidence_status?: string;
   notes: string[];
 };
 export type Enzyme = {
@@ -55,6 +58,7 @@ export type Context = {
   } | null;
   restriction_enzymes: Enzyme[];
   selection: {
+    assembly_schema_version?: number;
     components?: ComponentInstance[];
     resistance_id?: string;
     replication_id?: string;
@@ -74,6 +78,7 @@ export type Issue = {
   end_bp?: number;
 };
 export type Preview = {
+  assembly_schema_version?: number;
   components?: ComponentInstance[];
   t0_id?: string | null;
   t1_id?: string | null;
@@ -102,6 +107,7 @@ export type Preview = {
   manifest_revision: number;
 };
 export type Result = {
+  assembly_schema_version?: number;
   components?: ComponentInstance[];
   t0_id?: string | null;
   t1_id?: string | null;

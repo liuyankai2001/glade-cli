@@ -21,13 +21,13 @@
 | basic_seva_p15a | BASIC_SEVA_16.10 | 1305–2036 | 732 |
 | basic_seva_psc101 | BASIC_SEVA_17.10 | 1305–2764 | 1460 |
 | basic_seva_pbr322_rop | BASIC_SEVA_19.10 | 1305–2689 | 1385 |
-| basic_seva_psc101_pkd46_ts | BASIC_SEVA_17_pKD46.10 | 1297–2847 | 1551 |
+| basic_seva_psc101_pkd46_ts | BASIC_SEVA_17_pKD46.10 | 1297–2833 | 1537 |
 
-pKD46 在主集合中以 `Rep101(pKD46)`、`pSC101 ori` 等子特征注释；该行保存 BSEVA_L1 结束后至 T1 开始前的整个复制模块。其边界还使用作者公开的 [独立核心序列](https://github.com/LondonBiofoundry/basicsynbio/blob/cad60c243aa2b12c6ed52ce36be454da3f357a6e/sequences/genbank_files/BASIC_SEVA_collection/misc_seqs/BS_x7x_pKD46_core_seq.gb) 交叉核对。
+pKD46 在主集合中以 `Rep101(pKD46)`、`pSC101 ori` 等子特征注释；该行保留复制功能及未经确认的调控区；T1之前可确认的14 bp接口已归入gap库。其边界还使用作者公开的 [独立核心序列](https://github.com/LondonBiofoundry/basicsynbio/blob/cad60c243aa2b12c6ed52ce36be454da3f357a6e/sequences/genbank_files/BASIC_SEVA_collection/misc_seqs/BS_x7x_pKD46_core_seq.gb) 交叉核对。
 
 ## 文件校验
 
 已检查字段、行数、唯一编号、DNA 字符、模块边界、T1 排除情况及全部序列与来源片段的一致性。
 
-- CSV SHA-256：`3d731f57397367dd17af25e5c8a64336e500c7d81eef39bb0c7356dd5dd074da`
+- CSV SHA-256：`985f5888186d08b695e24e183b708813785393692cf23dce826336e9e3dd86d5`
 - 来源 GenBank SHA-256：`a4cdb1eb8917f65f3727ec54108b604c97caa9768f546b9cf2ed3d2d9fc29917`

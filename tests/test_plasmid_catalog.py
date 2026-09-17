@@ -21,13 +21,13 @@ class ModuleCatalogContractTests(unittest.TestCase):
         self.assertEqual(
             {module.id: module.length_bp for module in catalog.resistance.values()},
             {
-                "basic_seva_ap": 1065,
-                "basic_seva_km": 953,
-                "basic_seva_cm": 809,
-                "basic_seva_sm_sp": 1023,
-                "basic_seva_tet_5a": 1301,
-                "basic_seva_gm": 831,
-                "basic_seva_gm_11": 850,
+                "basic_seva_ap": 1039,
+                "basic_seva_km": 927,
+                "basic_seva_cm": 783,
+                "basic_seva_sm_sp": 989,
+                "basic_seva_tet_5a": 1267,
+                "basic_seva_gm": 805,
+                "basic_seva_gm_11": 824,
             },
         )
         self.assertEqual(
@@ -37,14 +37,14 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "basic_seva_p15a": 732,
                 "basic_seva_psc101": 1460,
                 "basic_seva_pbr322_rop": 1385,
-                "basic_seva_psc101_pkd46_ts": 1551,
+                "basic_seva_psc101_pkd46_ts": 1537,
             },
         )
         module = catalog.get_resistance("basic_seva_ap")
-        self.assertEqual(module.length_bp, 1065)
+        self.assertEqual(module.length_bp, 1039)
         self.assertEqual(
             hashlib.sha256(module.sequence.encode()).hexdigest(),
-            "508ab58b2c8b5252d93d06f7164734806c8caedefb438eaeeb8277615bedce93",
+            "ab14bcddcec1db800438d7ff11882f3a970a286db2ef0e2e9d5b09284b5cefa2",
         )
         self.assertEqual(module.to_payload()["resistance_gene"], "bla")
         self.assertEqual(module.to_payload()["type"], "resistance")
@@ -164,7 +164,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
         )
         for module_id, parent_hash in expected_parents.items():
             module = catalog.get_resistance(module_id)
-            parent = t0 + module.sequence
+            parent = t0 + snapshot[module_id]["gap_extraction"]["original_sequence"]
             self.assertEqual(hashlib.sha256(parent.encode()).hexdigest(), parent_hash)
             metadata = snapshot[module_id]
             self.assertEqual(metadata["derivation"]["parent_sha256"], parent_hash)
@@ -173,7 +173,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 metadata["provenance"]["end_1based"]
                 - metadata["provenance"]["start_1based"]
                 + 1,
-                module.length_bp,
+                len(metadata["gap_extraction"]["original_sequence"]),
             )
             for feature in module.features:
                 self.assertNotIn("SEVA_T0", feature["qualifiers"].get("label", ()))
@@ -202,6 +202,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             path = staged / "terminator_modules.csv"
@@ -291,6 +292,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                     "resistance_modules.csv",
                     "replication_modules.csv",
                     "terminator_modules.csv",
+                    "gap_modules.csv",
                 ):
                     shutil.copy2(DATA_DIR / name, staged / name)
                 path = staged / "terminator_modules.csv"
@@ -321,6 +323,27 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 part["start"] += 103
                 part["end"] += 103
 
+        item["provenance"]["end_1based"] = (
+            item["provenance"]["start_1based"] + len(sequence) - 1
+        )
+        item["gap_extraction"] = {
+            "status": "no_confirmed_internal_gap",
+            "original_sequence": sequence,
+            "original_sha256": hashlib.sha256(sequence.encode()).hexdigest(),
+            "original_features": item["features"],
+            "removed_gaps": [],
+            "retained_segments": [
+                {
+                    "original_start_1based": 1,
+                    "original_end_1based": len(sequence),
+                    "module_start_1based": 1,
+                    "module_end_1based": len(sequence),
+                    "source_start_1based": item["provenance"]["start_1based"],
+                    "source_end_1based": item["provenance"]["end_1based"],
+                }
+            ],
+        }
+
         def staged_read(path):
             return metadata if path.name == "source_features.json" else read_json(path)
 
@@ -330,6 +353,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             path = staged / "resistance_modules.csv"
@@ -408,8 +432,8 @@ class ModuleCatalogContractTests(unittest.TestCase):
                     self.assertLessEqual(part["end"], module.length_bp)
         ap_features = catalog.get_resistance("basic_seva_ap").features
         self.assertEqual(len(ap_features), 1)
-        self.assertEqual(ap_features[0]["parts"][0]["start"], 26)
-        self.assertEqual(ap_features[0]["parts"][0]["end"], 1065)
+        self.assertEqual(ap_features[0]["parts"][0]["start"], 0)
+        self.assertEqual(ap_features[0]["parts"][0]["end"], 1039)
         pkd46_features = catalog.get_replication("basic_seva_psc101_pkd46_ts").features
         self.assertEqual(pkd46_features[0]["type"], "CDS")
         self.assertEqual(pkd46_features[0]["parts"][0]["start"], 61)
@@ -424,6 +448,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             with (staged / "resistance_modules.csv").open(encoding="utf-8") as handle:
@@ -451,6 +476,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             with (staged / "resistance_modules.csv").open(encoding="utf-8") as handle:
@@ -471,6 +497,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             path = staged / "replication_modules.csv"
@@ -491,6 +518,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             with (staged / "replication_modules.csv").open(encoding="utf-8") as handle:
@@ -514,6 +542,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
                 "resistance_modules.csv",
                 "replication_modules.csv",
                 "terminator_modules.csv",
+                "gap_modules.csv",
             ):
                 shutil.copy2(DATA_DIR / name, staged / name)
             before = ModuleCatalog(staged).fingerprint

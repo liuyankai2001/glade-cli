@@ -183,6 +183,7 @@ describe("Workbench", () => {
       );
       const request = mock.mock.calls.find(([url]) => url.includes("preview"));
       expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+        assembly_schema_version: 2,
         components: [
           {
             instance_id: "replication",
