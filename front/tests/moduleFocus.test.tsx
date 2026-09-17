@@ -197,7 +197,7 @@ describe("module reference-strand focus", () => {
     expect(screen.getByTestId("module-direction")).toBeInTheDocument();
   });
 
-  it("preserves selection through identical snapshots, coordinate updates, rotation and zoom", () => {
+  it("preserves selection through identical snapshots, coordinate updates, wheel zoom and reset", () => {
     const { part, props, rerender } = setup();
     click(part("amp-a"));
     rerender(<PlasmidRing {...props} preview={{ ...preview, segments: preview.segments.map((p) => ({ ...p })) }} />);
@@ -206,11 +206,11 @@ describe("module reference-strand focus", () => {
     rerender(<PlasmidRing {...props} preview={moved} />);
     expect(screen.getByTestId("module-5-prime")).toHaveAttribute("data-bp", "201");
     expect(screen.getByTestId("module-3-prime")).toHaveAttribute("data-bp", "400");
-    fireEvent.click(screen.getByRole("button", { name: "旋转环图" }));
-    fireEvent.click(screen.getByRole("button", { name: "放大环图" }));
+    fireEvent.wheel(screen.getByRole("img", { name: "质粒环图" }), { deltaY: -100 });
     const transform = screen.getByTestId("module-direction").parentElement!.getAttribute("transform");
-    expect(transform).toContain("rotate(30 220 220)");
     expect(transform).toContain("scale(1.1)");
+    fireEvent.click(screen.getByRole("button", { name: "重置环图大小" }));
+    expect(screen.getByTestId("module-direction").parentElement!.getAttribute("transform")).toContain("scale(1)");
     expect(screen.getByTestId("module-5-prime")).toHaveAttribute("data-bp", "201");
   });
 

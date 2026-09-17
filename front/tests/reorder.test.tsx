@@ -438,7 +438,7 @@ describe("component reordering", () => {
     expect(rowOrder()).toEqual(defaultOrder);
   });
 
-  it("maps SVG letterboxing, rotation and zoom, and cancels on Escape and unmount", () => {
+  it("maps SVG letterboxing and wheel zoom, and cancels on Escape and unmount", () => {
     const onReorder = vi.fn();
     const props = {
       preview,
@@ -452,9 +452,8 @@ describe("component reordering", () => {
     vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
       rect(100, 50, 660, 440),
     );
-    fireEvent.click(screen.getByRole("button", { name: "旋转环图" }));
-    fireEvent.click(screen.getByRole("button", { name: "放大环图" }));
-    const theta = -Math.PI / 2 + Math.PI * 2 * 0.95 + Math.PI / 6;
+    fireEvent.wheel(svg, { deltaY: -100 });
+    const theta = -Math.PI / 2 + Math.PI * 2 * 0.95;
     const x = 430 + 138 * 1.1 * Math.cos(theta),
       y = 270 + 138 * 1.1 * Math.sin(theta);
     const part = container.querySelector("[data-ring-component='resistance']")!;

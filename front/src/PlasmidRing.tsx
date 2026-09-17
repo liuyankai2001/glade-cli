@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type {
   Preview,
@@ -63,7 +63,8 @@ export function PlasmidRing({
   componentOrder?: ComponentOrder;
   onReorder?: (order: ComponentOrder) => void;
 }) {
-  const [view, setView] = useState({ zoom: 1, rotate: 0 });
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
   const [annotations, setAnnotations] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const skipClick = useRef(false);
@@ -77,6 +78,35 @@ export function PlasmidRing({
   } | null>(null);
   const dragRef = useRef(drag);
   const origin = useRef({ x: 0, y: 0 });
+  const changeZoom = useCallback((requested: number) => {
+    const next = Math.max(0.5, Math.min(2, requested));
+    if (next === zoomRef.current) return;
+    zoomRef.current = next;
+    // Cancel before scheduling the render: mouseup may arrive before React
+    // commits the changed zoom and runs the geometry effect.
+    if (dragRef.current) {
+      skipClick.current = true;
+      dragRef.current = null;
+      setDrag(null);
+    }
+    setZoom(next);
+  }, []);
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const wheel = (event: WheelEvent) => {
+      const mode = event.deltaMode;
+      const deltaY = event.deltaY;
+      if (event.ctrlKey || event.metaKey || !Number.isFinite(deltaY) || deltaY === 0) return;
+      event.preventDefault();
+      const unit = mode === 1 ? 16 : mode === 2 ? svg.clientHeight || 440 : 1;
+      changeZoom(zoomRef.current * 1.1 ** (-deltaY * unit / 100));
+    };
+    // React delegates wheel events with passive listeners. Listen on the SVG
+    // directly so zooming can prevent the simultaneous page scroll.
+    svg.addEventListener("wheel", wheel, { passive: false });
+    return () => svg.removeEventListener("wheel", wheel);
+  }, [changeZoom]);
   const length = preview?.length_bp || construct?.length_bp || 0;
   const outer: Segment[] =
     preview?.segments ||
@@ -127,7 +157,7 @@ export function PlasmidRing({
   const geometryIdentity = JSON.stringify([
     length,
     componentOrder,
-    view,
+    zoom,
     preview?.source_fingerprint || construct?.sequence_sha256,
     outer.map((part) => [
       part.id,
@@ -174,9 +204,7 @@ export function PlasmidRing({
         (event.clientX - box.left - (box.width - scale * 440) / 2) / scale;
       const y =
         (event.clientY - box.top - (box.height - scale * 440) / 2) / scale;
-      const a =
-        Math.atan2((y - 220) / view.zoom, (x - 220) / view.zoom) -
-        (view.rotate * Math.PI) / 180;
+      const a = Math.atan2((y - 220) / zoom, (x - 220) / zoom);
       const fraction =
         ((((a + Math.PI / 2) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) /
         (Math.PI * 2);
@@ -447,7 +475,7 @@ export function PlasmidRing({
         }}
       >
         <g
-          transform={`rotate(${view.rotate} 220 220) scale(${view.zoom}) translate(${220 / view.zoom - 220} ${220 / view.zoom - 220})`}
+          transform={`translate(220 220) scale(${zoom}) translate(-220 -220)`}
         >
           <circle
             cx="220"
@@ -603,14 +631,14 @@ export function PlasmidRing({
               ))}
             </g>
           )}
+          <circle cx="220" cy="220" r="78" fill="#0d1117" />
+          <text x="220" y="214" textAnchor="middle" className="ring-number">
+            {length ? length.toLocaleString() : "—"}
+          </text>
+          <text x="220" y="236" textAnchor="middle" className="ring-unit">
+            bp
+          </text>
         </g>
-        <circle cx="220" cy="220" r="78" fill="#0d1117" />
-        <text x="220" y="214" textAnchor="middle" className="ring-number">
-          {length ? length.toLocaleString() : "—"}
-        </text>
-        <text x="220" y="236" textAnchor="middle" className="ring-unit">
-          bp
-        </text>
       </svg>
       {focused && (
         <p className="ring-direction-hint" role="status">
@@ -620,34 +648,11 @@ export function PlasmidRing({
       )}
       <div className="ring-controls">
         <button
-          aria-label="缩小环图"
-          onClick={() =>
-            setView((value) => ({
-              ...value,
-              zoom: Math.max(0.8, value.zoom - 0.1),
-            }))
-          }
+          aria-label="重置环图大小"
+          title="恢复到100%"
+          onClick={() => changeZoom(1)}
         >
-          −
-        </button>
-        <button
-          aria-label="旋转环图"
-          onClick={() =>
-            setView((value) => ({ ...value, rotate: value.rotate + 30 }))
-          }
-        >
-          ↻
-        </button>
-        <button
-          aria-label="放大环图"
-          onClick={() =>
-            setView((value) => ({
-              ...value,
-              zoom: Math.min(1.15, value.zoom + 0.1),
-            }))
-          }
-        >
-          +
+          重置大小
         </button>
         <button
           className="annotation-toggle"

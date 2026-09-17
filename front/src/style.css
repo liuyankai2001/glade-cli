@@ -237,7 +237,7 @@ main {
   align-items: center;
   justify-content: center;
   gap: 14px;
-  padding: 20px;
+  padding: 52px 20px 20px;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -312,29 +312,6 @@ main {
 .ring line {
   stroke: #f778ba;
   stroke-width: 1.5;
-}
-.ring-controls {
-  display: flex;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 4px;
-}
-.ring-controls button {
-  background: transparent;
-  border: 1px solid #30363d;
-  border-radius: 4px;
-  color: #8b949e;
-  padding: 3px 7px;
-  min-width: 26px;
-  font-size: 12px;
-}
-.ring-controls button:hover,
-.ring-controls button[aria-pressed="true"] {
-  background: #21262d;
-  color: #58a6ff;
-}
-.ring-controls .annotation-toggle {
-  margin-left: 6px;
 }
 .legend {
   display: flex;
@@ -645,7 +622,7 @@ summary span {
   }
   .canvas {
     order: -1;
-    padding: 20px 10px;
+    padding: 52px 10px 20px;
   }
   .library,
   .assembly {
