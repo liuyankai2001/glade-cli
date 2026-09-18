@@ -167,14 +167,8 @@ class ModuleCatalog:
             raise ValueError(
                 "scaffold provenance is required"
             )  # noqa: TRY004 - invalid persisted JSON data
-        for key in (
-            "resistance_to_replication",
-            "replication_to_t1",
-            "landing_pad_spacer",
-        ):
+        for key in ("landing_pad_spacer",):
             module = self.get_gap(scaffold.get("gap_ids", {}).get(key))
-            if key not in module.aliases:
-                raise ValueError(f"invalid scaffold gap alias: {key}")
             sequence = module.sequence
             scaffold[key] = sequence
             details = provenance.get(key)
@@ -405,8 +399,11 @@ class ModuleCatalog:
         if retained != extraction.get("retained_segments"):
             raise ValueError(f"gap coordinate map mismatch: {module_id}")
         for span in spans:
-            gap = self.get_gap(span.get("gap_id"))
-            if original[span["start_1based"] - 1 : span["end_1based"]] != gap.sequence:
+            removed = original[span["start_1based"] - 1 : span["end_1based"]]
+            # Historical removal evidence is independent of selectable Gap modules.
+            if "gap_" + hashlib.sha256(removed.encode()).hexdigest() != span.get(
+                "gap_id"
+            ):
                 raise ValueError(f"extracted gap DNA mismatch: {module_id}")
 
     @staticmethod

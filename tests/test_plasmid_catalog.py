@@ -267,7 +267,7 @@ class ModuleCatalogContractTests(unittest.TestCase):
             if field == "source_sha256":
                 metadata["provenance"][field] = "0" * 64
             else:
-                metadata["provenance"]["replication_to_t1"][field] -= 1
+                metadata["provenance"]["landing_pad_spacer"][field] -= 1
 
             def staged_read(path, metadata=metadata):
                 return metadata if path.name == "scaffold.json" else read_json(path)
@@ -399,20 +399,21 @@ class ModuleCatalogContractTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             catalog.replication = {}
 
-    def test_scaffold_preserves_source_gap_and_t1_boundaries(self):
+    def test_scaffold_uses_basic_l1_without_deleted_interfaces(self):
         from src.plasmid_design.catalog import ModuleCatalog
 
         scaffold = ModuleCatalog(DATA_DIR).scaffold
 
-        self.assertEqual(len(scaffold["resistance_to_replication"]), 76)
-        self.assertEqual(len(scaffold["replication_to_t1"]), 14)
+        self.assertNotIn("resistance_to_replication", scaffold)
+        self.assertNotIn("replication_to_t1", scaffold)
         self.assertNotIn("t1", scaffold)
-        self.assertEqual(len(scaffold["landing_pad_spacer"]), 24)
+        self.assertEqual(len(scaffold["landing_pad_spacer"]), 53)
         self.assertEqual(
-            scaffold["landing_pad_spacer"], scaffold["resistance_to_replication"][12:36]
+            scaffold["landing_pad_spacer"],
+            "CTCGTTACTTACGACACTCCGAGACAGTCAGAGGGTATTTATTGAACTAGTCC",
         )
         self.assertEqual(
-            scaffold["provenance"]["resistance_to_replication"]["start_1based"], 1232
+            scaffold["provenance"]["landing_pad_spacer"]["start_1based"], 1
         )
         self.assertNotIn("t1", scaffold["provenance"])
 

@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from Bio import SeqIO
 from fastapi.testclient import TestClient
@@ -45,7 +46,7 @@ class GapAssemblyTests(unittest.TestCase):
             ],
         }
 
-    def test_gapless_v2_and_legacy_intervals_have_distinct_exact_lengths(self):
+    def test_gapless_v2_and_legacy_requests_do_not_insert_deleted_intervals(self):
         new = self.client.post("/api/preview", json=self.selection())
         self.assertEqual(new.status_code, 200, new.text)
         body = new.json()
@@ -56,10 +57,10 @@ class GapAssemblyTests(unittest.TestCase):
         old_request = self.selection(version=1)
         old = self.client.post("/api/preview", json=old_request)
         self.assertEqual(old.status_code, 200, old.text)
-        self.assertEqual(old.json()["length_bp"], body["length_bp"] + 76 + 14)
+        self.assertEqual(old.json()["length_bp"], body["length_bp"])
         self.assertEqual(
             [c["component_type"] for c in old.json()["components"]],
-            ["resistance", "gap", "replication", "gap", "expression"],
+            ["resistance", "replication", "expression"],
         )
         self.assertEqual(
             [
@@ -67,7 +68,7 @@ class GapAssemblyTests(unittest.TestCase):
                 for c in old.json()["components"]
                 if c["component_type"] == "gap"
             ],
-            ["legacy-gap-0-resistance", "legacy-gap-1-replication"],
+            [],
         )
         restored = {**self.selection(), "components": old.json()["components"]}
         self.assertEqual(
@@ -78,7 +79,11 @@ class GapAssemblyTests(unittest.TestCase):
     def test_repeated_gap_dna_survives_generate_annotations_context_and_report(self):
         modules = self.client.get("/api/modules").json()
         self.assertIn("gap", modules)
-        gap = next(g for g in modules["gap"] if "replication_to_t1" in g["aliases"])
+        self.assertEqual(
+            [g["name"] for g in modules["gap"]],
+            ["BASIC L1", "BASIC L2", "BASIC L3", "BASIC L4", "BASIC L5", "BASIC L6"],
+        )
+        gap = next(g for g in modules["gap"] if "L1" in g["aliases"])
         request = self.selection()
         copies = [
             {"instance_id": f"gap-{i}", "component_type": "gap", "module_id": gap["id"]}
@@ -89,11 +94,11 @@ class GapAssemblyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         preview = response.json()
         self.assertTrue(preview["valid"], preview["issues"])
-        self.assertEqual(preview["length_bp"], 1039 + 732 + 31 + 12 + 3 * 14)
+        self.assertEqual(preview["length_bp"], 1039 + 732 + 31 + 12 + 3 * 53)
         for segment in (s for s in preview["segments"] if s["kind"] == "gap"):
             self.assertEqual(
                 preview["sequence"][segment["start_bp"] - 1 : segment["end_bp"]],
-                "GGCGCGCCCAGCTG",
+                "CTCGTTACTTACGACACTCCGAGACAGTCAGAGGGTATTTATTGAACTAGTCC",
             )
         result = self.client.post("/api/generate", json=request)
         self.assertEqual(result.status_code, 202, result.text)
@@ -143,18 +148,85 @@ class GapAssemblyTests(unittest.TestCase):
             )
         self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
 
-    def test_legacy_migration_handles_id_collisions_and_explicit_unversioned_gaps(self):
+    def test_deleted_gap_ids_are_rejected_by_preview_and_generation_without_writes(self):
+        before = self.config.manifest_output_path.read_bytes()
+        deleted = (
+            "gap_50d56b8fff4d6076f998c99b6506270fb7ca6d70cf8a12e66ef7d5ce951c849b",
+            "gap_30911c7c81b6e843ccbb269bc95ab86938e861f689fe410a5d93462f4c8ca846",
+            "gap_227ef72aca86669d35fc73e9dbf1fe38ab43c775303c925b3b9f0724c2ef5dfc",
+            "gap_0774044bcbf147babae8d74d0b23e220a5adba6a11dfc2e94003158ce07bee39",
+            "gap_012f85caae757cc293c16268dbc0d7e8227e58e2edee03add58611db6c28329b",
+            "gap_031641ff6ec60f2544b884d18402435883fdf6f231abfd790df0e30d7fe70218",
+        )
+        for identifier in deleted:
+            request = self.selection()
+            request["components"].append(
+                {"instance_id": "gap", "component_type": "gap", "module_id": identifier}
+            )
+            for endpoint in ("preview", "generate"):
+                with self.subTest(identifier=identifier, endpoint=endpoint):
+                    response = self.client.post("/api/" + endpoint, json=request)
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual(response.json()["error"]["code"], "unknown_module")
+        self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
+
+    def test_all_six_basic_gaps_can_be_inserted_at_independent_module_boundaries(self):
+        gaps = self.client.get("/api/modules").json()["gap"]
+        self.assertEqual(
+            {g["name"] for g in gaps},
+            {"BASIC L1", "BASIC L2", "BASIC L3", "BASIC L4", "BASIC L5", "BASIC L6"},
+        )
+        for gap in gaps:
+            for index in range(1, 6):
+                with self.subTest(gap=gap["name"], boundary=index):
+                    request = self.selection()
+                    request["components"].insert(2, {
+                        "instance_id": "t1",
+                        "component_type": "t1",
+                        "module_id": "basic_seva_t1",
+                    })
+                    request["components"].append({
+                        "instance_id": "t0",
+                        "component_type": "t0",
+                        "module_id": "basic_seva_t0",
+                    })
+                    request["components"].insert(index, {
+                        "instance_id": "gap",
+                        "component_type": "gap",
+                        "module_id": gap["id"],
+                    })
+                    response = self.client.post("/api/preview", json=request)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    body = response.json()
+                    self.assertTrue(body["valid"], body["issues"])
+                    self.assertEqual(body["length_bp"], 2075)
+                    self.assertEqual(body["components"], request["components"])
+                    segment = next(s for s in body["segments"] if s["kind"] == "gap")
+                    self.assertEqual(
+                        body["sequence"][segment["start_bp"] - 1 : segment["end_bp"]],
+                        gap["sequence"],
+                    )
+
+    def test_legacy_requests_preserve_ids_and_explicit_unversioned_basic_gaps(self):
         request = self.selection(version=1)
         request["components"][2]["instance_id"] = "legacy-gap-0-resistance"
         response = self.client.post("/api/preview", json=request)
         self.assertEqual(response.status_code, 200, response.text)
         migrated = response.json()["components"]
-        self.assertEqual(migrated[1]["instance_id"], "legacy-gap-0-resistance-1")
-        explicit = {**request, "components": migrated}
+        self.assertEqual(migrated, request["components"])
+        gap = self.client.get("/api/modules").json()["gap"][0]
+        explicit = {
+            **request,
+            "components": [
+                *migrated,
+                {"instance_id": "gap", "component_type": "gap", "module_id": gap["id"]},
+            ],
+        }
         explicit.pop("assembly_schema_version")
         restored = self.client.post("/api/preview", json=explicit)
-        self.assertEqual(restored.json()["components"], migrated)
-        self.assertEqual(restored.json()["sequence"], response.json()["sequence"])
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()["components"], explicit["components"])
+        self.assertEqual(restored.json()["length_bp"], response.json()["length_bp"] + 53)
 
     def test_context_migrates_old_selection_without_writes_and_preserves_v2_gaplessness(
         self,
@@ -170,7 +242,7 @@ class GapAssemblyTests(unittest.TestCase):
         before = self.config.manifest_output_path.read_bytes()
         selection = self.client.get("/api/context").json()["selection"]
         self.assertEqual(selection["assembly_schema_version"], 2)
-        self.assertEqual(len(selection["components"]), 5)
+        self.assertEqual(selection["components"], components)
         self.assertEqual(self.config.manifest_output_path.read_bytes(), before)
         manifest["plasmid_selection"]["component_design"]["assembly_schema_version"] = 2
         self.config.manifest_output_path.write_text(
@@ -181,6 +253,24 @@ class GapAssemblyTests(unittest.TestCase):
 
 
 class GapLibraryTests(unittest.TestCase):
+    def test_historical_removal_hash_is_checked_without_a_selectable_gap(self):
+        from src.plasmid_design.catalog import ModuleCatalog
+
+        read_json = ModuleCatalog._read_json
+        metadata = read_json(ROOT / "src/plasmid_design/source_features.json")
+        metadata["basic_seva_ap"]["gap_extraction"]["removed_gaps"][0]["gap_id"] = (
+            "gap_a8787c36cad8618bc4a6e5585779655c8b794230d6ab3c27278f173d75eecf51"
+        )
+
+        def staged_read(path):
+            return metadata if path.name == "source_features.json" else read_json(path)
+
+        with (
+            patch.object(ModuleCatalog, "_read_json", side_effect=staged_read),
+            self.assertRaisesRegex(ValueError, "extracted gap DNA mismatch"),
+        ):
+            ModuleCatalog(ROOT / "data")
+
     def test_archived_pinned_sources_match_every_gap_and_original_module(self):
         import ast
         import io
@@ -263,24 +353,9 @@ class GapLibraryTests(unittest.TestCase):
         from src.plasmid_design.catalog import ModuleCatalog
 
         catalog = ModuleCatalog(ROOT / "data")
-        self.assertEqual(len(catalog.gap), 12)
+        self.assertEqual(len(catalog.gap), 6)
         aliases = {alias for gap in catalog.gap.values() for alias in gap.aliases}
-        self.assertTrue(
-            {
-                "L1",
-                "L2",
-                "L3",
-                "L4",
-                "L5",
-                "L6",
-                "BSEVA_L1",
-                "resistance_to_replication",
-                "replication_to_t1",
-                "landing_pad_spacer",
-                "resistance_prefix_26",
-                "resistance_prefix_34",
-            }.issubset(aliases)
-        )
+        self.assertEqual(aliases, {"L1", "L2", "L3", "L4", "L5", "L6"})
         sequences = [g.sequence for g in catalog.gap.values()]
         self.assertEqual(len(sequences), len(set(sequences)))
         metadata = json.loads(

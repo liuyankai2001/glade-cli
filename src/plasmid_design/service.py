@@ -16,7 +16,6 @@ from src.plasmid_design.components import (
     LEGACY_SELECTION_FIELDS,
     legacy_components,
     normalize_components,
-    expand_legacy_gaps,
 )
 from src.plasmid_design.project import authenticate_request, read_project
 from src.plasmid_design.registration import committed_files, export_design
@@ -169,10 +168,6 @@ class DesignService:
                 selected["components"] = normalize_components(
                     legacy_components(selected, selected["component_order"]),
                     snapshot.catalog,
-                )
-            if component.get("assembly_schema_version", 1) == 1:
-                selected["components"] = expand_legacy_gaps(
-                    selected["components"], snapshot.catalog
                 )
             selected["assembly_schema_version"] = 2
             selected["component_order"] = [

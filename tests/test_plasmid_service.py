@@ -89,15 +89,6 @@ class DesignServiceTests(unittest.TestCase):
                 ]
                 request = {**self.request(), "component_order": expanded}
                 preview = self.service.preview(request)
-                expanded = [
-                    piece
-                    for i, kind in enumerate(expanded)
-                    for piece in (
-                        [kind, f"legacy-gap-{i}-{kind}"]
-                        if kind in ("resistance", "replication")
-                        else [kind]
-                    )
-                ]
                 self.assertEqual(preview["component_order"], expanded)
                 result = self.service.generate(request)
                 self.assertEqual(result["component_order"], expanded)

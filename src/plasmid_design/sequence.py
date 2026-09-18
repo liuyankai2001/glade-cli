@@ -24,7 +24,6 @@ from src.plasmid_design.errors import DesignError
 from src.plasmid_design.components import (
     legacy_components,
     normalize_components,
-    expand_legacy_gaps,
 )
 
 LEGACY_COMPONENT_ORDER = ("resistance", "replication", "expression")
@@ -366,8 +365,6 @@ def build_design(
         ),
         catalog,
     )
-    if assembly_schema_version == 1:
-        components = expand_legacy_gaps(components, catalog)
     order = [c["instance_id"] for c in components]
     enzymes = resolve_enzymes(enzyme_names)
     modules = {}

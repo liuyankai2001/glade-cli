@@ -273,10 +273,8 @@ class MolecularDesignTests(unittest.TestCase):
     ):
         insert = expression_record()
         blocks = {
-            "resistance": self.catalog.get_resistance("basic_seva_ap").sequence
-            + self.catalog.scaffold["resistance_to_replication"],
-            "replication": self.catalog.get_replication("basic_seva_p15a").sequence
-            + self.catalog.scaffold["replication_to_t1"],
+            "resistance": self.catalog.get_resistance("basic_seva_ap").sequence,
+            "replication": self.catalog.get_replication("basic_seva_p15a").sequence,
             "expression": "GAATTC" + str(insert.seq) + "AAGCTT",
             "t0": self.catalog.get_terminator("basic_seva_t0").sequence,
             "t1": self.catalog.get_terminator("basic_seva_t1").sequence,
@@ -302,15 +300,7 @@ class MolecularDesignTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     design.preview["component_order"],
-                    [
-                        piece
-                        for i, kind in enumerate(order)
-                        for piece in (
-                            [kind, f"legacy-gap-{i}-{kind}"]
-                            if kind in ("resistance", "replication")
-                            else [kind]
-                        )
-                    ],
+                    list(order),
                 )
                 self.assertEqual(
                     [
@@ -385,30 +375,12 @@ class MolecularDesignTests(unittest.TestCase):
         from src.plasmid_design.catalog import Module
 
         resistance = Module("res", "test resistance", "resistance", "TTCCCCC")
-        replication = Module("rep", "test replication", "replication", "CCCC")
+        replication = Module("rep", "test replication", "replication", "GAA")
         catalog = SimpleNamespace(
             get_resistance=lambda _: resistance,
             get_replication=lambda _: replication,
-            scaffold={
-                "resistance_to_replication": "CCCC",
-                "replication_to_t1": "GAA",
-                "landing_pad_spacer": "CCCC",
-            },
+            scaffold={"landing_pad_spacer": "CCCC"},
         )
-        intervals = {
-            "native-res": Module(
-                "native-res",
-                "res gap",
-                "gap",
-                "CCCC",
-                aliases=("resistance_to_replication",),
-            ),
-            "native-rep": Module(
-                "native-rep", "rep gap", "gap", "GAA", aliases=("replication_to_t1",)
-            ),
-        }
-        catalog.gap = intervals
-        catalog.get_gap = intervals.__getitem__
         before = self.m.build_design(
             catalog, expression_record(), ["EcoRI", "HindIII"], "res", "rep", 1
         )
@@ -427,8 +399,8 @@ class MolecularDesignTests(unittest.TestCase):
             any(
                 i.get("enzyme") == "EcoRI"
                 and i.get("module") == "模块连接边界"
-                and i["start_bp"] == 5
-                and i["end_bp"] == 10
+                and i["start_bp"] == 1
+                and i["end_bp"] == 6
                 for i in after.preview["issues"]
             )
         )

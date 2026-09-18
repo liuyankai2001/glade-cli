@@ -28,7 +28,6 @@ def sha(value):
 
 def curate():
     meta = json.loads(META.read_text(encoding="utf-8"))
-    scaffold = json.loads(SCAFFOLD.read_text(encoding="utf-8"))
     archive = ROOT / "data/gap_sources"
     archive.mkdir(exist_ok=True)
     contents = {}
@@ -129,57 +128,10 @@ def curate():
             "Author STANDARD_LINKERS literal; exclude the prepended GG oligo adapter.",
             "来源定义的 BASIC linker；收录保留 DNA，不含制备用 GG 接头。新位置组合尚未实验验证。",
         )
-    record = records["collection"]["BASIC_SEVA_15a.10"]
-    annotated = next(
-        f for f in record.features if f.qualifiers.get("label") == ["BSEVA_L1"]
-    )
-    add(
-        str(annotated.extract(record.seq)).upper(),
-        "BSEVA L1",
-        "BSEVA_L1",
-        "抗性与复制模块之间的中性 linker 候选",
-        provenance(
-            "collection",
-            record.name,
-            int(annotated.location.start) + 1,
-            int(annotated.location.end),
-        ),
-        "Author BSEVA_L1 annotation; BASIC SEVA paper DOI 10.1093/synbio/ysac023.",
-        "作者为抗性与复制模块间设计的中性 linker；其他位置组合尚未实验验证。",
-    )
-    native_ids = {}
-    purposes = {
-        "resistance_to_replication": "来源原生模块接口（76 bp）",
-        "replication_to_t1": "来源原生复制模块末端接口（14 bp）",
-        "landing_pad_spacer": "临时骨架占位片段（24 bp）",
-    }
-    names = {
-        "resistance_to_replication": "SEVA 模块间隔 76",
-        "replication_to_t1": "SEVA 复制接口 14",
-        "landing_pad_spacer": "骨架占位 24",
-    }
-    for alias in purposes:
-        detail = scaffold["provenance"][alias]
-        source = provenance(
-            "collection", record.name, detail["start_1based"], detail["end_1based"]
-        )
-        sequence = str(
-            record.seq[detail["start_1based"] - 1 : detail["end_1based"]]
-        ).upper()
-        assert sha(sequence) == detail["sha256"]
-        native_ids[alias] = add(
-            sequence,
-            names[alias],
-            alias,
-            purposes[alias],
-            source,
-            "Pinned native scaffold coordinates, exact sequence hash verified.",
-            (
-                "来源原生接口，不表示在任意上下文中都具有生物学中性。"
-                if alias != "landing_pad_spacer"
-                else "仅用于临时骨架占位；最终质粒只在用户明确选入时包含该片段。"
-            ),
-        )
+    # Native boundary removals remain audit evidence, not selectable Gap modules.
+    native_replication_tail = str(
+        records["collection"]["BASIC_SEVA_15a.10"].seq[4978:4992]
+    ).upper()
     audit = []
     for typ in ("resistance", "replication", "terminator"):
         path = ROOT / f"data/{typ}_modules.csv"
@@ -215,16 +167,7 @@ def curate():
                     "end_1based": prefix_len,
                     "evidence": evidence,
                 }
-                source = {**p, "end_1based": p["start_1based"] + prefix_len - 1}
-                span["gap_id"] = add(
-                    original[:prefix_len],
-                    f"SEVA 抗性接口 {prefix_len}",
-                    f"resistance_prefix_{prefix_len}",
-                    "来源原生抗性模块前部接口",
-                    source,
-                    evidence,
-                    "位于作者定义的完整抗性功能模块之外；保留来源接口用途，不作为通用中性 spacer。",
-                )
+                span["gap_id"] = "gap_" + sha(original[:prefix_len])
                 spans.append(span)
                 pending.append(
                     {
@@ -241,29 +184,10 @@ def curate():
                     for f in core.features
                     if f.qualifiers.get("label") == ["SEVA_T1"]
                 )
-                assert (
-                    original[-14:] == gaps[native_ids["replication_to_t1"]]["sequence"]
-                )
+                assert original[-14:] == native_replication_tail
                 evidence = "Identical 14 bp native interface immediately preceding author-annotated SEVA_T1 in both collection and independent pKD46 core."
-                source = {**p, "start_1based": p["end_1based"] - 13}
-                identifier = add(
-                    original[-14:],
-                    names["replication_to_t1"],
-                    "pkd46_tail_14",
-                    purposes["replication_to_t1"],
-                    source,
-                    evidence,
-                    "亦从 pKD46 来源记录尾部提取；复制功能注释与其余调控区保留。",
-                )
-                add(
-                    original[-14:],
-                    names["replication_to_t1"],
-                    "pkd46_tail_14",
-                    purposes["replication_to_t1"],
-                    provenance("pkd46_core", core.name, 1538, 1551),
-                    evidence,
-                    "pKD46 独立核心来源的同一接口。",
-                )
+                assert str(core.seq[1537:1551]).upper() == native_replication_tail
+                identifier = "gap_" + sha(original[-14:])
                 spans.append(
                     {
                         "start_1based": 1538,
@@ -314,6 +238,9 @@ def curate():
                 writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
                 writer.writeheader()
                 writer.writerows(rows)
+    for identifier in list(meta):
+        if isinstance(meta[identifier], dict) and meta[identifier].get("type") == "gap":
+            del meta[identifier]
     for identifier, item in gaps.items():
         meta[identifier] = {
             k: v for k, v in item.items() if k not in ("id", "name", "sequence")
@@ -338,9 +265,18 @@ def curate():
         json.dumps(
             {
                 "_schema_version": 3,
-                "version": "basic_seva_gap_references.v2",
-                "gap_ids": native_ids,
-                "provenance": scaffold["provenance"],
+                "version": "basic_linker_landing_pad.v1",
+                "gap_ids": {"landing_pad_spacer": "gap_" + sha(values["L1"])},
+                "provenance": {
+                    **provenance(
+                        "standard_linkers", "STANDARD_LINKERS.L1", 1, len(values["L1"])
+                    ),
+                    "landing_pad_spacer": {
+                        "start_1based": 1,
+                        "end_1based": len(values["L1"]),
+                        "sha256": sha(values["L1"]),
+                    },
+                },
             },
             ensure_ascii=False,
             indent=2,
@@ -350,13 +286,13 @@ def curate():
         newline="\n",
     )
     (ROOT / "docs/gap-extraction-audit.md").write_text(
-        "# Gap 来源及提取审计\n\n范围：当前 7 个抗性、5 个复制、2 个终止子和固定接口；不扫描完整表达构建。\n\n"
+        "# Gap 来源及提取审计\n\n范围：当前 7 个抗性、5 个复制、2 个终止子；不扫描完整表达构建。\n\n"
         "只拆出有来源依据且不覆盖功能注释的边界片段。未确认的非编码/调控区保留在模块中。所有原始 DNA、哈希、注释、删除范围、保留坐标映射及待核查区域存于 source_features.json。\n\n"
         "| 模块 | 原始 bp | 当前 bp | 已拆出 bp | 保留待核查区域数 |\n| --- | ---: | ---: | --- | ---: |\n"
         + "\n".join(audit)
         + "\n\n"
         "抗性前部26/34 bp依据作者的完整功能模块注释边界；pKD46尾部14 bp在集合及独立核心来源中紧邻SEVA_T1，且与原生复制接口完全一致。Ap末端含终止作用的DNA仍属于功能模块，未拆除。其他复制模块及T0/T1没有可确认的内部gap。pKD46局部1–61、1013–1059、1283–1537 bp可能参与调控，保留待核查。\n\n"
-        f"归库 {len(gaps)} 条完整DNA去重序列：BASIC L1–L6、BSEVA_L1、原生76/14 bp接口、24 bp占位及抗性26/34 bp接口。53 bp linker不含制备用GG接头；占位片段不自动加入最终质粒。相同DNA的全部本次提取来源保存在sources数组。\n\n"
+        f"可选 Gap 库仅保留 {len(gaps)} 条 BASIC L1–L6，均为53 bp，不含制备用GG接头。BSEVA_L1、76/14 bp接口、24 bp占位及26/34 bp抗性接口均不再归库。已拆出的边界以内容哈希留存审计，校验不依赖可选 Gap 库。临时骨架占位改用BASIC L1，生成最终质粒时由完整表达构建替换。新旧请求均只插入用户明确选择的Gap。\n\n"
         "来源：[作者固定版本仓库](https://github.com/LondonBiofoundry/basicsynbio/tree/"
         + VERSION
         + ")；[BASIC SEVA论文](https://doi.org/10.1093/synbio/ysac023)。原始文件保存在data/gap_sources，逐文件SHA256校验；重现：`python -B -m data.curate_gap_modules`。来源定义的中性linker是候选条目，不表示新位置组合已经实验验证。\n",
@@ -365,8 +301,8 @@ def curate():
     )
     (ROOT / "data/gap_modules.README.md").write_text(
         "# Gap 序列库\n\nCSV字段严格为id,name,sequence；DNA为大写ACGT。ID=gap_+完整序列SHA256；完全相同DNA合并，保留aliases及所有sources。\n\n"
-        "当前12条：6个BASIC标准linker、BSEVA_L1、76/14bp原生接口、24bp占位、26/34bp抗性接口。用途、证据及注释存于src/plasmid_design/source_features.json；模块原始快照及删除映射也存于该文件。详见docs/gap-extraction-audit.md。\n\n"
-        "新装配schema2只包含明确选入的gap实例；旧装配仅将原76/14bp外部间隔显式迁移，不恢复已经拆出的内部边界。可重复选入同一条DNA。增加数据时需同步固定来源、特征快照及用途；不要把任意非编码DNA推断为gap。\n",
+        "当前仅6条：BASIC L1–L6，均为53 bp通用中性linker候选，不含制备用GG接头。用途、证据及注释存于src/plasmid_design/source_features.json；模块原始快照及删除映射也存于该文件。已拆出的原生边界仅留存来源审计，不再作为可选Gap。详见docs/gap-extraction-audit.md。\n\n"
+        "新旧请求均只包含明确选入的gap实例，不自动补入旧76/14 bp间隔。临时骨架占位使用BASIC L1，最终由完整表达构建替换，不自动残留。纯序列拼接可重复选入同一条DNA；实际BASIC装配一轮内应使用不同linker。候选用于独立功能模块边界，不保证任意组合均具有生物学中性。重新运行归库脚本仍只生成L1–L6。\n",
         encoding="utf-8",
         newline="\n",
     )

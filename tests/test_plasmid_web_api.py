@@ -110,9 +110,7 @@ class LocalApiTests(unittest.TestCase):
             [
                 "expression",
                 "replication",
-                "legacy-gap-1-replication",
                 "resistance",
-                "legacy-gap-2-resistance",
             ],
         )
         self.assertEqual(preview.json()["segments"][0]["kind"], "restriction")
