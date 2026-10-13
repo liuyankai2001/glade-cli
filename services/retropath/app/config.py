@@ -46,7 +46,7 @@ class Settings:
             knime_dir=Path(os.environ.get("RETROPATH_KNIME_DIR", "/opt/knime")),
             knime_version=os.environ.get("RETROPATH_KNIME_VERSION", "4.7.0"),
             rdkit_plugin_version=os.environ.get(
-                "RETROPATH_RDKIT_PLUGIN_VERSION", "4.9.1"
+                "RETROPATH_RDKIT_PLUGIN_VERSION", "4.9.1-glade-memoryfix2"
             ),
             openssl10_dir=Path(
                 os.environ.get(
@@ -64,7 +64,7 @@ class Settings:
                 os.environ.get("RETROPATH_JOB_TIMEOUT_SECONDS", "1800")
             ),
             memory_limit_bytes=int(
-                os.environ.get("RETROPATH_MEMORY_LIMIT_BYTES", str(6 * 1024**3))
+                os.environ.get("RETROPATH_MEMORY_LIMIT_BYTES", "8053063680")
             ),
             memory_limit_consecutive_samples=int(
                 os.environ.get("RETROPATH_MEMORY_LIMIT_CONSECUTIVE_SAMPLES", "3")

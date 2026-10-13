@@ -3,9 +3,11 @@ name: glade-retropath
 services:
   retropath:
     build:
-      context: ./services/retropath
-      dockerfile: Dockerfile
-    image: glade-retropath:3.9.1-r20260212
+      context: .
+      dockerfile: services/retropath/Dockerfile
+    image: glade-retropath:3.9.1-r20260212-memoryfix2
+    platform: linux/amd64
+    pull_policy: never
     init: true
     restart: unless-stopped
     ports:
@@ -16,20 +18,21 @@ services:
       RETROPATH_RULES_SHA256: e24eb97d3172195D03ABED6E7DA07A4CFD53965553853D126AAA8A93B4BC552F
       RETROPATH_KNIME_DIR: /opt/knime
       RETROPATH_KNIME_VERSION: 4.7.0
-      RETROPATH_RDKIT_PLUGIN_VERSION: 4.9.1
+      RETROPATH_RDKIT_PLUGIN_VERSION: 4.9.1-glade-memoryfix2
       RETROPATH_OPENSSL10_DIR: /home/mambauser/.openssl10/lib
       RETROPATH_WORKFLOW_VERSION: r20260212
       RETROPATH_JOBS_DIR: /var/lib/retropath/jobs
       RETROPATH_MAX_QUEUE: 8
       RETROPATH_JOB_TIMEOUT_SECONDS: 1800
-      RETROPATH_MEMORY_LIMIT_BYTES: ${RETROPATH_MEMORY_LIMIT_BYTES:-6442450944}
+      RETROPATH_MEMORY_LIMIT_BYTES: ${RETROPATH_MEMORY_LIMIT_BYTES:-8053063680}
       RETROPATH_MEMORY_LIMIT_CONSECUTIVE_SAMPLES: 3
       RETROPATH_RESOURCE_POLL_SECONDS: 2
       RETROPATH_CGROUP_MEMORY_STAT_PATH: /sys/fs/cgroup/memory.stat
     volumes:
-      - ./data/retropath/rules/rr02/retrorules_rr02_rp2_flat_retro.csv:/opt/retropath/rules/rr02.csv:ro
       - retropath-jobs:/var/lib/retropath/jobs
-    mem_limit: ${RETROPATH_CONTAINER_MEMORY_LIMIT:-7g}
+    mem_limit: ${RETROPATH_CONTAINER_MEMORY_LIMIT:-8g}
+    memswap_limit: 13g
+    cpus: 1.0
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "/opt/conda/bin/python", "-m", "app.healthcheck"]
@@ -40,3 +43,4 @@ services:
 
 volumes:
   retropath-jobs:
+    name: glade-retropath_retropath-jobs

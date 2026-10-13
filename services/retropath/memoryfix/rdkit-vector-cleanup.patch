@@ -1,0 +1,12 @@
+diff --git a/org.rdkit.knime.nodes/src/org/rdkit/knime/nodes/onecomponentreaction2/AbstractRDKitReactionNodeModel.java b/org.rdkit.knime.nodes/src/org/rdkit/knime/nodes/onecomponentreaction2/AbstractRDKitReactionNodeModel.java
+--- a/org.rdkit.knime.nodes/src/org/rdkit/knime/nodes/onecomponentreaction2/AbstractRDKitReactionNodeModel.java
++++ b/org.rdkit.knime.nodes/src/org/rdkit/knime/nodes/onecomponentreaction2/AbstractRDKitReactionNodeModel.java
+@@ -488,7 +488,7 @@
+ 		if (reaction != null && reactants != null) {
+ 			assert(reactants.size() == indicesReactants.length);
+ 
+-			final ROMol_Vect_Vect vvProducts = reaction.runReactants(reactants);
++			final ROMol_Vect_Vect vvProducts = markForCleanup(reaction.runReactants(reactants), uniqueWaveId);
+ 
+ 			// If the reaction could be applied to the
+ 			// reactants, we got a non-empty vector

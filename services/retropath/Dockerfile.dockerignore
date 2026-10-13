@@ -1,0 +1,14 @@
+**
+!services/
+!services/retropath/
+!services/retropath/**
+!data/
+!data/retropath/
+!data/retropath/rules/
+!data/retropath/rules/rr02/
+!data/retropath/rules/rr02/retrorules_rr02_rp2_flat_retro.csv
+**/__pycache__/**
+**/*.py[cod]
+**/.pytest_cache/**
+**/*.class
+**/*.jar

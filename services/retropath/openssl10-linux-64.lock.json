@@ -1,0 +1,21 @@
+{
+  "prefix": "/home/mambauser/.openssl10",
+  "packages": [
+    {
+      "name": "ca-certificates",
+      "version": "2026.7.22",
+      "build": "hbd8a1cb_0",
+      "url": "https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda",
+      "sha256": "0a0544cf95f64394fe4959286f5c71f5444ad58feb0602e53becb27448d24da6",
+      "md5": "0f51e2391ade309db462a55611263e9c"
+    },
+    {
+      "name": "openssl",
+      "version": "1.0.2k",
+      "build": "0",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/openssl-1.0.2k-0.tar.bz2",
+      "sha256": "2c90cff44a28e0b24eaed1c6f7c0391ae134ea71c3ff43dc7a08476ddb076495",
+      "md5": "60390c456edf13770da66e282483ccae"
+    }
+  ]
+}

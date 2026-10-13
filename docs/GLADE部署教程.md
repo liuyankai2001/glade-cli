@@ -151,10 +151,10 @@ RetroPath 内存限制可以写入项目根目录已有的 `.env`。模板见 `.
 
 ```dotenv
 # Docker 容器硬上限
-RETROPATH_CONTAINER_MEMORY_LIMIT=7g
+RETROPATH_CONTAINER_MEMORY_LIMIT=8g
 
-# RetroPath 任务软上限，单位为字节（这里是 6 GiB）
-RETROPATH_MEMORY_LIMIT_BYTES=6442450944
+# RetroPath 工作集软上限，单位为字节（这里是 7.5 GiB）
+RETROPATH_MEMORY_LIMIT_BYTES=8053063680
 ```
 
 软上限必须低于容器硬上限，并且容器硬上限不能超过 Docker/WSL 实际可用内存。修改后
@@ -165,6 +165,10 @@ docker info --format '{{.MemTotal}}'
 ```
 
 启动 Docker Desktop 后构建并启动服务：
+
+正式构建使用项目根目录作为上下文，仅发送 `services/retropath` 和指定 RR02 规则文件；Dockerfile 专用忽略规则排除 `.env`、实验输出及其他项目内容。镜像从 micromamba 基础镜像安装锁定运行栈，构建时编译源码补丁工具和 agent；不依赖旧 RetroPath 镜像或 docs 中的预编译 JAR。
+
+新镜像标签为 `glade-retropath:3.9.1-r20260212-memoryfix2`。规则与修补内置镜像，运行时只挂载作业数据卷；无需旧的 8g/memoryfix Compose 覆盖配置。默认 Java 堆与健康检查均为 1024 MiB、CPU 限额为 1，内存加交换空间上限为 13 GiB。
 
 ```powershell
 docker compose -f compose.retropath.yml config --quiet

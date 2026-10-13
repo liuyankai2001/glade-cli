@@ -9,7 +9,7 @@
 | retropath2_wrapper | 3.9.1 |
 | RetroPath2.0 KNIME workflow | r20260212 |
 | KNIME | 4.7.0 |
-| KNIME RDKit Nodes | 4.9.1 |
+| KNIME RDKit Nodes | 4.9.1-glade-memoryfix2（基于固定 4.9.1 插件） |
 | KNIME Chromium compatibility | isolated OpenSSL 1.0.2k prefix |
 | RetroRules | rr02-rp2-hs |
 | RR02 retro SHA-256 | e24eb97d3172195d03abed6e7da07a4cfd53965553853d126aaa8a93b4bc552f |
@@ -29,7 +29,7 @@ conda 安装清单确认实际版本，并额外返回 `wrapper_reported_version
 docker version
 ```
 
-确认 RR02 逆向规则存在：
+从源码首次构建前确认 RR02 逆向规则存在；规则会复制进镜像，运行时无须宿主机规则挂载：
 
 ```powershell
 Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
@@ -38,6 +38,10 @@ Get-Item data\retropath\rules\rr02\retrorules_rr02_rp2_flat_retro.csv
 ## 3. 构建与启动
 
 首次构建会下载 KNIME、化学节点和 RDKit 节点，耗时和镜像体积都明显高于普通 Python 服务：
+
+正式 Dockerfile 会从 `services/retropath/memoryfix` 的 Java 源码编译补丁工具和空闲页回收 agent，并修补安装后的 RDKit 节点。它修改一个节点 class 的清理登记，不是重新编译整个 RDKit 开源项目。构建遇到不支持的原插件或生成的 class 与已验证版本不符时会失败。
+
+运行环境按当前已验收的 Conda 包锁文件安装。完整 RR02 规则、插件补丁和 agent 均在镜像内；容器仅挂载 `glade-retropath_retropath-jobs` 作业卷，旧 docs Compose 覆盖配置不再使用。
 
 ```powershell
 docker compose -f compose.retropath.yml build retropath
@@ -154,7 +158,7 @@ docker compose -f compose.retropath.yml exec -T retropath cat /sys/fs/cgroup/cpu
 docker compose -f compose.retropath.yml exec -T retropath cat /opt/knime/knime_4.7.0/knime.ini
 ```
 
-当前镜像设置 `-Xmx2048m`，它只限制 Java 堆；cgroup 工作集还包含原生库、
+当前镜像在 `knime.ini` 和 `_JAVA_OPTIONS` 中统一设置 `-Xmx1024m`，健康检查的 `knime_heap_max_mb` 应为 1024；它只限制 Java 堆，cgroup 工作集还包含原生库、
 线程和其他进程等内存。若日志显示大量 KNIME 工作线程，应进一步排查运行
 并发对峰值内存的影响。不要仅根据 Java 堆上限判断容器内存需求。
 
@@ -163,3 +167,5 @@ docker compose -f compose.retropath.yml exec -T retropath cat /opt/knime/knime_4
 [GLADE 部署教程](GLADE部署教程.md)。必须同时核对 Docker/WSL 总内存和
 宿主机余量。例如硬上限已有 11 GiB，而 Docker 总内存约 11.68 GiB 时，
 继续提高软上限的空间很小，应优先评估搜索规模及并发。
+
+默认容器为 8 GiB、内存加交换空间为 13 GiB、工作集保护为 7.5 GiB（8053063680 字节）、1 CPU。插件版本应为 `4.9.1-glade-memoryfix2`，会进入客户端缓存指纹；此前旧版本的结果缓存不会匹配。
