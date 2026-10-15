@@ -1619,6 +1619,55 @@ def _standard_candidate_row(
     }
 
 
+def _merge_manifest_step_candidates(
+    rows: Sequence[Mapping[str, Any]], *, top_n: int,
+) -> list[dict[str, Any]]:
+    """One protein per step, retaining evidence from alternative RR02 rules."""
+    groups: dict[tuple[int, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[(int(row["step_index"]), str(row["accession"]).strip().upper())].append(row)
+
+    def sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        return _candidate_sort_key({
+            **row,
+            "evidence_tier": row.get("retropath_evidence_tier"),
+            "reaction_similarity": row.get("selenzyme_reaction_similarity"),
+            "protein_score": row.get("score"),
+        })
+
+    merged_by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for (step_index, accession), matches in groups.items():
+        for field in ("sequence", "sequence_sha256"):
+            values = {str(row.get(field) or "").strip() for row in matches
+                      if str(row.get(field) or "").strip()}
+            if len(values) > 1:
+                raise ValueError(f"Conflicting {field} for {accession} at step {step_index}")
+        ordered = sorted(matches, key=sort_key)
+        primary = dict(ordered[0])
+        primary["accession"] = accession
+        for field in (
+            "ec_number", "ec_numbers", "retrieval_strategy", "retrieval_query_id",
+            "matched_rhea_ids", "publication_ids", "reaction_confidence",
+            "reaction_fit_rule_ids", "source_mnxr_id", "retropath_rule_id",
+            "retropath_hypothesis_id",
+        ):
+            primary[field] = ";".join(dict.fromkeys(
+                value for row in ordered for value in _split(row.get(field))
+            ))
+        for field in ("reaction_fit_evidence", "reasons", "warnings"):
+            primary[field] = " | ".join(dict.fromkeys(
+                value for row in ordered
+                for value in str(row.get(field) or "").split(" | ") if value
+            ))
+        merged_by_step[step_index].append(primary)
+    selected = []
+    for step_index in sorted(merged_by_step):
+        for rank, row in enumerate(sorted(merged_by_step[step_index], key=sort_key)[:top_n], 1):
+            row.update(candidate_rank=rank, evaluation_rank=rank, selection_status="selected")
+            selected.append(row)
+    return selected
+
+
 def retrieve_manifest_retropath_candidates(
     requirements: Sequence[Mapping[str, Any]],
     *,
@@ -1717,11 +1766,10 @@ def retrieve_manifest_retropath_candidates(
             {"search_key": key, "step_index": search_requirement.step_index, **row}
             for row in outcome.evidence
         )
-    selected.sort(key=lambda row: (
-        int(row.get("step_index") or 0),
-        int(row.get("candidate_rank") or 0),
-        str(row.get("accession") or ""),
-    ))
+    # A predicted step can have several alternative source rules. Each rule's
+    # shortlist is locally ranked; concatenating them duplicates proteins and
+    # ranks, violating the canonical per-step shortlist contract.
+    selected = _merge_manifest_step_candidates(selected, top_n=top_n)
     audit.sort(key=lambda row: (
         int(row.get("step_index") or 0),
         int(row.get("evaluation_rank") or 0),

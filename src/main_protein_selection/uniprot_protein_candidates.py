@@ -687,22 +687,24 @@ def resolve_uniprot_accession_batches(
 
 def extract_ec_numbers(entry: dict[str, Any]) -> list[str]:
     ecs = set()
-    protein_desc = entry.get("proteinDescription", {})
-    rec = protein_desc.get("recommendedName", {})
-    for ec in rec.get("ecNumbers", []):
-        if ec.get("value"):
-            ecs.add(str(ec["value"]))
-    for alt in protein_desc.get("alternativeNames", []):
-        for ec in alt.get("ecNumbers", []):
-            if ec.get("value"):
-                ecs.add(str(ec["value"]))
-    # UniProtKB/TrEMBL entries commonly store the queried EC only under
-    # submissionNames. Ignoring this branch makes exact-EC search results look
-    # EC-less and causes the hard filter to discard every unreviewed candidate.
-    for submission in protein_desc.get("submissionNames", []):
-        for ec in submission.get("ecNumbers", []):
-            if ec.get("value"):
-                ecs.add(str(ec["value"]))
+
+    def collect(description: dict[str, Any]) -> None:
+        names = [description.get("recommendedName", {})]
+        names.extend(description.get("alternativeNames", []))
+        names.extend(description.get("submissionNames", []))
+        for name in names:
+            for ec in name.get("ecNumbers", []):
+                if ec.get("value"):
+                    ecs.add(str(ec["value"]))
+        # Multi-domain and processed proteins can place all catalytic ECs
+        # on their included domains/chains rather than on the whole protein.
+        # UniProt EC searches include these annotations, so local exact-EC
+        # filtering must read them as well.
+        for branch in ("includes", "contains"):
+            for component in description.get(branch, []):
+                collect(component)
+
+    collect(entry.get("proteinDescription", {}))
     return sorted(ecs)
 
 
