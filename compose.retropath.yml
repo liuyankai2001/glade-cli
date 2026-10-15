@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: services/retropath/Dockerfile
-    image: glade-retropath:3.9.1-r20260212-memoryfix2
+    image: glade-retropath:3.9.1-r20260212-memoryfix2-cpu2
     platform: linux/amd64
     pull_policy: never
     init: true
@@ -32,7 +32,7 @@ services:
       - retropath-jobs:/var/lib/retropath/jobs
     mem_limit: ${RETROPATH_CONTAINER_MEMORY_LIMIT:-8g}
     memswap_limit: 13g
-    cpus: 1.0
+    cpus: 2.0
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "/opt/conda/bin/python", "-m", "app.healthcheck"]

@@ -1,7 +1,7 @@
 FROM mambaorg/micromamba:2.3.2-ubuntu22.04
 
 LABEL org.opencontainers.image.title="GLADE RetroPath local service" \
-      org.opencontainers.image.version="3.9.1-r20260212-memoryfix2" \
+      org.opencontainers.image.version="3.9.1-r20260212-memoryfix2-cpu2" \
       org.opencontainers.image.source="https://github.com/brsynth/retropath2-wrapper"
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
@@ -82,7 +82,7 @@ ENV RETROPATH_RULES_PATH=/opt/retropath/rules/rr02.csv \
     PYTHONUNBUFFERED=1 \
     LD_LIBRARY_PATH=/home/mambauser/.openssl10/lib:/opt/conda/lib \
     _JAVA_OPTIONS="-Xmx1024m -XX:MaxDirectMemorySize=256m" \
-    JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=1 -Dorg.knime.core.maxThreads=1 -javaagent:/opt/retropath/memoryfix/native-memory-agent.jar" \
+    JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2 -Dorg.knime.core.maxThreads=2 -javaagent:/opt/retropath/memoryfix/native-memory-agent.jar" \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1
 
