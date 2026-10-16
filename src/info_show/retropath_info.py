@@ -22,6 +22,10 @@ from src.main_protein_selection.retropath_enzyme_selection import (
     STEP_ENZYME_CANDIDATES_FILE_NAME,
 )
 from src.pathway_analyze.kegg_gap_analyze import gap_depth_output_dir
+from src.pathway_analyze.retropath_compound_annotation import (
+    annotation_view,
+    candidate_compound_ids,
+)
 from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_ROUTE_COLUMNS,
     CANDIDATE_ROUTES_FILE_NAME,
@@ -554,7 +558,7 @@ def _stoichiometry(value: Any, field_name: str) -> list[dict[str, Any]]:
     return result
 
 
-def _step_display(row: Mapping[str, str]) -> dict[str, Any]:
+def _step_display(row: Mapping[str, str], annotations: Mapping[str, Any] | None = None) -> dict[str, Any]:
     step_source = str(row.get("step_source") or "").strip()
     status = str(row.get("status") or "").strip()
     direction = str(row.get("direction") or "").strip()
@@ -578,14 +582,14 @@ def _step_display(row: Mapping[str, str]) -> dict[str, Any]:
         "方向": DIRECTION_NAMES.get(direction, direction),
         "反应选项ID": _split(row.get("reaction_option_ids")),
         "Reaction SMILES": str(row.get("reaction_smiles") or "").strip(),
-        "底物计量": _stoichiometry(
+        "底物计量": _named_stoichiometry(_stoichiometry(
             row.get("substrate_stoichiometry_json"),
             "substrate_stoichiometry_json",
-        ),
-        "产物计量": _stoichiometry(
+        ), annotations),
+        "产物计量": _named_stoichiometry(_stoichiometry(
             row.get("product_stoichiometry_json"),
             "product_stoichiometry_json",
-        ),
+        ), annotations),
         "依赖步骤ID": _split(row.get("depends_on_step_ids")),
         "原始Transformation ID": _split(row.get("source_transformation_ids")),
         "Sink锚点": _split(row.get("sink_anchor_kegg_ids")),
@@ -609,6 +613,21 @@ def _step_display(row: Mapping[str, str]) -> dict[str, Any]:
         "辅因子恢复状态": cofactor_status,
         "风险提示": warnings,
     }
+
+
+def _named_stoichiometry(rows, annotations):
+    for row in rows:
+        identifier = row["化合物ID"]
+        annotation = (annotations or {}).get(identifier, {})
+        row["化合物名称"] = annotation.get("display_name", identifier)
+        if annotation.get("source"):
+            row["名称来源"] = annotation["source"]
+    return rows
+
+
+def _annotation_context(context, config):
+    return annotation_view(context.output_dir,
+                           compound_ids=candidate_compound_ids(context.candidate_steps), config=config)
 
 
 def _rejection_summary(
@@ -1100,6 +1119,9 @@ def get_retropath_info(config: Any) -> dict[str, Any]:
         }
 
     input_summary = _required_mapping(pipeline.get("input_summary"), "input_summary")
+    compound_annotation = _annotation_context(context, config)
+    common["化合物注释状态"] = compound_annotation["state"]
+    common["化合物注释摘要"] = compound_annotation["summary"]
     overlay = _p8_overlay(context)
     route_summaries = [_route_summary(row) for row in context.candidate_routes]
     p9_warnings: list[str] = []
@@ -1224,6 +1246,12 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
     common["P9主酶候选状态"] = p9.status
     common["P9推荐计量组合"] = p9.recommended_combination_id
     common["P9计量组合摘要"] = list(p9.combinations)
+    compound_annotation = _annotation_context(context, config)
+    common["化合物注释状态"] = compound_annotation["state"]
+    selected_ids = set(candidate_compound_ids(candidate_steps))
+    annotations = {identifier: record for identifier, record in compound_annotation["annotations"].items()
+                   if identifier in selected_ids}
+    common["化合物注释"] = list(annotations.values())
     raw_step = getattr(config, "step", None)
     if raw_step is not None:
         step_index = _as_int(raw_step, "step", minimum=1)
@@ -1232,7 +1260,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
                 f"RetroPath 候选 {rank} 中没有步骤 {step_index}；"
                 f"可用步骤：{list(range(1, len(candidate_steps) + 1))}"
             )
-        step_detail = _step_display(candidate_steps[step_index - 1])
+        step_detail = _step_display(candidate_steps[step_index - 1], annotations)
         step_detail["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(
             (rank, str(candidate_steps[step_index - 1].get("step_id") or ""))
         )
@@ -1247,7 +1275,7 @@ def get_retropath_candidate_info(config: Any) -> dict[str, Any]:
         }
 
     route_summary = _route_summary(route)
-    displayed_steps = [_step_display(row) for row in candidate_steps]
+    displayed_steps = [_step_display(row, annotations) for row in candidate_steps]
     for row, displayed in zip(candidate_steps, displayed_steps):
         step_index = _as_int(row.get("step_index"), "step_index", minimum=1)
         displayed["P8严格验证定向通量"] = overlay.flux_by_candidate_step.get(

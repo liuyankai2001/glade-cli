@@ -23,6 +23,7 @@ from src.pathway_analyze.kegg_gap_analyze import (
     run_gap,
 )
 from src.pathway_analyze.retropath_analyze import analyze_retropath_candidates
+from src.pathway_analyze.retropath_compound_annotation import annotate_retropath_results
 from src.pathway_analyze.retropath_client import (
     RetroPathClientError,
     RetroPathHttpClient,
@@ -731,6 +732,17 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
     else:
         status = "retropath_no_scope"
 
+    # Optional presentation enrichment has its own status and cannot invalidate
+    # candidate generation, materialization, or subsequent scientific checks.
+    try:
+        compound_annotation = annotate_retropath_results(
+            output_dir,
+            compounds=getattr(enumeration_result.network, "predicted_compounds", ()),
+            cache_dir=Path(config.cache_dir) / "retropath" / "compound_annotation",
+        )
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        compound_annotation = {"state": "failed", "detail": str(exc)}
+
     result_path = output_dir / PIPELINE_RESULT_FILE_NAME
     provenance = client_run.result.provenance
     scope_artifact_names = {
@@ -773,6 +785,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "sink_match_count": len(enumeration_result.network.sink_matches),
         "scope_present": bool(scope_artifacts),
         "candidate_count": candidate_artifacts.candidate_count,
+        "compound_annotation": compound_annotation,
         "materialized_solution_count": materialization["solution_count"],
         "materialized_solution_ids": materialization["solution_ids"],
         "rejection_count": candidate_artifacts.rejection_count,
