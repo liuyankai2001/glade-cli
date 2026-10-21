@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from src.pathway_analyze.expand_chassis_metabolites import ExpansionBundle
+from src.pathway_analyze.reaction_direction_policy import DEFAULT_UNPRE_RE_REACTION
 from src.pathway_analyze.kegg_gap_analyze import (
     IGNORED_COMMON_COMPOUNDS,
     KeggRestClient,
@@ -758,6 +759,9 @@ def _probe_witnesses(
             ignored_common_compounds=ignored_common_compounds,
             max_plans=max_witness_plans,
             memo=memo,
+            unpre_re_reaction=expansion_bundle.manifest.get(
+                "unpre_re_reaction", DEFAULT_UNPRE_RE_REACTION
+            ),
         )
         if not plans:
             return compound_id
@@ -936,6 +940,9 @@ def merge_retropath_candidates(
                 max_plans=witness_limit,
                 max_total_steps=prefix_step_budget,
                 max_new_enzymes=prefix_enzyme_budget,
+                unpre_re_reaction=expansion_bundle.manifest.get(
+                    "unpre_re_reaction", DEFAULT_UNPRE_RE_REACTION
+                ),
             )
             if not prefix_solutions:
                 rejections.append(

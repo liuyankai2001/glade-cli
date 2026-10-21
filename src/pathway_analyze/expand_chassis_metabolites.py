@@ -22,6 +22,12 @@ from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
 import pandas as pd
 
+from src.pathway_analyze.reaction_direction_policy import (
+    DEFAULT_UNPRE_RE_REACTION,
+    REACTION_DIRECTION_POLICY_VERSION,
+    reaction_direction_allowed,
+    validate_reaction_direction_mode,
+)
 from src.pathway_analyze.kegg_gap_analyze import (
     ENDOGENOUS_DIRECTION_COMPARTMENTS,
     KeggRestClient,
@@ -36,7 +42,7 @@ from src.pathway_analyze.kegg_gap_analyze import (
 
 
 EXPANSION_RULE_VERSION = (
-    "chassis_forward_expansion.v3_component_step_aware"
+    "chassis_forward_expansion.v4_direction_policy"
 )
 COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 FRONTIER_FILE_TEMPLATE = "chassis_frontier_depth_{depth}.csv"
@@ -386,12 +392,15 @@ def _manifest_matches(
     manifest: Mapping[str, Any] | None,
     *,
     a0_sha256: str,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> bool:
     return bool(
         manifest
         and manifest.get("algorithm_version") == EXPANSION_RULE_VERSION
         and manifest.get("a0_sha256") == a0_sha256
-        and manifest.get("direction_policy") == "bidirectional_reject_disfavored"
+        and manifest.get("direction_policy") == REACTION_DIRECTION_POLICY_VERSION
+        and type(manifest.get("unpre_re_reaction")) is int
+        and manifest.get("unpre_re_reaction") == unpre_re_reaction
         and manifest.get("compound_policy")
         == "Cxxxxx_strict_main_substrates_carrier_aware"
         and manifest.get("carrier_policy")
@@ -440,9 +449,11 @@ def load_expansion_bundle(
     base_path: Path,
     output_dir: Path,
     depth: int,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> ExpansionBundle:
     """读取并校验指定深度的累计扩展集合。"""
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     if depth < 0:
         raise ValueError("depth must be greater than or equal to 0")
     base_df, base_compounds = _load_base_dataframe(base_path)
@@ -461,9 +472,12 @@ def load_expansion_bundle(
 
     manifest_path = _manifest_path(output_dir)
     manifest = _read_manifest(manifest_path)
-    if not _manifest_matches(manifest, a0_sha256=a0_sha256):
+    if not _manifest_matches(
+        manifest, a0_sha256=a0_sha256, unpre_re_reaction=unpre_re_reaction
+    ):
         raise ValueError(
-            "Requested chassis expansion is missing or stale. "
+            "Requested chassis expansion is missing, stale or uses a different "
+            f"unpre_re_reaction policy (requested {unpre_re_reaction}). "
             f"Run the expand command for depth {depth} first."
         )
     if _as_int(manifest.get("max_depth")) < depth:
@@ -515,6 +529,17 @@ def load_expansion_bundle(
         if previous is None or compound_depth < previous:
             depth_by_compound[compound_id] = compound_depth
     witnesses = _load_witnesses_from_dataframe(df)
+    if any(
+        not reaction_direction_allowed(
+            witness.direction, witness.thermo_direction, unpre_re_reaction
+        )
+        for product_witnesses in witnesses.values()
+        for witness in product_witnesses
+    ):
+        raise ValueError(
+            "Expansion witnesses violate unpre_re_reaction; "
+            f"run the expand command for depth {depth} first."
+        )
     return ExpansionBundle(
         depth=depth,
         base_compounds=frozenset(base_compounds),
@@ -622,7 +647,9 @@ def _reaction_witnesses(
     endogenous_reactions: set[str],
     endogenous_direction_index: Mapping[str, frozenset[str]],
     rejection_counts: Counter[str] | None = None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[ForwardExpansionWitness, ...]:
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     resolution = classify_reaction_resolution(reaction)
     component_step = is_component_step_comment(reaction)
     if (
@@ -694,9 +721,11 @@ def _reaction_witnesses(
                 direction=direction,
                 ignored_common_compounds=set(GENERIC_CARRIER_IDS),
             )
-            if option.screening.thermo_direction == "disfavored":
+            if not reaction_direction_allowed(
+                direction, option.screening.thermo_direction, unpre_re_reaction
+            ):
                 if rejection_counts is not None:
-                    rejection_counts["thermodynamically_disfavored"] += 1
+                    rejection_counts["reaction_direction_policy"] += 1
                 continue
             electron = _carrier_aware_electron_fields(
                 option,
@@ -765,9 +794,11 @@ def ensure_expansion_depth(
     requested_depth: int,
     client: KeggRestClient | None = None,
     progress_interval: int = DEFAULT_EXPANSION_PROGRESS_INTERVAL,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> ExpansionBundle:
     """生成或复用直到 ``requested_depth`` 的同步 KEGG 扩展。"""
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     expansion_started = time.perf_counter()
     if requested_depth < 1:
         raise ValueError("expand depth must be a positive integer")
@@ -789,7 +820,9 @@ def ensure_expansion_depth(
     manifest_path = _manifest_path(output_dir)
     manifest = _read_manifest(manifest_path)
 
-    manifest_matches = _manifest_matches(manifest, a0_sha256=a0_sha256)
+    manifest_matches = _manifest_matches(
+        manifest, a0_sha256=a0_sha256, unpre_re_reaction=unpre_re_reaction
+    )
     if not manifest_matches:
         if manifest is None:
             print("[INFO] no reusable expansion manifest found; starting from A0")
@@ -808,6 +841,7 @@ def ensure_expansion_depth(
                 base_path=base_path,
                 output_dir=output_dir,
                 depth=requested_depth,
+                unpre_re_reaction=unpre_re_reaction,
             )
             print(
                 "[INFO] reusing cached chassis expansion: "
@@ -860,6 +894,7 @@ def ensure_expansion_depth(
                 base_path=base_path,
                 output_dir=output_dir,
                 depth=existing_depth,
+                unpre_re_reaction=unpre_re_reaction,
             )
         except (FileNotFoundError, ValueError):
             _clean_generated_outputs(output_dir)
@@ -953,6 +988,7 @@ def ensure_expansion_depth(
                     endogenous_reactions=endogenous_reactions,
                     endogenous_direction_index=endogenous_direction_index,
                     rejection_counts=rejection_counts,
+                    unpre_re_reaction=unpre_re_reaction,
                 )
             )
 
@@ -1076,7 +1112,8 @@ def ensure_expansion_depth(
         "a0_sha256": a0_sha256,
         "a0_file": str(base_path.resolve()),
         "max_depth": requested_depth,
-        "direction_policy": "bidirectional_reject_disfavored",
+        "direction_policy": REACTION_DIRECTION_POLICY_VERSION,
+        "unpre_re_reaction": unpre_re_reaction,
         "compound_policy": "Cxxxxx_strict_main_substrates_carrier_aware",
         "carrier_policy": (
             "recognized_electron_carriers_nonblocking_not_reachable"
@@ -1101,12 +1138,16 @@ def ensure_expansion_depth(
         base_path=base_path,
         output_dir=output_dir,
         depth=requested_depth,
+        unpre_re_reaction=unpre_re_reaction,
     )
 
 
 def expand_chassis_metabolites(config: Any) -> dict[str, Any]:
     """使用 ``config.depth`` 生成指定累计深度的底盘 KEGG 扩展集合。"""
 
+    unpre_re_reaction = validate_reaction_direction_mode(
+        getattr(config, "unpre_re_reaction", DEFAULT_UNPRE_RE_REACTION)
+    )
     analysis_started = time.perf_counter()
     depth = int(getattr(config, "depth", 0))
     base_path = Path(config.chassis_producible_csv).expanduser().resolve()
@@ -1141,6 +1182,7 @@ def expand_chassis_metabolites(config: Any) -> dict[str, Any]:
         cache_dir=cache_dir,
         requested_depth=depth,
         progress_interval=progress_interval,
+        unpre_re_reaction=unpre_re_reaction,
     )
     frontier_path = _frontier_path(output_dir, depth)
     manifest_path = _manifest_path(output_dir)
@@ -1166,6 +1208,7 @@ def expand_chassis_metabolites(config: Any) -> dict[str, Any]:
         "ok": True,
         "depth": depth,
         "progress_interval": progress_interval,
+        "unpre_re_reaction": unpre_re_reaction,
         "base_compound_count": len(bundle.base_compounds),
         "expanded_compound_count": expansion_compound_count,
         "reachable_compound_count": len(bundle.reachable_compounds),

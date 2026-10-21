@@ -30,6 +30,12 @@ from urllib.request import Request, urlopen
 import cobra
 import pandas as pd
 
+from src.pathway_analyze.reaction_direction_policy import (
+    DEFAULT_UNPRE_RE_REACTION,
+    REACTION_DIRECTION_POLICY_VERSION,
+    reaction_direction_allowed,
+    validate_reaction_direction_mode,
+)
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.pathway_analyze.target_status import (
     NO_PATHWAY_FOUND_STATUS,
@@ -390,6 +396,7 @@ class SearchExecutionResult:
     status: str = ROUTES_FOUND_STATUS
     message: str = ""
     target_already_available_in_chassis: bool = False
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION
 
 
 @dataclass(frozen=True)
@@ -1930,9 +1937,14 @@ def decompose_multistep_option(
     option: ReactionOption,
     client: KeggRestClient,
     ignored_common_compounds: set[str],
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[ReactionOption, ...]:
     """将 KEGG 多步汇总反应替换为逐步反应；无法可靠拆解时保留原条目。"""
 
+    if not reaction_direction_allowed(
+        option.direction, option.screening.thermo_direction, unpre_re_reaction
+    ):
+        return tuple()
     resolution = classify_reaction_resolution(option.reaction)
     component_ids = resolution.component_ids
     if resolution.is_multistep and not component_ids:
@@ -1955,6 +1967,7 @@ def decompose_multistep_option(
             )
         return (option,)
 
+    policy_blocked = False
     for component_order in candidate_multistep_orders(component_ids):
         component_options = try_decompose_multistep_order(
             option=option,
@@ -1963,8 +1976,20 @@ def decompose_multistep_option(
             ignored_common_compounds=ignored_common_compounds,
         )
         if component_options:
-            return component_options
+            if all(
+                reaction_direction_allowed(
+                    component.direction,
+                    component.screening.thermo_direction,
+                    unpre_re_reaction,
+                )
+                for component in component_options
+            ):
+                return component_options
+            policy_blocked = True
 
+    # 已知拆解中含禁用方向时，不得退回汇总反应来隐藏这些步骤。
+    if policy_blocked:
+        return tuple()
     return fallback_multistep_option(option)
 
 
@@ -1972,9 +1997,11 @@ def build_reaction_options(
     compound_id: str,
     client: KeggRestClient,
     ignored_common_compounds: set[str],
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> List[ReactionOption]:
-    """枚举所有能够以左→右或右→左方向生成指定化合物的候选反应。"""
+    """枚举能够生成指定化合物且符合方向策略的候选反应。"""
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     options: List[ReactionOption] = []
     reaction_ids = client.get_reaction_ids_for_compound(compound_id)
     client.prefetch_reactions(reaction_ids)
@@ -1989,14 +2016,16 @@ def build_reaction_options(
         ):
             if compound_id not in product_compounds:
                 continue
-            options.append(
-                make_reaction_option(
-                    compound_id=compound_id,
-                    reaction=reaction,
-                    direction=direction,
-                    ignored_common_compounds=ignored_common_compounds,
-                )
+            option = make_reaction_option(
+                compound_id=compound_id,
+                reaction=reaction,
+                direction=direction,
+                ignored_common_compounds=ignored_common_compounds,
             )
+            if reaction_direction_allowed(
+                direction, option.screening.thermo_direction, unpre_re_reaction
+            ):
+                options.append(option)
 
     return options
 
@@ -2114,6 +2143,7 @@ def resolve_target_module_context(
     target_compound: str,
     client: KeggRestClient,
     ignored_common_compounds: set[str],
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
     """筛出真正覆盖目标生成反应的 KEGG module。
 
@@ -2125,7 +2155,10 @@ def resolve_target_module_context(
     compound_record = client.get_compound_record(target_compound)
     target_compound_module_ids = compound_record.module_ids
 
-    direct_options = build_reaction_options(target_compound, client, ignored_common_compounds)
+    direct_options = build_reaction_options(
+        target_compound, client, ignored_common_compounds,
+        unpre_re_reaction=unpre_re_reaction,
+    )
     direct_options = filter_reaction_options(direct_options, allowed_reaction_ids=None)
     direct_producing_reaction_ids = dedupe_keep_order(
         option.reaction.reaction_id for option in direct_options
@@ -2160,11 +2193,15 @@ def find_upstream_modules_for_boundary_compound(
     compound_id: str,
     client: KeggRestClient,
     ignored_common_compounds: set[str],
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[str, ...]:
     """查找能够生成某个 module 边界化合物的上游 module。"""
 
     module_ids: List[str] = []
-    options = build_reaction_options(compound_id, client, ignored_common_compounds)
+    options = build_reaction_options(
+        compound_id, client, ignored_common_compounds,
+        unpre_re_reaction=unpre_re_reaction,
+    )
     for option in options:
         for module_id in option.reaction.module_ids:
             module = client.get_module(module_id)
@@ -2227,6 +2264,7 @@ def build_module_chain_context(
     client: KeggRestClient,
     ignored_common_compounds: set[str],
     max_module_chain_depth: int,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> ModuleChainContext:
     """从目标 module 向上游递归拼接 module，并汇总允许反应白名单。"""
 
@@ -2262,6 +2300,7 @@ def build_module_chain_context(
                 compound_id,
                 client,
                 ignored_common_compounds,
+                unpre_re_reaction=unpre_re_reaction,
             ):
                 if module_id in seen_modules:
                     continue
@@ -2332,14 +2371,15 @@ def rank_reaction_options(
     allowed_reaction_ids: set[str] | None = None,
     electron_avoidance_mode: str = "prefer",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> List[ReactionOption]:
     """按生物学启发式对生成当前化合物的反应候选做字典序排序。
 
-    排序综合考虑反应方向、SAM/NADPH/CoA 负担、电子风险、前体与底盘
-    可达集合的距离、同通路证据和酶注释完整性。这里仅改变探索顺序，不会把
-    ``disfavored`` 候选直接判为不可行；最终可行性仍交给下游 GEM 验证。
+    先应用方向准入策略，再综合方向标签、SAM/NADPH/CoA 负担、电子风险、
+    前体距离和注释完整性排序。方向策略是硬限制，最终通量可行性由 GEM 验证。
     """
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     one_step_cache: Dict[str, int] = {}
 
@@ -2353,7 +2393,10 @@ def rank_reaction_options(
             return 0
 
         best = 3
-        compound_options = build_reaction_options(compound_id, client, ignored_common_compounds)
+        compound_options = build_reaction_options(
+            compound_id, client, ignored_common_compounds,
+            unpre_re_reaction=unpre_re_reaction,
+        )
         compound_options = filter_reaction_options(compound_options, allowed_reaction_ids)
         for option in compound_options[:8]:
             precursor_set = set(option.precursor_compounds)
@@ -2375,6 +2418,10 @@ def rank_reaction_options(
     filtered: List[ReactionOption] = []
 
     for option in options:
+        if not reaction_direction_allowed(
+            option.direction, option.screening.thermo_direction, unpre_re_reaction
+        ):
+            continue
         precursor_set = set(option.precursor_compounds)
         if len(precursor_set) > max_major_precursors:
             continue
@@ -2665,6 +2712,7 @@ def build_frontier_bridge_plans(
     ignored_common_compounds: set[str],
     max_plans: int,
     memo: Dict[str, Tuple[Tuple[PlanStep, ...], ...]] | None = None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[Tuple[PlanStep, ...], ...]:
     """递归恢复一个扩展锚点到 A0 的前向反应树，并保留最佳 Top-K。"""
 
@@ -2686,6 +2734,10 @@ def build_frontier_bridge_plans(
     for witness in witnesses:
         if int(witness.depth) != compound_depth:
             continue
+        if not reaction_direction_allowed(
+            witness.direction, witness.thermo_direction, unpre_re_reaction
+        ):
+            continue
         substrate_plan_groups: List[Tuple[Tuple[PlanStep, ...], ...]] = []
         valid_witness = True
         for substrate_id in witness.substrate_compounds:
@@ -2705,6 +2757,7 @@ def build_frontier_bridge_plans(
                 ignored_common_compounds=ignored_common_compounds,
                 max_plans=plan_limit,
                 memo=memo,
+                unpre_re_reaction=unpre_re_reaction,
             )
             if not substrate_plans:
                 valid_witness = False
@@ -2722,6 +2775,10 @@ def build_frontier_bridge_plans(
             direction=witness.direction,
             ignored_common_compounds=ignored_common_compounds,
         )
+        if not reaction_direction_allowed(
+            option.direction, option.screening.thermo_direction, unpre_re_reaction
+        ):
+            continue
         bridge_step = PlanStep(
             option=option,
             reachable_precursors=tuple(
@@ -2770,9 +2827,19 @@ def materialize_frontier_solution(
     max_plans: int,
     max_total_steps: int,
     max_new_enzymes: int,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Tuple[Solution, ...]:
     """把搜索终点中的扩展锚点替换为完整 A0→锚点反应树。"""
 
+    if not all(
+        reaction_direction_allowed(
+            step.option.direction,
+            step.option.screening.thermo_direction,
+            unpre_re_reaction,
+        )
+        for step in solution.steps
+    ):
+        return tuple()
     if expansion_bundle is None or int(expansion_bundle.depth) <= 0:
         return (solution,)
     anchors = dedupe_keep_order((
@@ -2797,6 +2864,7 @@ def materialize_frontier_solution(
             ignored_common_compounds=ignored_common_compounds,
             max_plans=max_plans,
             memo=memo,
+            unpre_re_reaction=unpre_re_reaction,
         )
         if not plans:
             return tuple()
@@ -2902,6 +2970,7 @@ def _find_unique_complete_pair_replacement(
     second: PlanStep,
     client: KeggRestClient,
     ignored_common_compounds: set[str],
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> ReactionOption | None:
     """用净计量匹配为相邻不完整步骤寻找唯一完整 KEGG 反应。"""
 
@@ -2921,6 +2990,7 @@ def _find_unique_complete_pair_replacement(
         target_compound,
         client,
         ignored_common_compounds,
+        unpre_re_reaction=unpre_re_reaction,
     ):
         reaction = option.reaction
         if reaction.reaction_id in source_ids:
@@ -2947,6 +3017,7 @@ def normalize_solution_reactions(
     endogenous_reactions: set[str],
     ignored_common_compounds: set[str],
     endogenous_direction_index: EndogenousDirectionIndex | None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> Solution:
     """合并可唯一解析的相邻不完整步骤，并标记仍不可实现的反应。"""
 
@@ -2967,6 +3038,7 @@ def normalize_solution_reactions(
                 second,
                 client,
                 ignored_common_compounds,
+                unpre_re_reaction=unpre_re_reaction,
             )
             if replacement is None:
                 continue
@@ -3052,6 +3124,7 @@ def search_gap_solutions_once(
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
     base_reachable_compounds: set[str] | None = None,
     expansion_bundle: Any | None = None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> SearchRoundResult:
     """在固定 module 白名单、电子策略和资源上限下执行一次反向最佳优先搜索。
 
@@ -3060,6 +3133,7 @@ def search_gap_solutions_once(
     堆优先异源步骤较少、预计剩余工作较小的节点。
     """
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
@@ -3087,6 +3161,7 @@ def search_gap_solutions_once(
             max_plans=max_routes_per_state,
             max_total_steps=max_total_steps,
             max_new_enzymes=max_new_enzymes,
+            unpre_re_reaction=unpre_re_reaction,
         )
         direct_solutions: List[Solution] = []
         direct_rejected: List[Solution] = []
@@ -3098,7 +3173,17 @@ def search_gap_solutions_once(
                 endogenous_reactions=endogenous_reactions,
                 ignored_common_compounds=ignored_common_compounds,
                 endogenous_direction_index=endogenous_direction_index,
+                unpre_re_reaction=unpre_re_reaction,
             )
+            if not all(
+                reaction_direction_allowed(
+                    step.option.direction,
+                    step.option.screening.thermo_direction,
+                    unpre_re_reaction,
+                )
+                for step in normalized.steps
+            ):
+                continue
             if normalized.reaction_ready:
                 direct_solutions.append(normalized)
             else:
@@ -3183,6 +3268,7 @@ def search_gap_solutions_once(
                 max_plans=max_routes_per_state,
                 max_total_steps=max_total_steps,
                 max_new_enzymes=max_new_enzymes,
+                unpre_re_reaction=unpre_re_reaction,
             )
             for candidate in materialized_candidates:
                 normalized_solution = normalize_solution_reactions(
@@ -3192,10 +3278,20 @@ def search_gap_solutions_once(
                     endogenous_reactions=endogenous_reactions,
                     ignored_common_compounds=ignored_common_compounds,
                     endogenous_direction_index=endogenous_direction_index,
+                    unpre_re_reaction=unpre_re_reaction,
                 )
                 normalized_signature = plan_route_signature(
                     normalized_solution.steps
                 )
+                if not all(
+                    reaction_direction_allowed(
+                        step.option.direction,
+                        step.option.screening.thermo_direction,
+                        unpre_re_reaction,
+                    )
+                    for step in normalized_solution.steps
+                ):
+                    continue
                 if not normalized_solution.reaction_ready:
                     if (
                         normalized_signature not in rejected_signatures
@@ -3218,7 +3314,10 @@ def search_gap_solutions_once(
 
         # 采用 fail-first 策略选节点，并只扩展排序最前的有限个候选反应。
         current_compound = choose_expand_compound(unresolved, client)
-        all_options = build_reaction_options(current_compound, client, ignored_common_compounds)
+        all_options = build_reaction_options(
+            current_compound, client, ignored_common_compounds,
+            unpre_re_reaction=unpre_re_reaction,
+        )
         all_options = filter_reaction_options(all_options, allowed_reaction_ids)
         ranked_options = rank_reaction_options(
             options=all_options,
@@ -3231,17 +3330,24 @@ def search_gap_solutions_once(
             allowed_reaction_ids=allowed_reaction_ids,
             electron_avoidance_mode=electron_avoidance_mode,
             endogenous_direction_index=endogenous_direction_index,
-        )[:max_reactions_per_compound]
+            unpre_re_reaction=unpre_re_reaction,
+        )
 
+        expanded_option_count = 0
         for option in ranked_options:
+            if expanded_option_count >= max_reactions_per_compound:
+                break
             # KEGG 中部分反应是多步汇总条目；能可靠拆解时按真实组件逐步计数。
             component_options = decompose_multistep_option(
                 option=option,
                 client=client,
                 ignored_common_compounds=ignored_common_compounds,
+                unpre_re_reaction=unpre_re_reaction,
             )
             if not component_options:
                 continue
+            # 拆解后被方向策略排除的汇总候选不占用本轮扩展名额。
+            expanded_option_count += 1
 
             # 禁止自依赖、组件内重复反应和路线历史中的反应复用，避免显式环路。
             if any(component_option.produced_compound in component_option.precursor_compounds for component_option in component_options):
@@ -3368,14 +3474,17 @@ def run_search_gap_analysis(
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
     base_reachable_compounds: set[str] | None = None,
     expansion_bundle: Any | None = None,
+    unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> SearchExecutionResult:
     """构建 module 上下文并调度 module 与电子风险两层搜索兜底。
 
     ``module_filter_mode`` 控制是否先在 KEGG module 链内搜索；``prefer`` 在
     module 内无解时回退到完整反应空间。``strict_with_fallback`` 则先规避高
     电子风险候选，无解后放宽为 prefer，并同时扩大搜索资源上限。
+    所有阶段始终遵循 ``unpre_re_reaction``，不会回退或放宽方向限制。
     """
 
+    unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
@@ -3402,12 +3511,16 @@ def run_search_gap_analysis(
             status=TARGET_ALREADY_AVAILABLE_STATUS,
             message=target_already_available_message(target_compound),
             target_already_available_in_chassis=True,
+            unpre_re_reaction=unpre_re_reaction,
         )
     (
         target_compound_module_ids,
         matched_target_module_ids,
         direct_producing_reaction_ids,
-    ) = resolve_target_module_context(target_compound, client, ignored_common_compounds)
+    ) = resolve_target_module_context(
+        target_compound, client, ignored_common_compounds,
+        unpre_re_reaction=unpre_re_reaction,
+    )
 
     # 关闭 module 筛选时不构造白名单；否则从目标 module 向上游扩展反应子图。
     if module_filter_mode == "off":
@@ -3424,6 +3537,7 @@ def run_search_gap_analysis(
             client=client,
             ignored_common_compounds=ignored_common_compounds,
             max_module_chain_depth=max_module_chain_depth,
+            unpre_re_reaction=unpre_re_reaction,
         )
     allowed_reaction_id_set = set(module_chain_context.allowed_reaction_ids)
     # 基础上限来自调用参数；电子兜底只会放宽，不会缩小用户给定上限。
@@ -3471,6 +3585,7 @@ def run_search_gap_analysis(
             reaction_resolution_mode=reaction_resolution_mode,
             endogenous_direction_index=endogenous_direction_index,
             expansion_bundle=expansion_bundle,
+            unpre_re_reaction=unpre_re_reaction,
         )
 
     def run_module_pipeline(
@@ -3543,6 +3658,7 @@ def run_search_gap_analysis(
             if round_result.solutions
             else "未找到连接到底盘可达集合的候选合成路径。"
         ),
+        unpre_re_reaction=unpre_re_reaction,
     )
 
 
@@ -3902,6 +4018,16 @@ def write_outputs(
     验证结果与本轮结果混用；KEGG 缓存和其他目标目录不受影响。
     """
 
+    if not all(
+        reaction_direction_allowed(
+            step.option.direction,
+            step.option.screening.thermo_direction,
+            result.unpre_re_reaction,
+        )
+        for solution in result.solutions
+        for step in solution.steps
+    ):
+        raise ValueError("Candidate route violates unpre_re_reaction direction policy")
     target_dir = safe_mkdir(output_dir)
     # 同时清除旧版逐 solution 文件，避免它们与新的聚合表并存造成歧义。
     for pattern in (
@@ -3977,6 +4103,8 @@ def write_outputs(
     run_config.update(
         {
             "search_mode_used": result.search_mode_used,
+            "unpre_re_reaction": result.unpre_re_reaction,
+            "reaction_direction_policy_version": REACTION_DIRECTION_POLICY_VERSION,
             "did_fallback": result.did_fallback,
             "electron_avoidance_mode": result.electron_avoidance_mode,
             "electron_avoidance_fallback": result.electron_avoidance_fallback,
@@ -4034,6 +4162,9 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     """使用 ``RunConfig`` 执行底盘感知的 KEGG gap 搜索。"""
 
     target_compound = validate_target_compound_id(config.target_name)
+    unpre_re_reaction = validate_reaction_direction_mode(
+        getattr(config, "unpre_re_reaction", DEFAULT_UNPRE_RE_REACTION)
+    )
     model_path = Path(config.model_path).expanduser().resolve()
     base_reachable_path = Path(config.chassis_producible_csv).expanduser().resolve()
     chassis_output_dir = Path(config.chassis_output_path).expanduser().resolve()
@@ -4115,6 +4246,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
             base_path=base_reachable_path,
             output_dir=chassis_output_dir,
             depth=expansion_depth,
+            unpre_re_reaction=unpre_re_reaction,
         )
         reachable_compounds = set(expansion_bundle.reachable_compounds)
         reachable_path = expansion_bundle.expanded_file
@@ -4152,6 +4284,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         reaction_resolution_mode=reaction_resolution_mode,
         endogenous_direction_index=endogenous_direction_index,
         expansion_bundle=expansion_bundle,
+        unpre_re_reaction=unpre_re_reaction,
     )
 
     run_args: dict[str, Any] = {
@@ -4172,6 +4305,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         "max_routes_per_state": max_routes_per_state,
         "max_module_chain_depth": max_module_chain_depth,
         "module_filter_mode": module_filter_mode,
+        "unpre_re_reaction": unpre_re_reaction,
         "electron_avoidance_mode": electron_avoidance_mode,
         "reaction_resolution_mode": reaction_resolution_mode,
         "endogenous_direction_mode": ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS,
@@ -4214,6 +4348,7 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
             (output_dir / "rejected_reaction_routes.csv").resolve()
         ),
         "search_mode_used": result.search_mode_used,
+        "unpre_re_reaction": result.unpre_re_reaction,
         "did_fallback": result.did_fallback,
         "electron_avoidance_mode": result.electron_avoidance_mode,
         "electron_avoidance_fallback": result.electron_avoidance_fallback,

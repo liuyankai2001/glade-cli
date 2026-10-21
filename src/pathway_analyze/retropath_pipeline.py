@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from src.pathway_analyze.expand_chassis_metabolites import load_expansion_bundle
+from src.pathway_analyze.reaction_direction_policy import (
+    DEFAULT_UNPRE_RE_REACTION,
+    validate_reaction_direction_mode,
+)
 from src.pathway_analyze.kegg_gap_analyze import (
     KeggRestClient,
     gap_depth_output_dir,
@@ -364,6 +368,9 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
 
     try:
         target_compound = validate_target_compound_id(config.target_name)
+        unpre_re_reaction = validate_reaction_direction_mode(
+            getattr(config, "unpre_re_reaction", DEFAULT_UNPRE_RE_REACTION)
+        )
         depth = int(getattr(config, "depth", 0))
         if depth < 0:
             raise ValueError("depth must be greater than or equal to 0")
@@ -391,6 +398,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             base_path=Path(config.chassis_producible_csv),
             output_dir=Path(config.chassis_output_path),
             depth=depth,
+            unpre_re_reaction=unpre_re_reaction,
         )
     except (OSError, ValueError) as exc:
         raise _write_failure(

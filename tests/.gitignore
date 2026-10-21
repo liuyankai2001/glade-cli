@@ -8,3 +8,4 @@
 !test_web_cli.py
 !test_gap_components.py
 !test_gap_curation.py
+!test_reaction_direction_policy.py

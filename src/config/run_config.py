@@ -37,6 +37,9 @@ class RunConfig:
         self.module_filter_mode = 'prefer' # prefer、strict 或 off
         self.electron_avoidance_mode = 'strict_with_fallback' # off、prefer、strict 或 strict_with_fallback
         self.reaction_resolution_mode = 'strict' # strict 或 audit
+        # KEGG 方向策略：0 不限制；1 禁用 disfavored；2 只允许 favored；
+        # 3 仅允许 left_to_right 且 favored。expand 和 gap 共用，不自动放宽。
+        self.unpre_re_reaction: int = 1
         self.gap_output_path = self.project_output_path / f'kegg_gap_{self.target_name}'
 
         # 主酶候选蛋白综合评分权重。四项必须完整、非负且总和为 1。
