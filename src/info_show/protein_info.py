@@ -11,7 +11,6 @@ from typing import Any
 from src.write_manifest.store import read_design_manifest
 
 
-MANUAL_AUXILIARY_SCHEMA_VERSION = "manual_auxiliary_protein_selection.v1"
 _PREVIEW_HEAD = 40
 _PREVIEW_TAIL = 20
 
@@ -60,11 +59,8 @@ def _record(records: dict[str, dict[str, Any]], accession: str) -> dict[str, Any
             "protein_name": "",
             "organism_name": "",
             "assigned_step_indexes": set(),
-            "required_by_main_accessions": set(),
             "reviewed": None,
             "cofactors": [],
-            "manual": None,
-            "research_auxiliary": False,
             "cds": None,
             "cds_failure": None,
         },
@@ -94,95 +90,6 @@ def _merge_main_proteins(
         current["reviewed"] = item.get("reviewed")
         current["cofactors"] = _string_list(item.get("cofactors"))
     return selection
-
-
-def _merge_manual_auxiliary(
-    selection: Mapping[str, Any],
-    records: dict[str, dict[str, Any]],
-) -> None:
-    raw_proteins = selection.get("proteins")
-    if not isinstance(raw_proteins, list):
-        return
-    for raw in raw_proteins:
-        item = _mapping(raw, "auxiliary_protein_selection.proteins[]")
-        current = _record(records, _text(item.get("accession")))
-        current["roles"].add("auxiliary_protein")
-        if _text(item.get("protein_name")):
-            current["protein_name"] = _text(item.get("protein_name"))
-        if _text(item.get("organism_name")):
-            current["organism_name"] = _text(item.get("organism_name"))
-        current["assigned_step_indexes"].update(
-            _step_list(item.get("assigned_step_indexes"))
-        )
-        current["required_by_main_accessions"].update(
-            value.upper()
-            for value in _string_list(
-                item.get("required_by_main_accessions")
-            )
-        )
-        current["manual"] = dict(item)
-
-
-def _merge_research_auxiliary(
-    selection: Mapping[str, Any],
-    records: dict[str, dict[str, Any]],
-) -> None:
-    raw_introduce = selection.get("auxiliary_proteins_to_introduce")
-    has_explicit_introduce_list = isinstance(raw_introduce, list)
-    introduce = {
-        item.upper()
-        for item in _string_list(raw_introduce)
-    }
-    raw_main = selection.get("main_enzymes")
-    if not isinstance(raw_main, list):
-        return
-    for raw in raw_main:
-        main = _mapping(raw, "auxiliary_protein_selection.main_enzymes[]")
-        main_accession = _text(main.get("accession")).upper()
-        main_record = records.get(main_accession)
-        main_steps = (
-            set(main_record["assigned_step_indexes"])
-            if main_record is not None
-            else set(_step_list(main.get("assigned_step_indexes")))
-        )
-        confirmed = main.get("confirmed_auxiliary_proteins")
-        if not isinstance(confirmed, list):
-            continue
-        for raw_aux in confirmed:
-            auxiliary = _mapping(
-                raw_aux,
-                "confirmed_auxiliary_proteins[]",
-            )
-            accession = _text(auxiliary.get("accession")).upper()
-            if has_explicit_introduce_list and accession not in introduce:
-                continue
-            current = _record(records, accession)
-            current["roles"].add("auxiliary_protein")
-            if _text(auxiliary.get("protein_name")):
-                current["protein_name"] = _text(
-                    auxiliary.get("protein_name")
-                )
-            if _text(auxiliary.get("organism_name")):
-                current["organism_name"] = _text(
-                    auxiliary.get("organism_name")
-                )
-            current["assigned_step_indexes"].update(main_steps)
-            if main_accession:
-                current["required_by_main_accessions"].add(main_accession)
-            current["research_auxiliary"] = True
-
-
-def _merge_auxiliary_proteins(
-    manifest: Mapping[str, Any],
-    records: dict[str, dict[str, Any]],
-) -> None:
-    value = manifest.get("auxiliary_protein_selection")
-    if not isinstance(value, Mapping):
-        return
-    if _text(value.get("schema_version")) == MANUAL_AUXILIARY_SCHEMA_VERSION:
-        _merge_manual_auxiliary(value, records)
-    else:
-        _merge_research_auxiliary(value, records)
 
 
 def _merge_cds_status(
@@ -216,7 +123,6 @@ def _current_records(
 ) -> tuple[Mapping[str, Any], str, list[dict[str, Any]]]:
     records: dict[str, dict[str, Any]] = {}
     main_selection = _merge_main_proteins(manifest, records)
-    _merge_auxiliary_proteins(manifest, records)
     cds_status = _merge_cds_status(manifest, records)
     ordered = sorted(
         records.values(),
@@ -227,69 +133,6 @@ def _current_records(
         ),
     )
     return main_selection, cds_status, ordered
-
-
-def _input_filename(config: Any) -> str:
-    inputs_dir = getattr(config, "inputs_dir", None)
-    target_name = _text(getattr(config, "target_name", None))
-    if inputs_dir is None or not target_name:
-        return "<输入文件>"
-    matches: list[str] = []
-    root = Path(inputs_dir).expanduser()
-    if not root.is_dir():
-        return "<输入文件>"
-    for path in sorted(root.glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if (
-            isinstance(payload, Mapping)
-            and _text(payload.get("target_name")).upper()
-            == target_name.upper()
-        ):
-            matches.append(path.name)
-    return matches[0] if len(matches) == 1 else "<输入文件>"
-
-
-def _quote_cli(value: str) -> str:
-    return f'"{value}"' if re.search(r"\s", value) else value
-
-
-def _delete_command(config: Any, accession: str) -> str:
-    return (
-        "python main.py remove-auxiliary-protein -i "
-        f"{_quote_cli(_input_filename(config))} --protein-id {accession}"
-    )
-
-
-def _type_label(record: Mapping[str, Any]) -> str:
-    roles = record["roles"]
-    if "main_enzyme" in roles and "auxiliary_protein" in roles:
-        return "主酶 + 手动辅助蛋白" if record["manual"] else "主酶 + 辅助蛋白"
-    if "main_enzyme" in roles:
-        return "主酶"
-    if record["manual"]:
-        return "手动辅助蛋白"
-    return "研究辅助蛋白"
-
-
-def _source_label(record: Mapping[str, Any]) -> str:
-    sources: list[str] = []
-    if "main_enzyme" in record["roles"]:
-        sources.append("UniProt")
-    if record["manual"]:
-        sources.append("用户上传")
-    if record["research_auxiliary"]:
-        sources.append("辅助蛋白研究")
-    return " + ".join(sources) or "未知"
-
-
-def _sequence_type(record: Mapping[str, Any]) -> str:
-    manual = record["manual"]
-    if isinstance(manual, Mapping):
-        return _text(manual.get("sequence_type")) or "protein"
-    return "protein"
 
 
 def _cds_summary(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -326,39 +169,17 @@ def _cds_summary(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _compact_record(config: Any, record: Mapping[str, Any]) -> dict[str, Any]:
-    manual = record["manual"]
-    deletable = isinstance(manual, Mapping)
     cds = _cds_summary(record)
-    roles = [
-        label
-        for role, label in (
-            ("main_enzyme", "主酶"),
-            ("auxiliary_protein", "辅助蛋白"),
-        )
-        if role in record["roles"]
-    ]
     return {
         "蛋白ID": record["accession"],
-        "类型": _type_label(record),
-        "角色": roles,
+        "类型": "主酶",
+        "角色": ["主酶"],
         "蛋白名称": record["protein_name"],
         "来源生物": record["organism_name"],
         "负责步骤": sorted(record["assigned_step_indexes"]),
-        "序列类型": _sequence_type(record),
-        "来源": _source_label(record),
-        "输入文件": (
-            _text(manual.get("source_input_file"))
-            if isinstance(manual, Mapping)
-            else ""
-        ),
+        "来源": "UniProt",
         "CDS状态": cds["状态"],
         "CDS长度_nt": cds["长度_nt"],
-        "可删除": deletable,
-        "删除命令": (
-            _delete_command(config, record["accession"])
-            if deletable
-            else ""
-        ),
     }
 
 
@@ -383,12 +204,6 @@ def _preview(sequence: str) -> str:
 def _sequence_file_info(config: Any, record: Mapping[str, Any]) -> dict[str, Any]:
     path_value = ""
     source_kind = ""
-    manual = record["manual"]
-    if isinstance(manual, Mapping):
-        sequence_file = manual.get("sequence_file")
-        if isinstance(sequence_file, Mapping):
-            path_value = _text(sequence_file.get("path"))
-            source_kind = "手动上传快照"
     if not path_value and isinstance(record["cds"], Mapping):
         protein_sequence = record["cds"].get("protein_sequence")
         if isinstance(protein_sequence, Mapping):
@@ -457,10 +272,6 @@ def get_proteins_info(config: Any) -> dict[str, Any]:
         "CDS整体状态": cds_status,
         "蛋白总数": len(records),
         "主酶数": sum("main_enzyme" in item["roles"] for item in records),
-        "辅助蛋白数": sum(
-            "auxiliary_protein" in item["roles"] for item in records
-        ),
-        "手动辅助蛋白数": sum(item["manual"] is not None for item in records),
         "蛋白列表": [_compact_record(config, item) for item in records],
     }
 
@@ -485,11 +296,6 @@ def get_protein_info(config: Any) -> dict[str, Any]:
         "CDS整体状态": cds_status,
         "来源生物Reviewed": record["reviewed"],
         "辅因子": list(record["cofactors"]),
-        "关联主酶": sorted(record["required_by_main_accessions"]),
-        "路线级共享": (
-            "auxiliary_protein" in record["roles"]
-            and not record["required_by_main_accessions"]
-        ),
         "序列文件": _sequence_file_info(config, record),
         "CDS详情": {
             **_cds_summary(record),
@@ -499,11 +305,6 @@ def get_protein_info(config: Any) -> dict[str, Any]:
                 else None
             ),
         },
-        "删除说明": (
-            "删除命令只移除手动辅助角色；若该 ID 同时是主酶，主酶仍保留。"
-            if record["manual"]
-            else "该蛋白不能通过 remove-auxiliary-protein 删除。"
-        ),
     })
     return result
 

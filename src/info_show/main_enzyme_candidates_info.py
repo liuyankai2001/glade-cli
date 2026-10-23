@@ -36,15 +36,6 @@ CONFIDENCE_NAMES = {
     "low": "低",
 }
 
-AUXILIARY_ROLE_NAMES = {
-    "p450_reductase": "P450还原酶（CPR）",
-    "ferredoxin": "铁氧还蛋白（ferredoxin）",
-    "ferredoxin_reductase": "铁氧还蛋白还原酶",
-    "thioredoxin": "硫氧还蛋白（thioredoxin）",
-    "thioredoxin_reductase": "硫氧还蛋白还原酶",
-    "generic_electron_transfer_partner": "通用电子转移伙伴",
-    "oxygenase_electron_partner": "加氧酶电子转移伙伴",
-}
 
 LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
 LITERATURE_SCHEMA_VERSION = "literature_activity_evidence.v1"
@@ -379,12 +370,6 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
                         candidate.direction_confidence,
                         candidate.direction_confidence,
                     ),
-                    "辅助蛋白状态": candidate.auxiliary_requirement_status,
-                    "所需辅助角色": [
-                        AUXILIARY_ROLE_NAMES.get(item.role, item.role)
-                        for item in candidate.auxiliary_requirements
-                        if item.selection_status == "pending_user_selection"
-                    ],
                 }
                 for candidate in candidates
             ],
@@ -707,33 +692,6 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
             "匹配KO编号": _split_values(detail.get("matched_ko_ids")),
             "KEGG基因编号": _split_values(detail.get("kegg_gene_ids")),
         },
-        "辅助蛋白需求": {
-            "酶系统类型": candidate.enzyme_system_type,
-            "总体状态": candidate.auxiliary_requirement_status,
-            "需求": [
-                {
-                    "辅助角色": AUXILIARY_ROLE_NAMES.get(
-                        item.role, item.role
-                    ),
-                    "必要性": (
-                        "必需"
-                        if item.necessity == "required"
-                        else "可能需要"
-                    ),
-                    "置信度": CONFIDENCE_NAMES.get(
-                        item.confidence, item.confidence
-                    ),
-                    "选择状态": (
-                        "待用户选择"
-                        if item.selection_status == "pending_user_selection"
-                        else "已融合在主酶中"
-                    ),
-                    "载体ID": item.carrier_ids,
-                    "判定依据": item.evidence,
-                }
-                for item in candidate.auxiliary_requirements
-            ],
-        },
         "方向证据": {
             "方向判断": DIRECTION_NAMES.get(
                 candidate.direction_verdict,
@@ -781,17 +739,6 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
             "特征注释": detail.get("feature_annotations"),
             "结构域": _split_values(detail.get("domain_ids")),
             "关键词": _split_values(detail.get("keywords")),
-        },
-        "系统组成信息": {
-            "角色": detail.get("role"),
-            "候选角色": detail.get("candidate_role"),
-            "组分类型": detail.get("component_type"),
-            "系统锚点UniProt": detail.get("system_anchor_accession"),
-            "ComplexPortal编号": detail.get("complex_portal_ac"),
-            "ComplexPortal名称": detail.get("complex_portal_name"),
-            "复合物匹配依据": detail.get("complex_match_basis"),
-            "复合物证据类型": detail.get("complex_evidence_type"),
-            "组分计量": _json_object(detail.get("component_stoichiometry")),
         },
         "文献与数据库": literature_and_databases,
         "序列信息": {

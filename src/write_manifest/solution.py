@@ -85,7 +85,6 @@ SOLUTION_STEP_FIELDS = (
     "source_reaction_ids",
     "resolution_action",
     "resolution_evidence",
-    "auxiliary_requirements",
 )
 
 RETROPATH_SOLUTION_STEP_FIELDS = (
@@ -150,19 +149,13 @@ RETROPATH_VALIDATION_FIELDS = (
 ELECTRON_SUMMARY_FIELDS = (
     "max_electron_risk_level",
     "max_electron_risk_score",
-    "electron_system_status",
     "electron_balance_status",
-    "requires_external_electron_regeneration",
-    "requires_carrier_compatibility_check",
     "electron_carrier_ids",
     "electron_requirement_classes",
     "electron_carrier_net_changes",
     "balanced_electron_carrier_pairs",
     "unbalanced_electron_carrier_pairs",
     "unresolved_electron_carrier_ids",
-    "annotation_only_electron_requirements",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
 )
 
 ELECTRON_RISK_STEP_FIELDS = (
@@ -175,9 +168,6 @@ ELECTRON_RISK_STEP_FIELDS = (
     "electron_risk_score",
     "electron_risk_evidence",
     "electron_carrier_net_changes",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
-    "auxiliary_requirements",
 )
 
 SOLUTION_DOWNSTREAM_SECTIONS = (
@@ -185,6 +175,7 @@ SOLUTION_DOWNSTREAM_SECTIONS = (
     "protein_selection",
     "auxiliary_protein_selection",
     "enzyme_system_selection",
+    "electron_inference",
     "cds_selection",
     "expression_box_selection",
     "expression_cassette_assembly",
@@ -258,32 +249,6 @@ def _select_solution_steps(path: Path, solution_id: int) -> list[dict[str, Any]]
 
 def _split_values(value: Any) -> list[str]:
     return [item.strip() for item in str(value or "").split(";") if item.strip()]
-
-
-def _parse_auxiliary_requirements(value: Any) -> list[dict[str, Any]]:
-    text = str(value or "").strip()
-    if not text:
-        return []
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("路线辅助蛋白需求字段不是有效 JSON") from exc
-    if not isinstance(payload, list) or any(
-        not isinstance(item, dict) for item in payload
-    ):
-        raise ValueError("路线辅助蛋白需求字段必须是对象列表")
-    required_fields = {
-        "role",
-        "necessity",
-        "confidence",
-        "selection_status",
-        "carrier_ids",
-        "evidence",
-    }
-    for item in payload:
-        if required_fields.difference(item):
-            raise ValueError("路线辅助蛋白需求字段缺少必要信息")
-    return payload
 
 
 def _parse_json_value(
@@ -374,11 +339,6 @@ def _renumber_steps_forward(
         forward_row = dict(row)
         forward_row["gap_step_index"] = gap_step_index
         forward_row["step_index"] = forward_index
-        forward_row["auxiliary_requirements"] = (
-            _parse_auxiliary_requirements(
-                forward_row.get("auxiliary_requirements_json")
-            )
-        )
         if str(forward_row.get("step_source") or "").strip() == "retropath":
             forward_row["stoichiometry_terms"] = _parse_json_value(
                 forward_row.get("stoichiometry_terms_json"),
@@ -430,11 +390,6 @@ def _remap_electron_steps(
         remapped_row = dict(row)
         remapped_row["gap_step_index"] = gap_step_index
         remapped_row["step_index"] = gap_to_forward[gap_step_index]
-        remapped_row["auxiliary_requirements"] = (
-            _parse_auxiliary_requirements(
-                remapped_row.get("auxiliary_requirements_json")
-            )
-        )
         remapped_rows.append(remapped_row)
     remapped_rows.sort(key=lambda row: int(row["step_index"]))
     return remapped_rows
@@ -868,10 +823,7 @@ def write_solution(config: Any) -> dict[str, Any]:
         solution_id,
     )
     required_electron_fields = {
-        "electron_system_status",
         "electron_balance_status",
-        "requires_external_electron_regeneration",
-        "requires_carrier_compatibility_check",
     }
     if (
         not electron_summary
@@ -1006,7 +958,7 @@ def write_solution(config: Any) -> dict[str, Any]:
         target_compound_id=target_compound,
         sections={
             "solution": solution_payload,
-            "electron_inference": electron_payload,
+            "electron_balance": electron_payload,
         },
         discard_sections=SOLUTION_DOWNSTREAM_SECTIONS,
     )
@@ -1019,14 +971,7 @@ def write_solution(config: Any) -> dict[str, Any]:
         "步骤数量": len(steps),
         "通量验证状态": validation.get("validation_status"),
         "辅因子模式": validation.get("cofactor_mode"),
-        "电子系统状态": electron_summary.get("electron_system_status"),
         "电子载体平衡状态": electron_summary.get("electron_balance_status"),
-        "是否需要额外电子再生系统": electron_summary.get(
-            "requires_external_electron_regeneration"
-        ),
-        "是否需要确认真实载体兼容性": electron_summary.get(
-            "requires_carrier_compatibility_check"
-        ),
         "清单文件": str(manifest_path.resolve()),
         "清单版本": manifest["revision"],
     }

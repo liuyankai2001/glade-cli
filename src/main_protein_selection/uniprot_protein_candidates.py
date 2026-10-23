@@ -117,10 +117,6 @@ STEP_CANDIDATE_COLUMNS = [
     "produced_compound_id",
     "produced_compound_name",
     "role",
-    "enzyme_system_type",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
-    "auxiliary_requirements_json",
     "ec_number",
     "accession",
     "entry_name",
@@ -147,13 +143,6 @@ STEP_CANDIDATE_COLUMNS = [
     "reaction_fit_rule_ids",
     "reaction_fit_evidence",
     "candidate_role",
-    "component_type",
-    "system_anchor_accession",
-    "complex_portal_ac",
-    "complex_portal_name",
-    "complex_match_basis",
-    "complex_evidence_type",
-    "component_stoichiometry",
     "retrieval_strategy",
     "retrieval_query_id",
     "matched_rhea_ids",
@@ -219,22 +208,11 @@ PROTEIN_CANDIDATE_COLUMNS = [
     "covered_reaction_ids",
     "covered_ec_numbers",
     "roles",
-    "enzyme_system_types",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_statuses",
-    "auxiliary_requirements_json",
     "best_score",
     "mean_score",
     "min_score",
     "match_count",
     "candidate_roles",
-    "component_types",
-    "system_anchor_accessions",
-    "complex_portal_acs",
-    "complex_portal_names",
-    "complex_match_bases",
-    "complex_evidence_types",
-    "component_stoichiometries",
     "retrieval_strategies",
     "retrieval_query_ids",
     "matched_rhea_ids",
@@ -316,13 +294,6 @@ class ProteinCandidate:
     warnings: list[str] = field(default_factory=list)
     score_breakdown: dict[str, float] = field(default_factory=dict)
     candidate_role: str = "catalytic_main"
-    component_type: str = ""
-    system_anchor_accession: str = ""
-    complex_portal_ac: str = ""
-    complex_portal_name: str = ""
-    complex_match_basis: str = ""
-    complex_evidence_type: str = ""
-    component_stoichiometry: dict[str, float | None] = field(default_factory=dict)
     retrieval_strategy: str = "ec_exact"
     retrieval_query_id: str = ""
     matched_rhea_ids: list[str] = field(default_factory=list)
@@ -2172,16 +2143,8 @@ def candidate_from_reaction_entry(
     retrieval_strategy: str,
     retrieval_query_id: str,
     matched_rhea_ids: list[str] | None = None,
-    candidate_role: str = "catalytic_main",
-    component_type: str = "",
-    system_anchor_accession: str = "",
     allow_transmembrane: bool = False,
     function_evidence_reason: str = "",
-    complex_portal_ac: str = "",
-    complex_portal_name: str = "",
-    complex_match_basis: str = "",
-    complex_evidence_type: str = "",
-    component_stoichiometry: dict[str, float | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
 ) -> ProteinCandidate | None:
@@ -2240,14 +2203,6 @@ def candidate_from_reaction_entry(
         score_breakdown=score_breakdown,
         taxonomy_fit=taxonomy_fit,
     )
-    candidate.candidate_role = candidate_role
-    candidate.component_type = component_type
-    candidate.system_anchor_accession = system_anchor_accession
-    candidate.complex_portal_ac = complex_portal_ac
-    candidate.complex_portal_name = complex_portal_name
-    candidate.complex_match_basis = complex_match_basis
-    candidate.complex_evidence_type = complex_evidence_type
-    candidate.component_stoichiometry = component_stoichiometry or {}
     candidate.retrieval_strategy = retrieval_strategy
     candidate.retrieval_query_id = retrieval_query_id
     candidate.matched_rhea_ids = _unique(matched_rhea_ids or [])
@@ -2352,13 +2307,6 @@ def _step_candidate_row(
         "candidate_rank": "",
         "selection_status": "",
         "candidate_role": candidate.candidate_role,
-        "component_type": candidate.component_type,
-        "system_anchor_accession": candidate.system_anchor_accession,
-        "complex_portal_ac": candidate.complex_portal_ac,
-        "complex_portal_name": candidate.complex_portal_name,
-        "complex_match_basis": candidate.complex_match_basis,
-        "complex_evidence_type": candidate.complex_evidence_type,
-        "component_stoichiometry": _json(candidate.component_stoichiometry),
         "retrieval_strategy": candidate.retrieval_strategy,
         "retrieval_query_id": candidate.retrieval_query_id,
         "matched_rhea_ids": _join(candidate.matched_rhea_ids),

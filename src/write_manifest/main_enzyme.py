@@ -34,7 +34,7 @@ from src.write_manifest.store import (
 )
 
 
-MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v2"
+MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v4"
 LITERATURE_SCHEMA_VERSION = "literature_activity_evidence.v1"
 LITERATURE_RETRIEVAL_STRATEGY = "literature_experimental_activity"
 
@@ -42,6 +42,7 @@ MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "protein_selection",
     "auxiliary_protein_selection",
     "enzyme_system_selection",
+    "electron_inference",
     "cds_selection",
     "expression_box_selection",
     "expression_cassette_assembly",
@@ -413,15 +414,6 @@ def _review_items(
             }
         )
 
-    if selected.metrics.electron_reassessment_status == "review_required":
-        items.append(
-            {
-                "review_type": "electron_assessment",
-                "status": "deferred",
-                "step_indexes": selected.review_required_step_indexes,
-                "reason": selected.electron_assessment,
-            }
-        )
 
     if not result.search_complete:
         items.append(
@@ -504,11 +496,6 @@ def _manifest_payload(
             "cofactors": protein.cofactors,
             "capable_step_indexes": protein.capable_step_indexes,
             "assigned_step_indexes": protein.assigned_step_indexes,
-            "enzyme_system_types": protein.enzyme_system_types,
-            "auxiliary_requirements": [
-                item.model_dump(mode="json")
-                for item in protein.auxiliary_requirements
-            ],
         }
         evidence_ids = sorted({
             str(item["evidence_id"])
@@ -579,21 +566,10 @@ def _manifest_payload(
         },
         "proteins": protein_payloads,
         "step_assignments": assignment_payloads,
-        "auxiliary_requirement_status": (
-            selected.auxiliary_requirement_status
-        ),
-        "auxiliary_requirements": [
-            item.model_dump(mode="json")
-            for item in selected.auxiliary_requirements
-        ],
         "evaluation": {
             "set_status": selected.status,
             "search_complete": result.search_complete,
             "metrics": selected.metrics.model_dump(mode="json"),
-            "electron_assessment": selected.electron_assessment,
-            "auxiliary_requirement_status": (
-                selected.auxiliary_requirement_status
-            ),
             "reasons": selected.reasons,
         },
         "unresolved_reviews": unresolved_reviews,
@@ -688,11 +664,6 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         ),
     )
     pending_review = bool(payload["unresolved_reviews"])
-    pending_auxiliary = [
-        item
-        for item in payload["auxiliary_requirements"]
-        if item["selection_status"] == "pending_user_selection"
-    ]
     return {
         "运行成功": True,
         "目标化合物": target_compound,
@@ -716,11 +687,6 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
             item["review_type"]
             for item in payload["unresolved_reviews"]
         ],
-        "辅助蛋白需求状态": payload["auxiliary_requirement_status"],
-        "待用户选择的辅助角色": sorted({
-            item["role"] for item in pending_auxiliary
-        }),
-        "待选择辅助角色数量": len(pending_auxiliary),
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path.resolve()),
         "清单版本": updated_manifest["revision"],

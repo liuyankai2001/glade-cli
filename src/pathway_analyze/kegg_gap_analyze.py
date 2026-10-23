@@ -7,7 +7,7 @@
 2. 用 KEGG module 构造优先搜索的反应子图；
 3. 按方向启发式、辅因子负担、电子风险和前体距离排列候选反应；
 4. 用最大步数、最大异源酶数、状态支配和环路检测剪枝；
-5. 将候选路线及逐步证据写入 CSV/JSON，交给后续 GEM 验证和酶系统选择。
+5. 将候选路线及逐步证据写入 CSV/JSON，供后续 GEM 验证和主酶筛选使用。
 
 注意：这里的搜索是启发式路线发现，不等同于热力学证明或最终通量可行性证明；
 候选路线仍需经过下游 FBA/pFBA/FVA 验证。
@@ -70,26 +70,25 @@ ELECTRON_AVOIDANCE_MODES = frozenset(
 )
 HIGH_ELECTRON_RISK_SCORE = 2
 ELECTRON_BALANCE_TOLERANCE = 1e-9
-# (名称, 氧化态, 还原态, 是否仍需确认具体载体兼容性)。只有明确出现在
-# 定向反应方程中的载体才参与路线级净平衡计算；纯注释推断继续标记待确认。
+# (名称, 氧化态, 还原态)。仅核算明确出现在定向反应方程中的载体。
 ELECTRON_CARRIER_PAIRS = (
-    ("nadh", "C00003", "C00004", False),
-    ("nadph", "C00006", "C00005", False),
-    ("generic_electron_acceptor", "C00028", "C00030", True),
-    ("ferredoxin", "C00139", "C00138", True),
-    ("thioredoxin", "C00343", "C00342", True),
-    ("hemoprotein_reductase", "C03161", "C03024", True),
+    ("nadh", "C00003", "C00004"),
+    ("nadph", "C00006", "C00005"),
+    ("generic_electron_acceptor", "C00028", "C00030"),
+    ("ferredoxin", "C00139", "C00138"),
+    ("thioredoxin", "C00343", "C00342"),
+    ("hemoprotein_reductase", "C03161", "C03024"),
 )
 ELECTRON_CARRIER_CLASSES = {
     carrier_id: pair_name
-    for pair_name, oxidized_id, reduced_id, _ in ELECTRON_CARRIER_PAIRS
+    for pair_name, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS
     for carrier_id in (oxidized_id, reduced_id)
 }
 # C14818 在当前知识库中没有同时登记可核算的配对成员，保留为待确认载体。
 ELECTRON_CARRIER_CLASSES["C14818"] = "ferredoxin"
 PAIRED_ELECTRON_CARRIER_IDS = frozenset(
     carrier_id
-    for _, oxidized_id, reduced_id, _ in ELECTRON_CARRIER_PAIRS
+    for _, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS
     for carrier_id in (oxidized_id, reduced_id)
 )
 DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS = 20
@@ -99,7 +98,7 @@ DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE = 5
 
 EndogenousDirectionIndex = Dict[str, frozenset[str]]
 SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
-ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v3"
+ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v5"
 REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
 ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS = "gem_bounds"
@@ -242,18 +241,6 @@ class ReactionScreening:
 
 
 @dataclass(frozen=True)
-class AuxiliaryRoleRequirement:
-    """One protein role implied by a directed biochemical reaction."""
-
-    role: str
-    necessity: str
-    confidence: str
-    selection_status: str
-    carrier_ids: Tuple[str, ...]
-    evidence: Tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ElectronRequirement:
     """一个定向反应的电子载体需求及其工程风险。"""
 
@@ -264,7 +251,6 @@ class ElectronRequirement:
     evidence: Tuple[str, ...]
     carrier_net_stoichiometry: Tuple[Tuple[str, float], ...]
     avoid_if_alternative_exists: bool
-    auxiliary_requirements: Tuple[AuxiliaryRoleRequirement, ...]
 
 
 @dataclass(frozen=True)
@@ -484,115 +470,12 @@ def dedupe_keep_order(values: Iterable[str]) -> Tuple[str, ...]:
     return tuple(ordered)
 
 
-def _auxiliary_role_requirement(
-    role: str,
-    *,
-    necessity: str,
-    confidence: str,
-    carrier_ids: Iterable[str],
-    evidence: Iterable[str],
-) -> AuxiliaryRoleRequirement:
-    return AuxiliaryRoleRequirement(
-        role=role,
-        necessity=necessity,
-        confidence=confidence,
-        selection_status="pending_user_selection",
-        carrier_ids=dedupe_keep_order(carrier_ids),
-        evidence=dedupe_keep_order(evidence),
-    )
-
-
-def infer_reaction_auxiliary_requirements(
-    *,
-    carrier_ids: Sequence[str],
-    requirement_classes: Sequence[str],
-    evidence: Sequence[str],
-) -> Tuple[AuxiliaryRoleRequirement, ...]:
-    """Map explicit carriers and conservative annotations to protein roles."""
-
-    carrier_set = set(carrier_ids)
-    class_set = set(requirement_classes)
-    explicit_evidence = tuple(
-        item for item in evidence if item.startswith("explicit_carrier:")
-    )
-    annotation_evidence = tuple(
-        item for item in evidence if item.startswith("annotation:")
-    )
-    requirements: list[AuxiliaryRoleRequirement] = []
-
-    if "hemoprotein_reductase" in class_set:
-        requirements.append(_auxiliary_role_requirement(
-            "p450_reductase",
-            necessity="required",
-            confidence="high" if {"C03024", "C03161"} & carrier_set else "medium",
-            carrier_ids=(item for item in carrier_ids if item in {"C03024", "C03161"}),
-            evidence=(*explicit_evidence, *annotation_evidence),
-        ))
-    if "ferredoxin" in class_set:
-        confidence = "high" if carrier_set & {"C00138", "C00139", "C14818"} else "medium"
-        ferredoxin_carriers = tuple(
-            item for item in carrier_ids if item in {"C00138", "C00139", "C14818"}
-        )
-        for role in ("ferredoxin", "ferredoxin_reductase"):
-            requirements.append(_auxiliary_role_requirement(
-                role,
-                necessity="required",
-                confidence=confidence,
-                carrier_ids=ferredoxin_carriers,
-                evidence=(*explicit_evidence, *annotation_evidence),
-            ))
-    if "thioredoxin" in class_set:
-        confidence = "high" if carrier_set & {"C00342", "C00343"} else "medium"
-        thioredoxin_carriers = tuple(
-            item for item in carrier_ids if item in {"C00342", "C00343"}
-        )
-        for role in ("thioredoxin", "thioredoxin_reductase"):
-            requirements.append(_auxiliary_role_requirement(
-                role,
-                necessity="required",
-                confidence=confidence,
-                carrier_ids=thioredoxin_carriers,
-                evidence=(*explicit_evidence, *annotation_evidence),
-            ))
-    if "generic_electron_acceptor" in class_set:
-        requirements.append(_auxiliary_role_requirement(
-            "generic_electron_transfer_partner",
-            necessity="possibly_required",
-            confidence="medium",
-            carrier_ids=(item for item in carrier_ids if item in {"C00028", "C00030"}),
-            evidence=(*explicit_evidence, *annotation_evidence),
-        ))
-
-    specific_roles = {
-        "p450_reductase",
-        "ferredoxin",
-        "thioredoxin",
-    }
-    if (
-        "oxygenase_electron_partner" in class_set
-        and not specific_roles.intersection(item.role for item in requirements)
-    ):
-        requirements.append(_auxiliary_role_requirement(
-            "oxygenase_electron_partner",
-            necessity="possibly_required",
-            confidence="medium",
-            carrier_ids=(),
-            evidence=annotation_evidence,
-        ))
-
-    return tuple(sorted(requirements, key=lambda item: item.role))
-
-
 def infer_electron_requirement(
     *,
     consumed_stoichiometry: Sequence[Tuple[str, float]],
     produced_stoichiometry: Sequence[Tuple[str, float]],
-    reaction_name: str,
-    reaction_comment: str,
-    equation: str,
-    enzyme_ecs: Sequence[str],
 ) -> ElectronRequirement:
-    """根据显式电子载体和酶注释标记电子系统工程风险。"""
+    """仅根据反应计量中的显式电子载体记录风险和净变化。"""
 
     consumed_ids = {compound_id for compound_id, _ in consumed_stoichiometry}
     produced_ids = {compound_id for compound_id, _ in produced_stoichiometry}
@@ -611,26 +494,11 @@ def infer_electron_requirement(
         f"explicit_carrier:{compound_id}" for compound_id in carrier_ids
     ]
 
-    searchable_text = " ".join(
-        (reaction_name, reaction_comment, equation, " ".join(enzyme_ecs))
-    ).lower()
-    if "ferredoxin" in searchable_text and "ferredoxin" not in requirement_classes:
-        requirement_classes.append("ferredoxin")
-        evidence.append("annotation:ferredoxin")
-    if "thioredoxin" in searchable_text and "thioredoxin" not in requirement_classes:
-        requirement_classes.append("thioredoxin")
-        evidence.append("annotation:thioredoxin")
-    if "cytochrome p450" in searchable_text or "p450" in searchable_text:
-        requirement_classes.append("oxygenase_electron_partner")
-        evidence.append("annotation:cytochrome_p450")
-
-    requirement_classes = list(dedupe_keep_order(requirement_classes))
     high_risk_classes = {
         "ferredoxin",
         "thioredoxin",
         "generic_electron_acceptor",
         "hemoprotein_reductase",
-        "oxygenase_electron_partner",
     }
     if high_risk_classes.intersection(requirement_classes):
         risk_score = 2
@@ -659,11 +527,6 @@ def infer_electron_requirement(
         evidence=tuple(evidence),
         carrier_net_stoichiometry=carrier_net_stoichiometry,
         avoid_if_alternative_exists=risk_score >= HIGH_ELECTRON_RISK_SCORE,
-        auxiliary_requirements=infer_reaction_auxiliary_requirements(
-            carrier_ids=carrier_ids,
-            requirement_classes=requirement_classes,
-            evidence=evidence,
-        ),
     )
 
 
@@ -706,124 +569,55 @@ def parse_electron_carrier_net_changes(value: Any) -> Dict[str, float]:
 def summarize_solution_electron_requirements(
     step_fields: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """汇总路线内各步的电子系统风险，供 CSV 和结果摘要复用。"""
-
+    """Summarize explicit carrier stoichiometry without protein-design claims."""
     rows = list(step_fields)
-    max_score = max((int(row.get("electron_risk_score", 0)) for row in rows), default=0)
-    risk_level = {0: "none", 1: "low", 2: "high"}.get(max_score, "high")
     carrier_ids = dedupe_keep_order(
         carrier_id
         for row in rows
         for carrier_id in str(row.get("electron_carrier_ids", "")).split(";")
         if carrier_id
     )
-    requirement_classes = dedupe_keep_order(
-        class_name
-        for row in rows
-        for class_name in str(row.get("electron_requirement_classes", "")).split(";")
-        if class_name
-    )
-    auxiliary_roles = dedupe_keep_order(
-        role
-        for row in rows
-        for role in str(row.get("required_auxiliary_roles", "")).split(";")
-        if role
-    )
+    max_score = max((int(row.get("electron_risk_score", 0)) for row in rows), default=0)
     carrier_net_totals: Dict[str, float] = {}
     for row in rows:
         for carrier_id, amount in parse_electron_carrier_net_changes(
             row.get("electron_carrier_net_changes")
         ).items():
-            carrier_net_totals[carrier_id] = (
-                carrier_net_totals.get(carrier_id, 0.0) + amount
-            )
-
-    present_carrier_ids = set(carrier_ids)
+            carrier_net_totals[carrier_id] = carrier_net_totals.get(carrier_id, 0.0) + amount
     balanced_pairs: List[str] = []
     unbalanced_pairs: List[str] = []
-    compatibility_pairs: List[str] = []
-    present_pair_names: set[str] = set()
-    for (
-        pair_name,
-        oxidized_id,
-        reduced_id,
-        needs_compatibility,
-    ) in ELECTRON_CARRIER_PAIRS:
+    present_carrier_ids = set(carrier_ids)
+    for pair_name, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS:
         if not ({oxidized_id, reduced_id} & present_carrier_ids):
             continue
-        present_pair_names.add(pair_name)
-        oxidized_net = carrier_net_totals.get(oxidized_id, 0.0)
-        reduced_net = carrier_net_totals.get(reduced_id, 0.0)
-        if (
-            abs(oxidized_net) <= ELECTRON_BALANCE_TOLERANCE
-            and abs(reduced_net) <= ELECTRON_BALANCE_TOLERANCE
-        ):
-            balanced_pairs.append(pair_name)
-        else:
-            unbalanced_pairs.append(pair_name)
-        if needs_compatibility:
-            compatibility_pairs.append(pair_name)
-
-    unresolved_carrier_ids = [
-        carrier_id
-        for carrier_id in carrier_ids
-        if carrier_id not in PAIRED_ELECTRON_CARRIER_IDS
-    ]
-    annotation_only_classes = [
-        class_name
-        for class_name in requirement_classes
-        if class_name not in present_pair_names
-    ]
-    requires_external_regeneration = bool(unbalanced_pairs)
-    requires_compatibility_check = bool(
-        compatibility_pairs
-        or unresolved_carrier_ids
-        or annotation_only_classes
-    )
-
+        balanced = all(
+            abs(carrier_net_totals.get(identifier, 0.0)) <= ELECTRON_BALANCE_TOLERANCE
+            for identifier in (oxidized_id, reduced_id)
+        )
+        (balanced_pairs if balanced else unbalanced_pairs).append(pair_name)
+    unresolved_ids = [identifier for identifier in carrier_ids if identifier not in PAIRED_ELECTRON_CARRIER_IDS]
     if unbalanced_pairs:
         balance_status = "unbalanced"
-    elif present_pair_names:
-        balance_status = "internally_balanced"
-    elif unresolved_carrier_ids or annotation_only_classes:
+    elif unresolved_ids:
         balance_status = "unresolved"
+    elif balanced_pairs:
+        balance_status = "internally_balanced"
     else:
         balance_status = "not_applicable"
-
-    if requires_external_regeneration:
-        system_status = "external_regeneration_required"
-    elif requires_compatibility_check and balance_status == "internally_balanced":
-        system_status = "internally_balanced_carrier_check_required"
-    elif requires_compatibility_check:
-        system_status = "carrier_check_required"
-    elif balance_status == "internally_balanced":
-        system_status = "internally_balanced"
-    else:
-        system_status = "not_required"
-
     return {
-        "max_electron_risk_level": risk_level,
+        "max_electron_risk_level": {0: "none", 1: "low", 2: "high"}.get(max_score, "high"),
         "max_electron_risk_score": max_score,
-        "electron_system_status": system_status,
         "electron_balance_status": balance_status,
-        "requires_external_electron_regeneration": requires_external_regeneration,
-        "requires_carrier_compatibility_check": requires_compatibility_check,
         "electron_carrier_ids": ";".join(carrier_ids),
-        "electron_requirement_classes": ";".join(requirement_classes),
+        "electron_requirement_classes": ";".join(dedupe_keep_order(
+            value for row in rows for value in str(row.get("electron_requirement_classes", "")).split(";") if value
+        )),
         "electron_carrier_net_changes": format_electron_carrier_net_changes(
-            (carrier_id, carrier_net_totals.get(carrier_id, 0.0))
-            for carrier_id in carrier_ids
+            (identifier, carrier_net_totals.get(identifier, 0.0)) for identifier in carrier_ids
         ),
         "balanced_electron_carrier_pairs": ";".join(balanced_pairs),
         "unbalanced_electron_carrier_pairs": ";".join(unbalanced_pairs),
-        "unresolved_electron_carrier_ids": ";".join(unresolved_carrier_ids),
-        "annotation_only_electron_requirements": ";".join(
-            annotation_only_classes
-        ),
-        "required_auxiliary_roles": ";".join(auxiliary_roles),
-        "auxiliary_requirement_status": (
-            "pending_user_selection" if auxiliary_roles else "not_required"
-        ),
+        "unresolved_electron_carrier_ids": ";".join(unresolved_ids),
     }
 
 
@@ -1800,14 +1594,10 @@ def make_reaction_option(
         direction=direction,
         consumed_stoichiometry=consumed_stoichiometry,
     )
-    # 电子模块只负责识别和标注风险，具体电子伙伴由下游酶系统选择解决。
+    # 记录显式电子载体的计量风险，供路线平衡检查使用。
     electron_requirement = infer_electron_requirement(
         consumed_stoichiometry=consumed_stoichiometry,
         produced_stoichiometry=produced_stoichiometry,
-        reaction_name=reaction.name,
-        reaction_comment=reaction.comment,
-        equation=reaction.equation,
-        enzyme_ecs=reaction.enzyme_ecs,
     )
     return ReactionOption(
         produced_compound=compound_id,
@@ -3680,17 +3470,6 @@ def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
     """把单步电子需求转换为路线汇总所需的标量字典。"""
 
     requirement = step.option.electron_requirement
-    auxiliary_payload = [
-        {
-            "role": item.role,
-            "necessity": item.necessity,
-            "confidence": item.confidence,
-            "selection_status": item.selection_status,
-            "carrier_ids": list(item.carrier_ids),
-            "evidence": list(item.evidence),
-        }
-        for item in requirement.auxiliary_requirements
-    ]
     return {
         "electron_carrier_ids": ";".join(requirement.carrier_ids),
         "electron_requirement_classes": ";".join(requirement.requirement_classes),
@@ -3701,18 +3480,6 @@ def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
             requirement.carrier_net_stoichiometry
         ),
         "avoid_if_alternative_exists": requirement.avoid_if_alternative_exists,
-        "required_auxiliary_roles": ";".join(
-            item.role for item in requirement.auxiliary_requirements
-        ),
-        "auxiliary_requirement_status": (
-            "pending_user_selection" if auxiliary_payload else "not_required"
-        ),
-        "auxiliary_requirements_json": json.dumps(
-            auxiliary_payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
     }
 
 
@@ -3822,21 +3589,8 @@ def build_solution_summary_rows(
                 **burden_totals,
                 "max_electron_risk_level": electron_summary["max_electron_risk_level"],
                 "max_electron_risk_score": electron_summary["max_electron_risk_score"],
-                "electron_system_status": electron_summary["electron_system_status"],
                 "electron_balance_status": electron_summary[
                     "electron_balance_status"
-                ],
-                "requires_external_electron_regeneration": electron_summary[
-                    "requires_external_electron_regeneration"
-                ],
-                "requires_carrier_compatibility_check": electron_summary[
-                    "requires_carrier_compatibility_check"
-                ],
-                "required_auxiliary_roles": electron_summary[
-                    "required_auxiliary_roles"
-                ],
-                "auxiliary_requirement_status": electron_summary[
-                    "auxiliary_requirement_status"
                 ],
             }
         )
@@ -3954,30 +3708,6 @@ def build_electron_requirement_rows(result: SearchExecutionResult) -> List[Dict[
                             requirement.carrier_net_stoichiometry
                         )
                     ),
-                    "required_auxiliary_roles": ";".join(
-                        item.role for item in requirement.auxiliary_requirements
-                    ),
-                    "auxiliary_requirement_status": (
-                        "pending_user_selection"
-                        if requirement.auxiliary_requirements
-                        else "not_required"
-                    ),
-                    "auxiliary_requirements_json": json.dumps(
-                        [
-                            {
-                                "role": item.role,
-                                "necessity": item.necessity,
-                                "confidence": item.confidence,
-                                "selection_status": item.selection_status,
-                                "carrier_ids": list(item.carrier_ids),
-                                "evidence": list(item.evidence),
-                            }
-                            for item in requirement.auxiliary_requirements
-                        ],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
                 }
             )
     return rows
@@ -4085,7 +3815,7 @@ def write_outputs(
         encoding="utf-8-sig",
     )
 
-    # 单独导出存在电子风险的步骤，供后续电子传递伙伴设计直接消费。
+    # 单独导出显式电子载体相关步骤，供反应计量审查使用。
     electron_requirement_rows = build_electron_requirement_rows(result)
     pd.DataFrame(electron_requirement_rows).to_csv(
         target_dir / "route_electron_requirements.csv",

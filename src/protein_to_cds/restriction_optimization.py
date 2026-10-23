@@ -54,7 +54,7 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
     if manifest.get("target_compound_id") != config.target_name:
         raise ValueError("manifest 目标与当前输入不一致")
     selection = manifest.get("cds_selection")
-    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v2" or selection.get("status") != "complete":
+    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v3" or selection.get("status") != "complete":
         raise ValueError("请先运行 protein-to-cds，得到完整 CDS 批次")
     proteins = selection.get("proteins")
     if not isinstance(proteins, list) or not proteins:

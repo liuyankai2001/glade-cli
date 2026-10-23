@@ -273,7 +273,7 @@ def build_default_extractor(
     """Lazily load model configuration; callers invoke this only when enabled."""
 
     if model is None:
-        from src.protein_selection.config import (
+        from src.main_protein_selection.literature_activity.runtime import (
             build_chat_model,
             load_model_settings,
         )

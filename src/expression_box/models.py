@@ -11,7 +11,6 @@ class ExpressionProtein:
     accession: str
     roles: tuple[str, ...]
     assigned_step_indexes: tuple[int, ...]
-    required_by_main_accessions: tuple[str, ...]
     optimized_cds_length_nt: int
     optimized_cds_sequence_sha256: str
 
@@ -19,9 +18,6 @@ class ExpressionProtein:
     def is_main_enzyme(self) -> bool:
         return "main_enzyme" in self.roles
 
-    @property
-    def is_auxiliary_protein(self) -> bool:
-        return "auxiliary_protein" in self.roles
 
     @property
     def first_step_index(self) -> int:

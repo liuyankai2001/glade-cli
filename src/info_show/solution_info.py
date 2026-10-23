@@ -238,18 +238,6 @@ def _balance_name(value: Any) -> str:
     }.get(str(value or "").strip(), str(value or "").strip())
 
 
-def _electron_status_name(value: Any) -> str:
-    return {
-        "not_required": "不需要额外电子系统",
-        "internally_balanced": "电子载体已在路线内平衡",
-        "internally_balanced_carrier_check_required": (
-            "电子已内部平衡，但真实载体兼容性待确认"
-        ),
-        "carrier_check_required": "真实载体或电子伙伴待确认",
-        "external_regeneration_required": "需要外部电子载体再生系统",
-    }.get(str(value or "").strip(), str(value or "").strip())
-
-
 def _select_solution_summary(
     rows: list[dict[str, str]],
     solution_id: int,
@@ -379,7 +367,7 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         f"路线规模：共 {total_steps} 步，其中异源反应 {heterologous_steps} 步",
         f"起始代谢物：{'、'.join(starts)}",
         f"最大电子风险：{result.get('最大电子风险', '未知')}",
-        f"电子系统：{result.get('电子系统结论', '未知')}",
+        f"电子载体平衡：{result.get('电子载体平衡', '未知')}",
     ]
     if source == "RetroPath预测":
         lines.append(
@@ -873,9 +861,6 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         raise ValueError(f"路线结果缺少 solution_id 字段：{summaries_path}")
     required_electron_columns = {
         "electron_balance_status",
-        "electron_system_status",
-        "requires_external_electron_regeneration",
-        "requires_carrier_compatibility_check",
     }
     missing_electron_columns = required_electron_columns.difference(
         summary_rows[0]
@@ -1023,15 +1008,6 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         ),
         "最大电子风险": _risk_name(summary.get("max_electron_risk_level")),
         "电子载体平衡": _balance_name(summary.get("electron_balance_status")),
-        "电子系统结论": _electron_status_name(
-            summary.get("electron_system_status")
-        ),
-        "需要额外电子再生系统": bool(
-            summary.get("requires_external_electron_regeneration")
-        ),
-        "需要确认真实载体兼容性": bool(
-            summary.get("requires_carrier_compatibility_check")
-        ),
         "可以推荐": bool(summary.get("eligible_for_recommendation")),
         "预测风险待复核": bool(summary.get("prediction_review_required")),
         "RetroPath候选排名": summary.get("retropath_candidate_rank"),

@@ -1,6 +1,3 @@
-from src.write_manifest.auxiliary_protein import (
-    run_write_auxiliary_protein_research,
-)
 from src.write_manifest.expression_box import run_write_expression_box_selection
 from src.write_manifest.expression_parts import (
     run_write_expression_parts_selection,
@@ -25,9 +22,6 @@ def run_write(config):
 
     if getattr(config, "expression_box", None) is not None:
         return run_write_expression_box_selection(config)
-
-    if bool(getattr(config, "auxiliary_protein", False)):
-        return run_write_auxiliary_protein_research(config)
 
     if getattr(config, "main_enzyme_set", None) is not None:
         return run_write_main_enzyme_set(config)
@@ -71,12 +65,6 @@ def register(subparsers):
         metavar="N",
         help="将选定的表达盒分组方案写入manifest",
     )
-    action.add_argument(
-        "--auxiliary-protein",
-        action="store_true",
-        help="将当前主酶组合的全部辅助蛋白研究结果写入manifest",
-    )
-
     p.add_argument("-i", "--input", required=True)
     p.add_argument("-d", "--depth", type=int, default=0)
 

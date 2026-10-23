@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 
 from src.expression_box.config import (
     BALANCED_MAX_MAIN_UNITS_PER_CASSETTE,
@@ -25,80 +24,39 @@ def _protein_order(protein: ExpressionProtein) -> tuple[int, str]:
 
 def _build_units(
     proteins: tuple[ExpressionProtein, ...],
-) -> tuple[tuple[ProteinUnit, ...], tuple[ExpressionProtein, ...], tuple[str, ...]]:
-    mains = {
-        protein.accession: protein for protein in proteins if protein.is_main_enzyme
-    }
-    dedicated: dict[str, list[ExpressionProtein]] = defaultdict(list)
-    standalone: list[ExpressionProtein] = []
-    warnings: list[str] = []
-
-    for protein in proteins:
-        if protein.is_main_enzyme:
-            if protein.is_auxiliary_protein:
-                warnings.append(
-                    f"{protein.accession} 同时承担主酶和辅助蛋白角色；"
-                    "按主酶分组且不重复放置"
-                )
-            continue
-        if len(protein.required_by_main_accessions) == 1:
-            dedicated[protein.required_by_main_accessions[0]].append(protein)
-        else:
-            standalone.append(protein)
-            if not protein.required_by_main_accessions:
-                warnings.append(
-                    f"辅助蛋白 {protein.accession} 缺少明确主酶依赖；"
-                    "系统将其安排为独立表达盒"
-                )
-
-    units: list[ProteinUnit] = []
-    for main in sorted(mains.values(), key=_protein_order):
-        auxiliaries = tuple(
-            sorted(dedicated.get(main.accession, []), key=_protein_order)
+) -> tuple[ProteinUnit, ...]:
+    if any(protein.roles != ("main_enzyme",) for protein in proteins):
+        raise ValueError("expression grouping accepts selected main enzymes only")
+    return tuple(
+        ProteinUnit(
+            main_accession=protein.accession,
+            proteins=(protein,),
+            first_step_index=protein.first_step_index,
         )
-        units.append(
-            ProteinUnit(
-                main_accession=main.accession,
-                proteins=(main, *auxiliaries),
-                first_step_index=main.first_step_index,
-            )
-        )
-    standalone.sort(key=_protein_order)
-    return tuple(units), tuple(standalone), tuple(dict.fromkeys(warnings))
+        for protein in sorted(proteins, key=_protein_order)
+    )
 
 
 def _independent_design(
     units: tuple[ProteinUnit, ...],
-    standalone: tuple[ExpressionProtein, ...],
-    warnings: tuple[str, ...],
 ) -> ExpressionGroupingDesign:
     cassettes = [
         ExpressionCassette(
             proteins=unit.proteins,
-            reason=("主酶独立调控；专属辅助蛋白与对应主酶保持在同一表达盒"),
+            reason="每个主酶独立调控",
         )
         for unit in units
     ]
-    cassettes.extend(
-        ExpressionCassette(
-            proteins=(protein,),
-            reason=("共享或无明确归属的辅助蛋白独立表达，避免重复放置"),
-        )
-        for protein in standalone
-    )
     return ExpressionGroupingDesign(
         strategy="independent_control",
         name="独立调控方案",
         recommended=False,
         cassettes=tuple(cassettes),
-        warnings=warnings,
     )
 
 
 def _balanced_design(
     units: tuple[ProteinUnit, ...],
-    standalone: tuple[ExpressionProtein, ...],
-    warnings: tuple[str, ...],
 ) -> ExpressionGroupingDesign:
     cassettes: list[ExpressionCassette] = []
     for start in range(0, len(units), BALANCED_MAX_MAIN_UNITS_PER_CASSETTE):
@@ -107,33 +65,21 @@ def _balanced_design(
         reason = (
             "合并相邻的两个主酶单元，以平衡独立调控能力和表达盒数量"
             if len(group) > 1
-            else "该主酶单元保持独立；专属辅助蛋白随主酶表达"
+            else "该主酶保持独立调控"
         )
         cassettes.append(ExpressionCassette(proteins=members, reason=reason))
-    cassettes.extend(
-        ExpressionCassette(
-            proteins=(protein,),
-            reason=("共享或无明确归属的辅助蛋白独立表达，避免重复放置"),
-        )
-        for protein in standalone
-    )
     return ExpressionGroupingDesign(
-        strategy="balanced_dependency",
+        strategy="balanced_main_enzymes",
         name="均衡方案",
         recommended=True,
         cassettes=tuple(cassettes),
-        warnings=warnings,
     )
 
 
 def _compact_design(
     units: tuple[ProteinUnit, ...],
-    standalone: tuple[ExpressionProtein, ...],
-    warnings: tuple[str, ...],
 ) -> ExpressionGroupingDesign:
-    members = tuple(
-        [protein for unit in units for protein in unit.proteins] + list(standalone)
-    )
+    members = tuple(protein for unit in units for protein in unit.proteins)
     return ExpressionGroupingDesign(
         strategy="compact_operon",
         name="紧凑表达方案",
@@ -144,7 +90,6 @@ def _compact_design(
                 reason="将所有蛋白放入同一表达盒，以减少调控元件数量",
             ),
         ),
-        warnings=warnings,
     )
 
 
@@ -188,13 +133,13 @@ def generate_grouping_designs(
 
     if not proteins:
         raise ValueError("expression grouping requires at least one protein")
-    units, standalone, warnings = _build_units(proteins)
+    units = _build_units(proteins)
     if not units:
         raise ValueError("expression grouping requires at least one main-enzyme unit")
 
     candidates = [
-        _balanced_design(units, standalone, warnings),
-        _independent_design(units, standalone, warnings),
+        _balanced_design(units),
+        _independent_design(units),
     ]
     skipped: list[SkippedGroupingStrategy] = []
     total_length = sum(item.optimized_cds_length_nt for item in proteins)
@@ -202,7 +147,7 @@ def generate_grouping_designs(
         len(proteins) <= COMPACT_MAX_PROTEINS
         and total_length <= COMPACT_MAX_CDS_LENGTH_NT
     ):
-        candidates.append(_compact_design(units, standalone, warnings))
+        candidates.append(_compact_design(units))
     else:
         reasons: list[str] = []
         if len(proteins) > COMPACT_MAX_PROTEINS:
@@ -239,7 +184,7 @@ def generate_grouping_designs(
     return GroupingGenerationResult(
         designs=tuple(designs),
         skipped_strategies=tuple(skipped),
-        warnings=warnings,
+        warnings=(),
     )
 
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +19,6 @@ class SelectedProteinForCds:
     protein_name: str
     organism_name: str
     assigned_step_indexes: tuple[int, ...]
-    required_by_main_accessions: tuple[str, ...]
-    sequence_type: str = "protein"
-    source_sequence_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,167 +105,16 @@ def _main_proteins(
                 item.get("assigned_step_indexes"),
                 f"main_enzyme_selection.proteins[{index}].assigned_step_indexes",
             ),
-            required_by_main_accessions=(),
         )
     return proteins
 
 
-def _auxiliary_details(
-    auxiliary: Mapping[str, Any],
-    main_proteins: Mapping[str, SelectedProteinForCds],
-) -> dict[str, SelectedProteinForCds]:
-    raw_introduce = auxiliary.get("auxiliary_proteins_to_introduce")
-    if not isinstance(raw_introduce, list):
-        raise ValueError(
-            "auxiliary_protein_selection.auxiliary_proteins_to_introduce must be a list"
-        )
-    introduce = {str(value or "").strip().upper() for value in raw_introduce}
-    introduce.discard("")
-    if not introduce:
-        return {}
-
-    raw_main_entries = auxiliary.get("main_enzymes")
-    if not isinstance(raw_main_entries, list):
-        raise ValueError("auxiliary_protein_selection.main_enzymes must be a list")
-
-    details: dict[str, SelectedProteinForCds] = {}
-    for main_index, raw_main in enumerate(raw_main_entries):
-        main_entry = _mapping(
-            raw_main,
-            f"auxiliary_protein_selection.main_enzymes[{main_index}]",
-        )
-        main_accession = _nonempty_text(
-            main_entry.get("accession"),
-            f"auxiliary_protein_selection.main_enzymes[{main_index}].accession",
-        ).upper()
-        main = main_proteins.get(main_accession)
-        if main is None:
-            raise ValueError(
-                "auxiliary protein research references an unselected main enzyme: "
-                f"{main_accession}"
-            )
-        confirmed = main_entry.get("confirmed_auxiliary_proteins")
-        if not isinstance(confirmed, list):
-            raise ValueError(
-                "auxiliary_protein_selection.main_enzymes"
-                f"[{main_index}].confirmed_auxiliary_proteins must be a list"
-            )
-        for aux_index, raw_aux in enumerate(confirmed):
-            aux = _mapping(
-                raw_aux,
-                "auxiliary_protein_selection.main_enzymes"
-                f"[{main_index}].confirmed_auxiliary_proteins[{aux_index}]",
-            )
-            accession = _nonempty_text(
-                aux.get("accession"), "auxiliary accession"
-            ).upper()
-            if accession not in introduce:
-                continue
-            previous = details.get(accession)
-            if previous is None:
-                details[accession] = SelectedProteinForCds(
-                    accession=accession,
-                    roles=("auxiliary_protein",),
-                    protein_name=str(aux.get("protein_name") or "").strip(),
-                    organism_name=str(aux.get("organism_name") or "").strip(),
-                    assigned_step_indexes=main.assigned_step_indexes,
-                    required_by_main_accessions=(main_accession,),
-                )
-            else:
-                details[accession] = replace(
-                    previous,
-                    assigned_step_indexes=tuple(
-                        sorted(
-                            set(previous.assigned_step_indexes)
-                            | set(main.assigned_step_indexes)
-                        )
-                    ),
-                    required_by_main_accessions=tuple(
-                        sorted(
-                            set(previous.required_by_main_accessions) | {main_accession}
-                        )
-                    ),
-                )
-
-    missing = sorted(introduce - set(details))
-    if missing:
-        raise ValueError(
-            "auxiliary_proteins_to_introduce lacks confirmed protein details: "
-            + ", ".join(missing)
-        )
-    return details
-
-
-def _manual_auxiliary_details(
-    auxiliary: Mapping[str, Any],
-) -> dict[str, SelectedProteinForCds]:
-    raw_introduce = auxiliary.get("auxiliary_proteins_to_introduce")
-    if not isinstance(raw_introduce, list):
-        raise ValueError(
-            "auxiliary_protein_selection.auxiliary_proteins_to_introduce must be a list"
-        )
-    introduce = [
-        str(value or "").strip().upper()
-        for value in raw_introduce
-        if str(value or "").strip()
-    ]
-    if introduce != list(dict.fromkeys(introduce)):
-        raise ValueError("manual auxiliary protein IDs must be unique")
-
-    raw_proteins = auxiliary.get("proteins")
-    if not isinstance(raw_proteins, list):
-        raise ValueError("auxiliary_protein_selection.proteins must be a list")
-    details: dict[str, SelectedProteinForCds] = {}
-    for index, raw in enumerate(raw_proteins):
-        item = _mapping(raw, f"auxiliary_protein_selection.proteins[{index}]")
-        accession = _nonempty_text(
-            item.get("accession"),
-            f"auxiliary_protein_selection.proteins[{index}].accession",
-        ).upper()
-        sequence_type = _nonempty_text(
-            item.get("sequence_type"),
-            f"auxiliary_protein_selection.proteins[{index}].sequence_type",
-        ).lower()
-        if sequence_type not in {"protein", "cds"}:
-            raise ValueError(
-                f"unsupported uploaded sequence type for {accession}: {sequence_type}"
-            )
-        sequence_file = _mapping(
-            item.get("sequence_file"),
-            f"auxiliary_protein_selection.proteins[{index}].sequence_file",
-        )
-        source_path = _nonempty_text(
-            sequence_file.get("path"),
-            f"auxiliary_protein_selection.proteins[{index}].sequence_file.path",
-        )
-        if accession in details:
-            raise ValueError(f"duplicate manual auxiliary protein: {accession}")
-        details[accession] = SelectedProteinForCds(
-            accession=accession,
-            roles=("auxiliary_protein",),
-            protein_name=str(item.get("protein_name") or "").strip(),
-            organism_name=str(item.get("organism_name") or "").strip(),
-            assigned_step_indexes=_step_indexes(
-                item.get("assigned_step_indexes"),
-                f"auxiliary_protein_selection.proteins[{index}].assigned_step_indexes",
-            ),
-            required_by_main_accessions=(),
-            sequence_type=sequence_type,
-            source_sequence_path=source_path,
-        )
-
-    missing = sorted(set(introduce) - set(details))
-    extra = sorted(set(details) - set(introduce))
-    if missing or extra:
-        raise ValueError(
-            "manual auxiliary protein list does not match details; "
-            f"missing={missing}, extra={extra}"
-        )
-    return details
-
-
 def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
     """Return the unique manifest-selected proteins that require CDS design."""
+
+    from src.write_manifest.main_enzyme import (
+        MAIN_ENZYME_MANIFEST_SCHEMA_VERSION,
+    )
 
     path = Path(manifest_path).expanduser().resolve()
     manifest = read_design_manifest(path)
@@ -281,6 +127,8 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
         raise ValueError("manifest revision must be an integer") from exc
 
     selection = _mapping(manifest.get("main_enzyme_selection"), "main_enzyme_selection")
+    if selection.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("主酶选择结果已过期，请重新运行 main-enzyme、main-enzyme-sets 和 write --main-enzyme-set")
     selection_status = _nonempty_text(
         selection.get("selection_status"),
         "main_enzyme_selection.selection_status",
@@ -309,79 +157,15 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
         )
 
     proteins = _main_proteins(selection)
-    pending_auxiliary_roles = sorted({
-        str(item.get("role") or "").strip()
-        for item in selection.get("auxiliary_requirements", [])
-        if isinstance(item, Mapping)
-        and item.get("selection_status") == "pending_user_selection"
-        and str(item.get("role") or "").strip()
-    })
-    auxiliary_raw = manifest.get("auxiliary_protein_selection")
-    auxiliary_source_fingerprint = ""
-    if auxiliary_raw is None:
-        warnings.append(
-            "auxiliary_protein_selection is absent; only selected main enzymes were processed"
-        )
-        if pending_auxiliary_roles:
-            warnings.append(
-                "main enzyme selection has pending auxiliary roles: "
-                + ", ".join(pending_auxiliary_roles)
-            )
-    else:
-        auxiliary = _mapping(auxiliary_raw, "auxiliary_protein_selection")
-        if auxiliary.get("can_advance") is not True:
-            raise ValueError("auxiliary protein selection cannot advance to CDS design")
-        if (
-            str(auxiliary.get("schema_version") or "")
-            == "manual_auxiliary_protein_selection.v1"
-        ):
-            auxiliary_source_fingerprint = _stable_fingerprint(dict(auxiliary))
-            auxiliary_details = _manual_auxiliary_details(auxiliary)
-            direct_cds_accessions = sorted(
-                accession
-                for accession, item in auxiliary_details.items()
-                if item.sequence_type == "cds"
-            )
-            if direct_cds_accessions:
-                warnings.append(
-                    "user-uploaded CDS sequences are preserved as raw and optimized working copies; "
-                    "no automatic optimization, encoding validation is required before editing: " + ", ".join(direct_cds_accessions)
-                )
-        else:
-            source = auxiliary.get("source")
-            if isinstance(source, Mapping):
-                auxiliary_source_fingerprint = str(
-                    source.get("result_fingerprint") or ""
-                ).strip()
-            auxiliary_details = _auxiliary_details(auxiliary, proteins)
-        for accession, auxiliary_protein in auxiliary_details.items():
-            if accession in proteins:
-                main = proteins[accession]
-                proteins[accession] = replace(
-                    main,
-                    roles=tuple(sorted(set(main.roles) | set(auxiliary_protein.roles))),
-                    assigned_step_indexes=tuple(
-                        sorted(
-                            set(main.assigned_step_indexes)
-                            | set(auxiliary_protein.assigned_step_indexes)
-                        )
-                    ),
-                    required_by_main_accessions=auxiliary_protein.required_by_main_accessions,
-                    sequence_type=auxiliary_protein.sequence_type,
-                    source_sequence_path=auxiliary_protein.source_sequence_path,
-                )
-            else:
-                proteins[accession] = auxiliary_protein
-
     ordered = tuple(proteins[accession] for accession in sorted(proteins))
     fingerprint_payload = {
+        "schema_version": "protein_to_cds.input.v3",
         "target_compound_id": target_compound_id,
         "selected_solution_id": selected_solution_id,
         "selected_set_id": selected_set_id,
         "selected_set_fingerprint": str(
             selection.get("selected_set_fingerprint") or ""
         ),
-        "auxiliary_source_fingerprint": auxiliary_source_fingerprint,
         "chassis_key": chassis_key,
         "proteins": [
             {
@@ -390,9 +174,6 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
                 "protein_name": item.protein_name,
                 "organism_name": item.organism_name,
                 "assigned_step_indexes": item.assigned_step_indexes,
-                "required_by_main_accessions": (item.required_by_main_accessions),
-                "sequence_type": item.sequence_type,
-                "source_sequence_path": item.source_sequence_path,
             }
             for item in ordered
         ],

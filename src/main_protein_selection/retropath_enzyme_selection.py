@@ -60,8 +60,8 @@ from src.pathway_analyze.retropath_mnxref import (
     MnxrefReactionTemplate,
 )
 
-RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v1"
-RETROPATH_ENZYME_REQUIREMENTS_SCHEMA = "retropath_enzyme_requirements.v1"
+RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v2"
+RETROPATH_ENZYME_REQUIREMENTS_SCHEMA = "retropath_enzyme_requirements.v2"
 RETROPATH_SELENZYME_EVIDENCE_SCHEMA = "retropath_selenzyme_evidence.v1"
 
 ENZYME_SELECTION_DIR_NAME = "enzyme_selection"
@@ -136,9 +136,6 @@ ENZYME_CANDIDATE_COLUMNS = (
     "catalytic_activity_records_json",
     "cofactors",
     "function_comments",
-    "enzyme_system_type",
-    "auxiliary_requirement_status",
-    "auxiliary_requirements_json",
     "warnings",
     "reasons",
     "rejection_reasons",
@@ -849,9 +846,6 @@ def _candidate_record(
         ),
         "cofactors": " | ".join(candidate.cofactors),
         "function_comments": " | ".join(candidate.function_comments),
-        "enzyme_system_type": candidate.component_type,
-        "auxiliary_requirement_status": "not_required",
-        "auxiliary_requirements_json": "[]",
         "warnings": " | ".join(candidate.warnings),
         "reasons": " | ".join(candidate.reasons),
         "rejection_reasons": "",
@@ -1598,13 +1592,6 @@ def _standard_candidate_row(
         ),
         "specificity_status": (
             "supported" if search_requirement.formal_mapping_exact else "unknown"
-        ),
-        "enzyme_system_type": row.get("enzyme_system_type", ""),
-        "auxiliary_requirement_status": row.get(
-            "auxiliary_requirement_status", "not_required"
-        ),
-        "auxiliary_requirements_json": row.get(
-            "auxiliary_requirements_json", "[]"
         ),
         "selenzyme_reaction_similarity": row.get("reaction_similarity", ""),
         "selenzyme_sim_rf": row.get("sim_rf", ""),

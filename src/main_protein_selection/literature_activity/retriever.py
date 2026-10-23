@@ -523,7 +523,7 @@ class ToolUniverseLiteratureRetriever:
             if self._provided_tools is None:
                 # Deliberately lazy: importing this class or executing disabled
                 # mode cannot start ToolUniverse.
-                from src.protein_selection.agents.literature_researcher import (
+                from src.main_protein_selection.literature_activity.runtime import (
                     load_literature_researcher_tools,
                 )
 

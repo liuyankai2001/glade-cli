@@ -45,7 +45,7 @@ from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v2"
+RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v4"
 PROMOTION_MANIFEST_FILE_NAME = "formal_solution_promotion.json"
 
 _KEGG_REACTION = re.compile(r"^R\d{5}$", re.IGNORECASE)
@@ -80,10 +80,7 @@ _SUMMARY_BASE_COLUMNS = (
     "thermo_disfavored_steps",
     "max_electron_risk_level",
     "max_electron_risk_score",
-    "electron_system_status",
     "electron_balance_status",
-    "requires_external_electron_regeneration",
-    "requires_carrier_compatibility_check",
 )
 _SUMMARY_RETROPATH_COLUMNS = (
     "solution_source",
@@ -129,7 +126,6 @@ _STEP_BASE_COLUMNS = (
     "expansion_depth",
     "expansion_anchor_compounds",
     "rhea_ids",
-    "auxiliary_requirements_json",
 )
 _STEP_RETROPATH_COLUMNS = (
     "retropath_step_id",
@@ -158,19 +154,13 @@ _ELECTRON_SUMMARY_COLUMNS = (
     "solution_id",
     "max_electron_risk_level",
     "max_electron_risk_score",
-    "electron_system_status",
     "electron_balance_status",
-    "requires_external_electron_regeneration",
-    "requires_carrier_compatibility_check",
     "electron_carrier_ids",
     "electron_requirement_classes",
     "electron_carrier_net_changes",
     "balanced_electron_carrier_pairs",
     "unbalanced_electron_carrier_pairs",
     "unresolved_electron_carrier_ids",
-    "annotation_only_electron_requirements",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
     "solution_source",
 )
 _ELECTRON_STEP_COLUMNS = (
@@ -183,9 +173,6 @@ _ELECTRON_STEP_COLUMNS = (
     "electron_risk_score",
     "electron_risk_evidence",
     "electron_carrier_net_changes",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
-    "auxiliary_requirements_json",
     "solution_source",
 )
 
@@ -254,6 +241,18 @@ def _read_csv(path: Path, required: Sequence[str] = ()) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         fields = tuple(reader.fieldnames or ())
+        obsolete = {
+            name for name in fields
+            if name.startswith(("auxiliary_", "required_auxiliary_"))
+            or name in {
+                "electron_system_status", "requires_external_electron_regeneration",
+                "requires_carrier_compatibility_check", "annotation_only_electron_requirements",
+            }
+        }
+        if obsolete:
+            raise ValueError(
+                f"{path.name} 含旧版设计字段，请先重新生成对应的 gap 路线结果：{sorted(obsolete)}"
+            )
         missing = sorted(set(required) - set(fields))
         if missing:
             raise ValueError(f"{path.name} missing columns: {missing}")
@@ -476,27 +475,6 @@ def _term_pairs(
     )
 
 
-def _auxiliary_json(requirement: Any) -> tuple[str, str, str]:
-    payload = [
-        {
-            "role": item.role,
-            "necessity": item.necessity,
-            "confidence": item.confidence,
-            "selection_status": item.selection_status,
-            "carrier_ids": list(item.carrier_ids),
-            "evidence": list(item.evidence),
-        }
-        for item in requirement.auxiliary_requirements
-    ]
-    roles = ";".join(item["role"] for item in payload)
-    status = "pending_user_selection" if payload else "not_required"
-    return (
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        roles,
-        status,
-    )
-
-
 def _electron_row(
     *,
     solution_id: int,
@@ -504,20 +482,11 @@ def _electron_row(
     reaction_id: str,
     left: Sequence[tuple[str, float]],
     right: Sequence[tuple[str, float]],
-    reaction_name: str,
-    reaction_comment: str,
-    equation: str,
-    enzyme_ecs: Sequence[str],
 ) -> dict[str, Any]:
     requirement = infer_electron_requirement(
         consumed_stoichiometry=left,
         produced_stoichiometry=right,
-        reaction_name=reaction_name,
-        reaction_comment=reaction_comment,
-        equation=equation,
-        enzyme_ecs=enzyme_ecs,
     )
-    auxiliary_json, roles, status = _auxiliary_json(requirement)
     return {
         "solution_id": solution_id,
         "step_index": step_index,
@@ -530,9 +499,6 @@ def _electron_row(
         "electron_carrier_net_changes": format_electron_carrier_net_changes(
             requirement.carrier_net_stoichiometry
         ),
-        "required_auxiliary_roles": roles,
-        "auxiliary_requirement_status": status,
-        "auxiliary_requirements_json": auxiliary_json,
         "solution_source": "retropath",
     }
 
@@ -673,7 +639,6 @@ def _build_solution_rows(
                 "resolution_action": "none",
                 "step_source": "kegg_expansion",
                 "rhea_ids": ";".join(rhea_ids),
-                "auxiliary_requirements_json": "[]",
             }
         elif step_source == "retropath":
             hypothesis_id = by_step.get(step_id, "")
@@ -756,7 +721,6 @@ def _build_solution_rows(
                 "resolution_action": "retropath_prediction",
                 "step_source": "retropath",
                 "rhea_ids": ";".join(provenance["exact_rhea_ids"]),
-                "auxiliary_requirements_json": "[]",
                 "retropath_step_id": step_id,
                 "retropath_hypothesis_id": hypothesis_id,
                 "retropath_rule_id": rule_id,
@@ -792,12 +756,7 @@ def _build_solution_rows(
             reaction_id=str(row["reaction_id"]),
             left=left,
             right=right,
-            reaction_name=str(row["reaction_name"]),
-            reaction_comment=str(row["reaction_comment"]),
-            equation=str(row["equation"]),
-            enzyme_ecs=_split(row.get("enzyme_ecs")),
         )
-        row["auxiliary_requirements_json"] = electron["auxiliary_requirements_json"]
         step_rows.append(row)
         electron_rows.append(electron)
         if row["status"] == "heterologous":

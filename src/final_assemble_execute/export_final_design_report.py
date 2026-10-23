@@ -227,7 +227,6 @@ _REVIEW_LABELS = {
     "reaction_fit": "目标反应匹配仍需复核",
     "reaction_direction": "生理反应方向证据仍需复核",
     "reaction_specificity": "底物或产物特异性仍需复核",
-    "electron_assessment": "电子供给或再生机制仍需补充",
 }
 
 
@@ -333,13 +332,9 @@ def _render_report(payload: Mapping[str, Any]) -> str:
                 str(item.get("review_type") or ""),
                 str(item.get("review_type") or "未分类复核项"),
             )
-            reason = str(item.get("reason") or "")
-            if item.get("review_type") != "electron_assessment":
-                reason = label
             lines.append(
                 f"- 步骤 {_join(item.get('step_indexes'))}：{label}；"
                 f"状态 `{_table(item.get('status'))}`"
-                + (f"；{reason}" if reason and reason != label else "")
             )
     else:
         lines.append("- 无。")
@@ -483,7 +478,7 @@ def _render_report(payload: Mapping[str, Any]) -> str:
             "## 9. 实验复核重点",
             "",
             "- 复核主酶与目标反应的底物、产物、方向和特异性；优先处理上述 pending review。",
-            "- 处理蛋白定位肽、辅因子和外部电子再生需求后，再确定最终表达版本。",
+            "- 复核蛋白定位肽、辅因子条件及反应计量后，再确定最终表达版本。",
             "- 使用已生成的优化 CDS 文件进行合成前复核，不要把 KEGG Orthology 当作敲除基因。",
             "- 查阅 BamHI、SalI、AvrII 等实际采用酶的说明书，确认缓冲液和反应条件。",
             "- 通过测序、表达检测、酶活和产物检测完成湿实验验证。",

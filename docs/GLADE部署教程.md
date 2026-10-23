@@ -74,7 +74,7 @@ New-Item -ItemType Directory -Force -Path inputs, outputs, cache, model | Out-Nu
 
 ### 2.3 可选：配置外部服务
 
-基础路线分析不需要 `.env`。运行辅助蛋白研究、文献检索、Selenzyme、表达元件或质粒
+基础路线分析不需要 `.env`。运行主酶文献检索、Selenzyme、表达元件或质粒
 推荐时，在项目根目录创建 `.env`：
 
 ```dotenv
@@ -396,24 +396,6 @@ python main.py info -i demo01.json --solution 1 --all --verbose -d 0
 
 `--all` 展示培养基有机底物到目标的完整路线，需要保留模型、培养基和底盘结果，
 不能与 `--step` 同用。`--verbose` 进一步显示反应和通量详情。
-
-### 辅助蛋白研究与删除
-
-在选择主酶组合后研究辅助蛋白，完成后接受结果：
-
-```powershell
-python main.py auxiliary-protein -i demo01.json
-python main.py write -i demo01.json --auxiliary-protein
-python main.py info -i demo01.json --proteins
-```
-
-研究命令可加 `--research-mode deep`。接受结果后再生成 CDS；手动上传无需此接受命令。
-
-删除手动上传的辅助蛋白，多个 ID 可重复传入 `--protein-id`：
-
-```powershell
-python main.py remove-auxiliary-protein -i demo01.json --protein-id HELPER
-```
 
 ### 更多可选参数
 

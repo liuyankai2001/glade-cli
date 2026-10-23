@@ -143,7 +143,7 @@ def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
     if carrier_review_count:
         warnings.append(
             f"本层有 {carrier_review_count} 个新增化合物依赖电子载体，"
-            "需要辅助系统与载体兼容性复核"
+            "需要复核反应方程中的载体计量"
         )
     return {
         "运行成功": True,
@@ -175,9 +175,6 @@ def get_chassis_expansion_info(config: Any, depth: int) -> dict[str, Any]:
             "carrier_supported_compound_count",
         ),
         "本层载体复核化合物数": carrier_review_count,
-        "本层所需辅助角色": _as_text_list(
-            layer.get("required_auxiliary_roles")
-        ),
         "本层电子载体": _as_text_list(layer.get("electron_carrier_ids")),
         "警告": warnings,
     }

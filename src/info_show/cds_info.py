@@ -107,7 +107,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
     if not target:
         raise ValueError("manifest 缺少 target_compound_id")
     selection = _mapping(manifest["cds_selection"], "cds_selection")
-    if selection.get("schema_version") != "protein_to_cds.selection.v2":
+    if selection.get("schema_version") != "protein_to_cds.selection.v3":
         raise ValueError("不支持的 cds_selection schema_version，请重新运行 protein-to-cds")
     enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
     result["限制酶"] = enzymes
@@ -151,7 +151,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
             directory = _directory(root, optimized.get("path"))
             mode = optimized.get("processing_mode")
             is_optimized = (
-                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only", "user_uploaded_cds", "dna_chisel_restriction_sites", "dna_chisel_homopolymer"}
+                mode in {None, "codon_transformer_only", "codon_transformer_and_repair", "dna_chisel_gc_only", "dna_chisel_restriction_sites", "dna_chisel_homopolymer"}
                 and directory == str(root / "protein_to_cds" / "optimized_cds")
             )
             if not is_optimized:

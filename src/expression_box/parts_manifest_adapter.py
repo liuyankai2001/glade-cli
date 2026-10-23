@@ -187,7 +187,12 @@ def load_expression_parts_context(
 ) -> ExpressionPartsContext:
     path = Path(manifest_path).expanduser().resolve()
     project_root = Path(project_output_path).expanduser().resolve()
+    from src.expression_box.manifest_adapter import (
+        load_expression_grouping_context,
+    )
+
     manifest = read_design_manifest(path)
+    load_expression_grouping_context(path)
     target = _text(manifest.get("target_compound_id"), "target_compound_id")
     cds_selection = _mapping(manifest.get("cds_selection"), "cds_selection")
     if cds_selection.get("status") != "complete":

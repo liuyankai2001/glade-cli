@@ -3,7 +3,7 @@
 ``A0`` 来自 GEM/FBA 生成的 ``producible_kegg_compounds.csv``。第 ``n``
 层扩展只允许使用冻结的 ``A(n-1)`` 中全部主底物，并把一个 KEGG 反应首次
 生成的化合物记为 ``Fn``；累计集合 ``An = A0 ∪ F1 ... ∪ Fn``。明确识别的
-电子载体不作为主底物或扩展产物，但会保留完整反应、风险和辅助系统需求。
+电子载体不作为主底物或扩展产物，但会保留完整反应、显式载体风险及其计量。
 每个新化合物都会保留生成它的定向 KEGG 反应，供 gap 搜索命中扩展锚点后
 恢复完整反应路线。
 """
@@ -42,7 +42,7 @@ from src.pathway_analyze.kegg_gap_analyze import (
 
 
 EXPANSION_RULE_VERSION = (
-    "chassis_forward_expansion.v4_direction_policy"
+    "chassis_forward_expansion.v6_explicit_carriers"
 )
 COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 FRONTIER_FILE_TEMPLATE = "chassis_frontier_depth_{depth}.csv"
@@ -50,8 +50,8 @@ EXPANDED_FILE_TEMPLATE = "chassis_expanded_reachable_depth_{depth}.csv"
 MANIFEST_FILE_NAME = "chassis_expansion_manifest.json"
 DEFAULT_EXPANSION_PROGRESS_INTERVAL = 250
 
-# 这些 ID 表示电子载体或大分子伙伴。它们不作为可扩展主底物，也不会进入
-# frontier/sink；反应仍可生成主产物，同时必须携带电子风险和辅助系统需求。
+# 这些 ID 表示反应中的电子载体或氧化还原状态。它们不作为可扩展主底物，也不会进入
+# frontier/sink；反应仍可生成主产物，同时保留显式载体的计量信息。
 GENERIC_CARRIER_IDS = frozenset(
     {
         "C00028",  # Acceptor
@@ -96,9 +96,6 @@ EXPANSION_COLUMNS = (
     "electron_requirement_classes",
     "electron_carrier_net_changes",
     "avoid_if_alternative_exists",
-    "required_auxiliary_roles",
-    "auxiliary_requirement_status",
-    "auxiliary_requirements_json",
     "carrier_review_required",
     "enzyme_ecs",
     "ko_ids",
@@ -135,9 +132,6 @@ class ForwardExpansionWitness:
     electron_requirement_classes: Tuple[str, ...] = ()
     electron_carrier_net_stoichiometry: Tuple[Tuple[str, float], ...] = ()
     avoid_if_alternative_exists: bool = False
-    required_auxiliary_roles: Tuple[str, ...] = ()
-    auxiliary_requirement_status: str = "not_required"
-    auxiliary_requirements_json: str = "[]"
     carrier_review_required: bool = False
 
     def __post_init__(self) -> None:
@@ -274,9 +268,6 @@ def _witness_to_row(witness: ForwardExpansionWitness) -> Dict[str, Any]:
             witness.electron_carrier_net_stoichiometry
         ),
         "avoid_if_alternative_exists": witness.avoid_if_alternative_exists,
-        "required_auxiliary_roles": ";".join(witness.required_auxiliary_roles),
-        "auxiliary_requirement_status": witness.auxiliary_requirement_status,
-        "auxiliary_requirements_json": witness.auxiliary_requirements_json,
         "carrier_review_required": witness.carrier_review_required,
         "enzyme_ecs": ";".join(witness.enzyme_ecs),
         "ko_ids": ";".join(witness.ko_ids),
@@ -322,13 +313,6 @@ def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
         avoid_if_alternative_exists=_as_bool(
             row.get("avoid_if_alternative_exists")
         ),
-        required_auxiliary_roles=_split_ids(row.get("required_auxiliary_roles")),
-        auxiliary_requirement_status=str(
-            row.get("auxiliary_requirement_status") or "not_required"
-        ).strip(),
-        auxiliary_requirements_json=str(
-            row.get("auxiliary_requirements_json") or "[]"
-        ).strip(),
         carrier_review_required=_as_bool(row.get("carrier_review_required")),
         enzyme_ecs=_split_ids(row.get("enzyme_ecs")),
         ko_ids=_split_ids(row.get("ko_ids")),
@@ -508,9 +492,6 @@ def load_expansion_bundle(
         "electron_carrier_ids",
         "electron_requirement_classes",
         "electron_carrier_net_changes",
-        "required_auxiliary_roles",
-        "auxiliary_requirement_status",
-        "auxiliary_requirements_json",
         "carrier_review_required",
     }
     missing = sorted(required - set(df.columns))
@@ -572,29 +553,6 @@ def _carrier_aware_electron_fields(
     if unclassified_ids:
         requirement_classes.append("unclassified_electron_carrier")
 
-    auxiliary_payload = [
-        {
-            "role": item.role,
-            "necessity": item.necessity,
-            "confidence": item.confidence,
-            "selection_status": item.selection_status,
-            "carrier_ids": list(item.carrier_ids),
-            "evidence": list(item.evidence),
-        }
-        for item in requirement.auxiliary_requirements
-    ]
-    if unclassified_ids:
-        auxiliary_payload.append({
-            "role": "generic_electron_transfer_partner",
-            "necessity": "possibly_required",
-            "confidence": "medium",
-            "selection_status": "pending_user_selection",
-            "carrier_ids": list(unclassified_ids),
-            "evidence": [
-                f"explicit_unclassified_carrier:{carrier_id}"
-                for carrier_id in unclassified_ids
-            ],
-        })
 
     carrier_net = {carrier_id: 0.0 for carrier_id in carrier_ids}
     for compound_id, coefficient in consumed:
@@ -621,18 +579,6 @@ def _carrier_aware_electron_fields(
         ),
         "avoid_if_alternative_exists": bool(
             requirement.avoid_if_alternative_exists or carrier_ids
-        ),
-        "required_auxiliary_roles": tuple(
-            dict.fromkeys(str(item["role"]) for item in auxiliary_payload)
-        ),
-        "auxiliary_requirement_status": (
-            "pending_user_selection" if auxiliary_payload else "not_required"
-        ),
-        "auxiliary_requirements_json": json.dumps(
-            auxiliary_payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
         ),
         "carrier_review_required": bool(carrier_ids),
     }
@@ -765,15 +711,6 @@ def _reaction_witnesses(
                     ],
                     avoid_if_alternative_exists=electron[
                         "avoid_if_alternative_exists"
-                    ],
-                    required_auxiliary_roles=electron[
-                        "required_auxiliary_roles"
-                    ],
-                    auxiliary_requirement_status=electron[
-                        "auxiliary_requirement_status"
-                    ],
-                    auxiliary_requirements_json=electron[
-                        "auxiliary_requirements_json"
                     ],
                     carrier_review_required=electron[
                         "carrier_review_required"
@@ -1020,11 +957,6 @@ def ensure_expansion_depth(
             for witness in ordered_layer
             if witness.carrier_review_required
         })
-        layer_auxiliary_roles = sorted({
-            role
-            for witness in ordered_layer
-            for role in witness.required_auxiliary_roles
-        })
         layer_carrier_ids = sorted({
             carrier_id
             for witness in ordered_layer
@@ -1068,7 +1000,6 @@ def ensure_expansion_depth(
             "carrier_review_required_compound_count": (
                 carrier_review_required_compound_count
             ),
-            "required_auxiliary_roles": layer_auxiliary_roles,
             "electron_carrier_ids": layer_carrier_ids,
             "rejection_counts": dict(sorted(rejection_counts.items())),
             "prefetch_elapsed_seconds": round(prefetch_elapsed, 3),

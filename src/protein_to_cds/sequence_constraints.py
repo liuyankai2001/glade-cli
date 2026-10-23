@@ -377,34 +377,6 @@ def assess_generated_cds(
     return audit
 
 
-def uploaded_cds_protein(sequence: str) -> str:
-    dna = normalize_dna(sequence)
-    if not dna or set(dna) - DNA_ALPHABET:
-        raise ValueError("上传 CDS 必须仅包含 A/C/G/T，不能编辑不完整或含简并碱基的序列")
-    try:
-        return str(Seq(dna).translate(table=11, cds=True))
-    except Exception as exc:
-        raise ValueError(f"上传 CDS 不是完整编码序列，无法进行同义编辑：{exc}") from exc
-
-
-def assess_uploaded_cds(
-    sequence: str, protein_sequence: str, organism_id: int,
-    additional_forbidden_motifs: Iterable[str] = (),
-) -> dict[str, Any]:
-    protein = uploaded_cds_protein(sequence)
-    if protein != protein_sequence:
-        raise ValueError("上传 CDS 编辑结果改变了原始蛋白质序列")
-    motifs = _validate_additional_motifs(additional_forbidden_motifs)
-    audit = audit_cds(sequence, protein, _profile_for_organism(organism_id), motifs)
-    # table 11 translates a legal alternative initiator as methionine in a CDS.
-    audit["checks"].update(start_codon_valid=True, amino_acid_identity_exact=True)
-    audit["translated_protein_sha256"] = sha256_text(protein)
-    audit["failed_checks"] = [key for key, passed in audit["checks"].items() if not passed]
-    audit["gate_status"] = "FAIL" if audit["failed_checks"] else "PASS"
-    audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(sequence, motifs.values())
-    return audit
-
-
 def _rare_cluster_participating_indexes(
     sequence: str,
     weights: dict[str, float],

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,7 +13,7 @@ from typing import Any
 from Bio import SeqIO
 from Bio.Seq import Seq
 
-from src.protein_to_cds.codon_optimization import CdsOptimizationResult, _dna_fasta
+from src.protein_to_cds.codon_optimization import CdsOptimizationResult
 from src.protein_to_cds.codon_generation import GENERATION_MODE, GENERATION_SCHEMA_VERSION
 from src.protein_to_cds.config import HostProfile
 from src.protein_to_cds.get_protein_selection_context import (
@@ -23,11 +22,9 @@ from src.protein_to_cds.get_protein_selection_context import (
 )
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.write_manifest.store import read_design_manifest, update_design_manifest
-from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
-from src.protein_to_cds.sequence_constraints import assess_uploaded_cds, uploaded_cds_protein
 from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS, cds_dependency_update
 
-CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v2"
+CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,15 +34,6 @@ class CompletedProteinCds:
     selected: SelectedProteinForCds
     protein: ProteinSequenceRecord
     optimization: CdsOptimizationResult
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedDirectCds:
-    """One user-supplied CDS to preserve as a baseline and editable working copy."""
-
-    selected: SelectedProteinForCds
-    cds_path: Path
-    sequence: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,14 +214,9 @@ def _validated_success_payload(
         "protein_name": selected.protein_name,
         "organism_name": selected.organism_name,
         "assigned_step_indexes": list(selected.assigned_step_indexes),
-        "required_by_main_accessions": list(selected.required_by_main_accessions),
         "sequence_input": {
             "type": "protein",
-            "source": (
-                "user_uploaded"
-                if selected.source_sequence_path is not None
-                else "uniprot"
-            ),
+            "source": "uniprot",
         },
         "protein_sequence": {
             "path": _relative_path(project_output_path, protein.fasta_path),
@@ -273,89 +256,11 @@ def _validated_success_payload(
     }
 
 
-def _read_uploaded_cds(path: Path) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"could not read uploaded CDS: {path}") from exc
-    sequence = "".join(
-        re.sub(r"\s+", "", line)
-        for line in lines
-        if line.strip() and not line.lstrip().startswith(">")
-    ).upper()
-    if not sequence:
-        raise ValueError(f"uploaded CDS is empty: {path}")
-    return sequence
-
-
-def _validated_direct_cds_payload(
-    direct: CompletedDirectCds,
-    *,
-    project_output_path: Path,
-    host: HostProfile,
-) -> dict[str, Any]:
-    selected = direct.selected
-    path = direct.cds_path.resolve()
-    sequence = _read_uploaded_cds(path)
-    if sequence != direct.sequence:
-        raise ValueError(
-            f"uploaded CDS changed during protein-to-CDS processing: {selected.accession}"
-        )
-    working_path = project_output_path / "protein_to_cds" / "optimized_cds" / f"{selected.accession}.fasta"
-    raw_path = project_output_path / "protein_to_cds" / "raw_cds" / f"{selected.accession}.raw.fasta"
-    report_path = project_output_path / "protein_to_cds" / "reports" / f"{selected.accession}.uploaded.json"
-    fasta = _dna_fasta(selected.accession, "user_uploaded_cds", sequence).encode("utf-8")
-    metrics = {"sequence_sha256": _sha256_text(sequence), "length_nt": len(sequence)}
-    try:
-        metrics = assess_uploaded_cds(sequence, uploaded_cds_protein(sequence), host.codon_transformer_organism_id)
-    except ValueError as exc:
-        metrics["encoding_validation_error"] = str(exc)
-    write_bytes_atomic(raw_path, fasta)
-    write_bytes_atomic(working_path, fasta)
-    report = {
-        "schema_version": "protein_to_cds.uploaded_cds.v1", "status": "IMPORTED",
-        "processing_mode": "user_uploaded_cds", "additional_forbidden_motifs": [],
-        "source": {"path": _relative_path(project_output_path, path), "file_sha256": _sha256_file(path)},
-        "raw_cds": {"path": _relative_path(project_output_path, raw_path),
-                    "file_sha256": _sha256_file(raw_path), "sequence_sha256": _sha256_text(sequence), "length_nt": len(sequence)},
-        "raw": metrics, "final": metrics, "changes": {"codon_change_count": 0, "nucleotide_change_count": 0},
-    }
-    write_bytes_atomic(report_path, (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    return {
-        "accession": selected.accession,
-        "roles": list(selected.roles),
-        "protein_name": selected.protein_name,
-        "organism_name": selected.organism_name,
-        "assigned_step_indexes": list(selected.assigned_step_indexes),
-        "required_by_main_accessions": list(
-            selected.required_by_main_accessions
-        ),
-        "sequence_input": {
-            "type": "cds",
-            "source": "user_uploaded",
-        },
-        "optimized_cds": {
-            "path": _relative_path(project_output_path, working_path),
-            "file_sha256": _sha256_file(working_path),
-            "sequence_sha256": _sha256_text(sequence),
-            "length_nt": len(sequence),
-            "source_type": "user_uploaded",
-            "processing_mode": "user_uploaded_cds", "optimization_skipped": False,
-            "constraint_repair_applied": False, "quality_checks_enforced": False,
-            "report": {"path": _relative_path(project_output_path, report_path), "file_sha256": _sha256_file(report_path)},
-            "metrics": {"final": metrics, "changes": report["changes"]},
-        },
-    }
-
-
 def _failure_payload(failure: FailedProteinCds) -> dict[str, Any]:
     return {
         "accession": failure.selected.accession,
         "roles": list(failure.selected.roles),
         "assigned_step_indexes": list(failure.selected.assigned_step_indexes),
-        "required_by_main_accessions": list(
-            failure.selected.required_by_main_accessions
-        ),
         "error_type": failure.error_type,
         "message": failure.message,
     }
@@ -370,7 +275,6 @@ def _write_cds_selection_to_manifest(
     failures: Iterable[FailedProteinCds],
     warnings: Iterable[str],
     run_summary_path: str | Path,
-    direct_cds: Iterable[CompletedDirectCds] = (),
 ) -> dict[str, Any]:
     """Validate the full batch and atomically replace ``cds_selection``."""
 
@@ -397,15 +301,6 @@ def _write_cds_selection_to_manifest(
         )
         for success in successes
     ]
-    direct_items = [
-        _validated_direct_cds_payload(
-            item,
-            project_output_path=project_root,
-            host=host,
-        )
-        for item in direct_cds
-    ]
-    success_items.extend(direct_items)
     failure_items = [_failure_payload(failure) for failure in failures]
     selected_accessions = {item.accession for item in context.proteins}
     recorded_accessions = {item["accession"] for item in success_items + failure_items}
@@ -471,30 +366,19 @@ def write_cds_selection_to_manifest(
     *, context: ProteinToCdsContext, host: HostProfile,
     project_output_path: str | Path, successes: Iterable[CompletedProteinCds],
     failures: Iterable[FailedProteinCds], warnings: Iterable[str],
-    run_summary_path: str | Path, direct_cds: Iterable[CompletedDirectCds] = (),
+    run_summary_path: str | Path,
 ) -> dict[str, Any]:
-    """Publish current CDS references, restoring uploaded copies on failure."""
-    direct_cds = tuple(direct_cds)
-    root = Path(project_output_path).expanduser().resolve()
-    paths = [root / "protein_to_cds" / directory / filename
-             for item in direct_cds
-             for directory, filename in (("optimized_cds", f"{item.selected.accession}.fasta"),
-                                         ("raw_cds", f"{item.selected.accession}.raw.fasta"),
-                                         ("reports", f"{item.selected.accession}.uploaded.json"))]
-    with ArtifactTransaction(paths) as transaction:
-        result = _write_cds_selection_to_manifest(
-            context=context, host=host, project_output_path=root,
-            successes=successes, failures=failures, warnings=warnings,
-            run_summary_path=run_summary_path, direct_cds=direct_cds,
-        )
-        transaction.commit()
-        return result
+    """Validate and publish the selected main-enzyme CDS batch."""
+    return _write_cds_selection_to_manifest(
+        context=context, host=host, project_output_path=project_output_path,
+        successes=successes, failures=failures, warnings=warnings,
+        run_summary_path=run_summary_path,
+    )
 
 
 __all__ = [
     "CDS_SELECTION_DOWNSTREAM_SECTIONS",
     "CDS_SELECTION_SCHEMA_VERSION",
-    "CompletedDirectCds",
     "CompletedProteinCds",
     "FailedProteinCds",
     "write_cds_selection_to_manifest",

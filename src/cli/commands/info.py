@@ -56,7 +56,7 @@ def register(subparsers):
     view_group.add_argument(
         "--proteins",
         action="store_true",
-        help="查看当前 manifest 中的主酶和辅助蛋白",
+        help="查看当前 manifest 中已选主酶",
     )
     view_group.add_argument(
         "--cds",

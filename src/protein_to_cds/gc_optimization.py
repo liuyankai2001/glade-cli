@@ -21,7 +21,7 @@ from dnachisel import AvoidChanges, DnaOptimizationProblem, EnforceGCContent, En
 
 from src.protein_to_cds.sequence_constraints import (
     LEGACY_FORBIDDEN_MOTIFS, _OPTIMIZER_LOCK, assess_generated_cds,
-    assess_uploaded_cds, uploaded_cds_protein, sha256_text,
+    sha256_text,
 )
 from src.protein_to_cds.restriction_sites import (
     enzyme_constraints, normalize_enzymes, restriction_site_audit, with_restriction_audit,
@@ -113,12 +113,10 @@ class CdsEditInput:
     extras: list[str]
     source_path: Path
     source_sequence: str
-    uploaded: bool
 
     def audit(self, sequence: str, enzymes: list[str], maximum: int | None = None) -> dict:
-        assess = assess_uploaded_cds if self.uploaded else assess_generated_cds
         return with_homopolymer_audit(
-            with_restriction_audit(assess(sequence, self.protein, self.organism_id, self.extras), sequence, enzymes),
+            with_restriction_audit(assess_generated_cds(sequence, self.protein, self.organism_id, self.extras), sequence, enzymes),
             sequence, maximum,
         )
 
@@ -135,11 +133,7 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
     raw_path, raw = _read_record(root, raw_meta, accession, guards)
     if not raw_path.is_relative_to(root / "protein_to_cds/raw_cds"):
         raise ValueError("原始 CDS 必须位于当前项目的 raw_cds 目录")
-    uploaded = item.get("sequence_input", {}).get("type") == "cds" or previous.get("source_type") == "user_uploaded"
-    if uploaded:
-        protein = uploaded_cds_protein(raw)
-    else:
-        _, protein = _read_record(root, item.get("protein_sequence", {}), accession, guards)
+    _, protein = _read_record(root, item.get("protein_sequence", {}), accession, guards)
     organism_id = int(selection.get("host", {}).get("codon_transformer_organism_id", 0))
     if not organism_id:
         raise ValueError("CDS 结果缺少宿主信息")
@@ -148,7 +142,7 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
         extras = [v for k, v in report.get("constraints", {}).get("forbidden_motifs", {}).items() if k not in LEGACY_FORBIDDEN_MOTIFS]
     if not isinstance(extras, list) or any(not isinstance(value, str) for value in extras):
         raise ValueError("来源报告中的 motif 配置无效")
-    if report.get("status") not in {"PASS", "IMPORTED"} or report.get("raw", {}).get("sequence_sha256") != sha256_text(raw):
+    if report.get("status") != "PASS" or report.get("raw", {}).get("sequence_sha256") != sha256_text(raw):
         raise ValueError("CDS 来源报告与当前 raw 序列不一致")
     current_path = _path(root, previous.get("path"))
     if not current_path.is_file():
@@ -176,12 +170,12 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
             or report.get("source", {}).get("cds_selection_source_fingerprint") != selection.get("source_fingerprint")
         ):
             raise ValueError("已有优化文件与当前 raw 来源不一致，不能继续编辑")
-    elif mode not in {None, "codon_transformer_only", "codon_transformer_and_repair", "user_uploaded_cds"}:
+    elif mode not in {None, "codon_transformer_only", "codon_transformer_and_repair"}:
         raise ValueError("不支持当前 CDS 的处理方式")
     if len(source_sequence) != len(raw) or source_sequence[:3] != raw[:3] or source_sequence[-3:] != raw[-3:]:
         raise ValueError("已有优化序列的长度或起止密码子与 raw 不一致")
     return CdsEditInput(item, previous, report, raw_meta, raw_path, raw, protein,
-                        organism_id, extras, source_path, source_sequence, uploaded)
+                        organism_id, extras, source_path, source_sequence)
 
 
 def _adjust_gc(
@@ -244,7 +238,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     if manifest.get("target_compound_id") != config.target_name:
         raise ValueError("manifest 目标与当前输入不一致，或尚未生成 CDS")
     selection = manifest.get("cds_selection")
-    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v2":
+    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v3":
         raise ValueError("请先运行 protein-to-cds 生成原始 CDS")
     matches = [item for item in selection.get("proteins", []) if item.get("accession", "").upper() == accession]
     if len(matches) != 1:
@@ -392,7 +386,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
                     reference["file_sha256"] = hashlib.sha256(content).hexdigest()
             path = _path(root, current.get("path"))
             if not path.is_relative_to(root / "protein_to_cds/optimized_cds"):
-                if current.get("optimization_skipped") is not True and (
+                if (
                     current.get("processing_mode") != "codon_transformer_only"
                     or path != root / "protein_to_cds/raw_cds" / f"{row['accession']}.raw.fasta"
                 ):

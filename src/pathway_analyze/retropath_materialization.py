@@ -56,7 +56,7 @@ from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v1"
+RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v3"
 MATERIALIZATION_MANIFEST_FILE_NAME = "solution_materialization.json"
 
 _SUMMARY_STATE_COLUMNS = (
@@ -232,9 +232,7 @@ def _raw_solution_rows(
                 "resolution_evidence": "KEGG expansion witness",
                 "step_source": "kegg_expansion",
                 "rhea_ids": ";".join(rhea_ids),
-                "auxiliary_requirements_json": "[]",
             }
-            electron_ecs = ecs
             if status == "heterologous":
                 heterologous_reactions.append(reaction_id)
                 heterologous_ecs.extend(ecs)
@@ -277,7 +275,6 @@ def _raw_solution_rows(
                 "resolution_evidence": "P5 core Reaction SMILES; manual review required",
                 "step_source": "retropath",
                 "rhea_ids": "",
-                "auxiliary_requirements_json": "[]",
                 "retropath_step_id": step_id,
                 "retropath_hypothesis_id": "",
                 "retropath_rule_id": ";".join(rule_ids),
@@ -298,7 +295,6 @@ def _raw_solution_rows(
                     provenance, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 ),
             }
-            electron_ecs = source_ecs
             heterologous_reactions.append(step_id)
         else:
             raise ValueError(f"unsupported hybrid step source: {step_source}")
@@ -309,12 +305,7 @@ def _raw_solution_rows(
             reaction_id=str(row["reaction_id"]),
             left=left,
             right=right,
-            reaction_name=str(row["reaction_name"]),
-            reaction_comment=str(row["reaction_comment"]),
-            equation=str(row["equation"]),
-            enzyme_ecs=electron_ecs,
         )
-        row["auxiliary_requirements_json"] = electron["auxiliary_requirements_json"]
         rows.append(row)
         electron_rows.append(electron)
 
@@ -1013,7 +1004,6 @@ def apply_retropath_validation_overlay(
         "reaction_comment",
         "equation",
         "resolution_evidence",
-        "auxiliary_requirements_json",
     }
     for row in step_rows:
         solution_id = _as_int(row.get("solution_id"), "solution_id", minimum=1)

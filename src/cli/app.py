@@ -1,9 +1,7 @@
 from argparse import ArgumentParser
 
 from src.cli.commands import (
-    add_auxiliary_protein,
     assembly,
-    auxiliary_protein,
     chassis,
     expression,
     expand,
@@ -14,7 +12,6 @@ from src.cli.commands import (
     optimize,
     plasmid,
     protein_to_cds,
-    remove_auxiliary_protein,
     validate,
     write,
     web,
@@ -23,7 +20,6 @@ from src.cli.common import apply_args_to_config, load_input
 from src.config.config import INPUTS_DIR
 
 COMMAND_MODULES = [
-    add_auxiliary_protein,
     assembly,
     chassis,
     expression,
@@ -34,9 +30,7 @@ COMMAND_MODULES = [
     main_enzyme,
     info,
     main_enzyme_sets,
-    auxiliary_protein,
     protein_to_cds,
-    remove_auxiliary_protein,
     plasmid,
     optimize,
     web,

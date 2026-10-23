@@ -19,7 +19,7 @@ from src.expression_box.models import ExpressionGroupingContext, ExpressionProte
 from src.write_manifest.store import read_design_manifest
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_SUPPORTED_ROLES = {"main_enzyme", "auxiliary_protein"}
+_SUPPORTED_ROLES = {"main_enzyme"}
 
 
 def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
@@ -97,13 +97,6 @@ def _protein_from_manifest(raw: Any, index: int) -> ExpressionProtein:
             item.get("assigned_step_indexes"),
             f"{field}.assigned_step_indexes",
         ),
-        required_by_main_accessions=tuple(
-            value.upper()
-            for value in _string_tuple(
-                item.get("required_by_main_accessions", []),
-                f"{field}.required_by_main_accessions",
-            )
-        ),
         optimized_cds_length_nt=_positive_integer(
             optimized_cds.get("length_nt"),
             f"{field}.optimized_cds.length_nt",
@@ -120,6 +113,11 @@ def load_expression_grouping_context(
 ) -> ExpressionGroupingContext:
     """Return the minimal current-manifest input needed for grouping."""
 
+    from src.protein_to_cds.get_protein_selection_context import get_proteins_for_cds
+    from src.protein_to_cds.write_protein_to_manifest import (
+        CDS_SELECTION_SCHEMA_VERSION,
+    )
+
     path = Path(manifest_path).expanduser().resolve()
     manifest = read_design_manifest(path)
     target_compound_id = _nonempty_text(
@@ -127,6 +125,8 @@ def load_expression_grouping_context(
         "target_compound_id",
     )
     cds_selection = _mapping(manifest.get("cds_selection"), "cds_selection")
+    if cds_selection.get("schema_version") != CDS_SELECTION_SCHEMA_VERSION:
+        raise ValueError("CDS 结果已过期，请重新运行 protein-to-cds，再生成表达盒")
     if cds_selection.get("status") != "complete":
         raise ValueError("cds_selection must be complete before expression-box design")
     raw_proteins = cds_selection.get("proteins")
@@ -145,19 +145,11 @@ def load_expression_grouping_context(
     accessions = [item.accession for item in proteins]
     if len(accessions) != len(set(accessions)):
         raise ValueError("cds_selection.proteins contains duplicate accessions")
-    main_accessions = {item.accession for item in proteins if item.is_main_enzyme}
-    if not main_accessions:
-        raise ValueError("cds_selection.proteins contains no main enzymes")
-    for protein in proteins:
-        missing_dependencies = sorted(
-            set(protein.required_by_main_accessions) - main_accessions
-        )
-        if missing_dependencies:
-            raise ValueError(
-                f"auxiliary protein {protein.accession} references unknown main enzymes: "
-                + ", ".join(missing_dependencies)
-            )
-
+    selected = get_proteins_for_cds(path)
+    if set(accessions) != {item.accession for item in selected.proteins}:
+        raise ValueError("CDS 与当前已选主酶不一致，请重新运行 protein-to-cds")
+    if cds_selection.get("source_fingerprint") != selected.source_fingerprint:
+        raise ValueError("CDS 来源已过期，请重新运行 protein-to-cds")
     try:
         revision = int(manifest.get("revision", 0))
     except (TypeError, ValueError) as exc:
@@ -179,7 +171,6 @@ def load_expression_grouping_context(
                 "accession": item.accession,
                 "roles": item.roles,
                 "assigned_step_indexes": item.assigned_step_indexes,
-                "required_by_main_accessions": (item.required_by_main_accessions),
                 "optimized_cds_length_nt": item.optimized_cds_length_nt,
                 "optimized_cds_sequence_sha256": (item.optimized_cds_sequence_sha256),
             }

@@ -93,7 +93,6 @@ def _protein_payload(protein: ExpressionProtein) -> dict[str, Any]:
         "accession": protein.accession,
         "roles": list(protein.roles),
         "assigned_step_indexes": list(protein.assigned_step_indexes),
-        "required_by_main_accessions": list(protein.required_by_main_accessions),
         "optimized_cds_length_nt": protein.optimized_cds_length_nt,
         "optimized_cds_sequence_sha256": protein.optimized_cds_sequence_sha256,
     }
