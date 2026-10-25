@@ -3,7 +3,7 @@
 ``A0`` 来自 GEM/FBA 生成的 ``producible_kegg_compounds.csv``。第 ``n``
 层扩展只允许使用冻结的 ``A(n-1)`` 中全部主底物，并把一个 KEGG 反应首次
 生成的化合物记为 ``Fn``；累计集合 ``An = A0 ∪ F1 ... ∪ Fn``。明确识别的
-电子载体不作为主底物或扩展产物，但会保留完整反应、显式载体风险及其计量。
+电子载体不作为主底物或扩展产物，完整反应方程和计量仍然保留。
 每个新化合物都会保留生成它的定向 KEGG 反应，供 gap 搜索命中扩展锚点后
 恢复完整反应路线。
 """
@@ -33,7 +33,6 @@ from src.pathway_analyze.kegg_gap_analyze import (
     KeggRestClient,
     classify_reaction_resolution,
     directional_stoichiometry,
-    format_electron_carrier_net_changes,
     is_component_step_comment,
     load_endogenous_direction_index,
     make_reaction_option,
@@ -42,7 +41,7 @@ from src.pathway_analyze.kegg_gap_analyze import (
 
 
 EXPANSION_RULE_VERSION = (
-    "chassis_forward_expansion.v6_explicit_carriers"
+    "chassis_forward_expansion.v7"
 )
 COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 FRONTIER_FILE_TEMPLATE = "chassis_frontier_depth_{depth}.csv"
@@ -89,14 +88,6 @@ EXPANSION_COLUMNS = (
     "nadph_burden",
     "sam_burden",
     "coa_burden",
-    "electron_risk_level",
-    "electron_risk_score",
-    "electron_risk_evidence",
-    "electron_carrier_ids",
-    "electron_requirement_classes",
-    "electron_carrier_net_changes",
-    "avoid_if_alternative_exists",
-    "carrier_review_required",
     "enzyme_ecs",
     "ko_ids",
 )
@@ -119,20 +110,12 @@ class ForwardExpansionWitness:
     nadph_burden: float
     sam_burden: float
     coa_burden: float
-    electron_risk_level: str
-    electron_risk_score: int
     enzyme_ecs: Tuple[str, ...]
     ko_ids: Tuple[str, ...]
     # v2 新增字段放在末尾并提供默认值，保持 v1 调用方式可用。
     # 完整底物/产物保留原始 KEGG 定向计量中的全部 Cxxxxx。
     all_substrate_compounds: Tuple[str, ...] = ()
     all_product_compounds: Tuple[str, ...] = ()
-    electron_risk_evidence: Tuple[str, ...] = ()
-    electron_carrier_ids: Tuple[str, ...] = ()
-    electron_requirement_classes: Tuple[str, ...] = ()
-    electron_carrier_net_stoichiometry: Tuple[Tuple[str, float], ...] = ()
-    avoid_if_alternative_exists: bool = False
-    carrier_review_required: bool = False
 
     def __post_init__(self) -> None:
         """为旧构造器补齐完整计量字段。"""
@@ -226,7 +209,6 @@ def _witness_sort_key(witness: ForwardExpansionWitness) -> Tuple[Any, ...]:
     )
     return (
         thermo_penalty,
-        witness.electron_risk_score,
         0 if witness.is_endogenous else 1,
         witness.sam_burden,
         witness.nadph_burden,
@@ -257,36 +239,12 @@ def _witness_to_row(witness: ForwardExpansionWitness) -> Dict[str, Any]:
         "nadph_burden": witness.nadph_burden,
         "sam_burden": witness.sam_burden,
         "coa_burden": witness.coa_burden,
-        "electron_risk_level": witness.electron_risk_level,
-        "electron_risk_score": witness.electron_risk_score,
-        "electron_risk_evidence": "; ".join(witness.electron_risk_evidence),
-        "electron_carrier_ids": ";".join(witness.electron_carrier_ids),
-        "electron_requirement_classes": ";".join(
-            witness.electron_requirement_classes
-        ),
-        "electron_carrier_net_changes": format_electron_carrier_net_changes(
-            witness.electron_carrier_net_stoichiometry
-        ),
-        "avoid_if_alternative_exists": witness.avoid_if_alternative_exists,
-        "carrier_review_required": witness.carrier_review_required,
         "enzyme_ecs": ";".join(witness.enzyme_ecs),
         "ko_ids": ";".join(witness.ko_ids),
     }
 
 
 def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
-    net_changes: list[Tuple[str, float]] = []
-    raw_net_changes = row.get("electron_carrier_net_changes")
-    if raw_net_changes is None or (
-        isinstance(raw_net_changes, float) and pd.isna(raw_net_changes)
-    ):
-        raw_net_changes = ""
-    for token in str(raw_net_changes).split(";"):
-        token = token.strip()
-        if not token:
-            continue
-        carrier_id, amount = token.split(":", 1)
-        net_changes.append((carrier_id.strip(), float(amount)))
     return ForwardExpansionWitness(
         product_compound=str(row.get("kegg_id", "")).strip(),
         depth=_as_int(row.get("depth")),
@@ -302,18 +260,6 @@ def _row_to_witness(row: Mapping[str, Any]) -> ForwardExpansionWitness:
         nadph_burden=_as_float(row.get("nadph_burden")),
         sam_burden=_as_float(row.get("sam_burden")),
         coa_burden=_as_float(row.get("coa_burden")),
-        electron_risk_level=str(row.get("electron_risk_level", "none")).strip(),
-        electron_risk_score=_as_int(row.get("electron_risk_score")),
-        electron_risk_evidence=_split_ids(row.get("electron_risk_evidence")),
-        electron_carrier_ids=_split_ids(row.get("electron_carrier_ids")),
-        electron_requirement_classes=_split_ids(
-            row.get("electron_requirement_classes")
-        ),
-        electron_carrier_net_stoichiometry=tuple(net_changes),
-        avoid_if_alternative_exists=_as_bool(
-            row.get("avoid_if_alternative_exists")
-        ),
-        carrier_review_required=_as_bool(row.get("carrier_review_required")),
         enzyme_ecs=_split_ids(row.get("enzyme_ecs")),
         ko_ids=_split_ids(row.get("ko_ids")),
     )
@@ -388,7 +334,7 @@ def _manifest_matches(
         and manifest.get("compound_policy")
         == "Cxxxxx_strict_main_substrates_carrier_aware"
         and manifest.get("carrier_policy")
-        == "recognized_electron_carriers_nonblocking_not_reachable"
+        == "recognized_carriers_nonblocking_not_reachable"
         and manifest.get("multistep_policy")
         == "component_steps_allowed_summaries_rejected"
     )
@@ -486,13 +432,6 @@ def load_expansion_bundle(
         "bridge_product_ids",
         "bridge_all_substrate_ids",
         "bridge_all_product_ids",
-        "electron_risk_level",
-        "electron_risk_score",
-        "electron_risk_evidence",
-        "electron_carrier_ids",
-        "electron_requirement_classes",
-        "electron_carrier_net_changes",
-        "carrier_review_required",
     }
     missing = sorted(required - set(df.columns))
     if missing:
@@ -530,58 +469,6 @@ def load_expansion_bundle(
         expanded_file=expanded_path,
         manifest=manifest or {},
     )
-
-
-def _carrier_aware_electron_fields(
-    option: Any,
-    *,
-    carrier_ids: Tuple[str, ...],
-    consumed: Sequence[Tuple[str, float]],
-    produced: Sequence[Tuple[str, float]],
-) -> Dict[str, Any]:
-    requirement = option.electron_requirement
-    classified_ids = set(requirement.carrier_ids)
-    unclassified_ids = tuple(
-        carrier_id for carrier_id in carrier_ids if carrier_id not in classified_ids
-    )
-    evidence = list(requirement.evidence)
-    evidence.extend(
-        f"explicit_unclassified_carrier:{carrier_id}"
-        for carrier_id in unclassified_ids
-    )
-    requirement_classes = list(requirement.requirement_classes)
-    if unclassified_ids:
-        requirement_classes.append("unclassified_electron_carrier")
-
-
-    carrier_net = {carrier_id: 0.0 for carrier_id in carrier_ids}
-    for compound_id, coefficient in consumed:
-        if compound_id in carrier_net:
-            carrier_net[compound_id] -= float(coefficient)
-    for compound_id, coefficient in produced:
-        if compound_id in carrier_net:
-            carrier_net[compound_id] += float(coefficient)
-    risk_score = max(
-        int(requirement.risk_score),
-        2 if unclassified_ids else 0,
-    )
-    return {
-        "carrier_ids": carrier_ids,
-        "requirement_classes": tuple(dict.fromkeys(requirement_classes)),
-        "risk_level": {0: "none", 1: "low", 2: "high"}.get(
-            risk_score,
-            "high",
-        ),
-        "risk_score": risk_score,
-        "evidence": tuple(dict.fromkeys(evidence)),
-        "carrier_net_stoichiometry": tuple(
-            (carrier_id, carrier_net[carrier_id]) for carrier_id in carrier_ids
-        ),
-        "avoid_if_alternative_exists": bool(
-            requirement.avoid_if_alternative_exists or carrier_ids
-        ),
-        "carrier_review_required": bool(carrier_ids),
-    }
 
 
 def _reaction_witnesses(
@@ -627,11 +514,6 @@ def _reaction_witnesses(
             if rejection_counts is not None:
                 rejection_counts["non_Cxxxxx_compound"] += 1
             continue
-        carrier_ids = _normalize_id_tuple(
-            GENERIC_CARRIER_IDS.intersection(
-                (*all_substrates, *all_products)
-            )
-        )
         substrates = tuple(
             compound_id
             for compound_id in all_substrates
@@ -673,12 +555,6 @@ def _reaction_witnesses(
                 if rejection_counts is not None:
                     rejection_counts["reaction_direction_policy"] += 1
                 continue
-            electron = _carrier_aware_electron_fields(
-                option,
-                carrier_ids=carrier_ids,
-                consumed=consumed,
-                produced=produced,
-            )
             witnesses.append(
                 ForwardExpansionWitness(
                     product_compound=product_id,
@@ -699,22 +575,6 @@ def _reaction_witnesses(
                     nadph_burden=option.screening.nadph_burden,
                     sam_burden=option.screening.sam_burden,
                     coa_burden=option.screening.coa_burden,
-                    electron_risk_level=electron["risk_level"],
-                    electron_risk_score=electron["risk_score"],
-                    electron_risk_evidence=electron["evidence"],
-                    electron_carrier_ids=electron["carrier_ids"],
-                    electron_requirement_classes=electron[
-                        "requirement_classes"
-                    ],
-                    electron_carrier_net_stoichiometry=electron[
-                        "carrier_net_stoichiometry"
-                    ],
-                    avoid_if_alternative_exists=electron[
-                        "avoid_if_alternative_exists"
-                    ],
-                    carrier_review_required=electron[
-                        "carrier_review_required"
-                    ],
                     enzyme_ecs=tuple(reaction.enzyme_ecs),
                     ko_ids=tuple(reaction.ko_ids),
                 )
@@ -943,25 +803,6 @@ def ensure_expansion_depth(
         eligible_reaction_count = len(
             {witness.reaction_id for witness in ordered_layer}
         )
-        carrier_witnesses = [
-            witness for witness in ordered_layer if witness.electron_carrier_ids
-        ]
-        carrier_supported_reaction_count = len({
-            witness.reaction_id for witness in carrier_witnesses
-        })
-        carrier_supported_compound_count = len({
-            witness.product_compound for witness in carrier_witnesses
-        })
-        carrier_review_required_compound_count = len({
-            witness.product_compound
-            for witness in ordered_layer
-            if witness.carrier_review_required
-        })
-        layer_carrier_ids = sorted({
-            carrier_id
-            for witness in ordered_layer
-            for carrier_id in witness.electron_carrier_ids
-        })
         all_witnesses.extend(ordered_layer)
         available.update(new_frontier)
 
@@ -995,12 +836,6 @@ def ensure_expansion_depth(
             "frontier_compound_count": len(new_frontier),
             "witness_count": len(ordered_layer),
             "cumulative_compound_count": len(available),
-            "carrier_supported_reaction_count": carrier_supported_reaction_count,
-            "carrier_supported_compound_count": carrier_supported_compound_count,
-            "carrier_review_required_compound_count": (
-                carrier_review_required_compound_count
-            ),
-            "electron_carrier_ids": layer_carrier_ids,
             "rejection_counts": dict(sorted(rejection_counts.items())),
             "prefetch_elapsed_seconds": round(prefetch_elapsed, 3),
             "layer_elapsed_seconds": round(
@@ -1015,7 +850,6 @@ def ensure_expansion_depth(
             f"eligible_reactions={eligible_reaction_count}, "
             f"new_compounds={len(new_frontier)}, "
             f"reaction_witnesses={len(ordered_layer)}, "
-            f"carrier_supported_compounds={carrier_supported_compound_count}, "
             f"cumulative_compounds={len(available)}, "
             f"prefetch={prefetch_elapsed:.1f}s, "
             f"elapsed={time.perf_counter() - layer_started:.1f}s"
@@ -1047,7 +881,7 @@ def ensure_expansion_depth(
         "unpre_re_reaction": unpre_re_reaction,
         "compound_policy": "Cxxxxx_strict_main_substrates_carrier_aware",
         "carrier_policy": (
-            "recognized_electron_carriers_nonblocking_not_reachable"
+            "recognized_carriers_nonblocking_not_reachable"
         ),
         "multistep_policy": "component_steps_allowed_summaries_rejected",
         "depth_semantics": "one_directional_kegg_reaction_per_layer",

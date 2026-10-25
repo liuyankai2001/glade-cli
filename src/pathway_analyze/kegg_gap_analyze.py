@@ -5,7 +5,7 @@
 
 1. 用 GEM 反应注释和通量上下界判断反应方向是否属于底盘内源能力；
 2. 用 KEGG module 构造优先搜索的反应子图；
-3. 按方向启发式、辅因子负担、电子风险和前体距离排列候选反应；
+3. 按方向启发式、辅因子负担和前体距离排列候选反应；
 4. 用最大步数、最大异源酶数、状态支配和环路检测剪枝；
 5. 将候选路线及逐步证据写入 CSV/JSON，供后续 GEM 验证和主酶筛选使用。
 
@@ -63,42 +63,8 @@ DEFAULT_MAX_MAJOR_PRECURSORS = 4
 DEFAULT_MAX_ROUTES_PER_STATE = 3
 DEFAULT_MAX_MODULE_CHAIN_DEPTH = 5
 DEFAULT_MODULE_FILTER_MODE = "prefer"
-DEFAULT_ELECTRON_AVOIDANCE_MODE = "prefer"
-
-ELECTRON_AVOIDANCE_MODES = frozenset(
-    {"off", "prefer", "strict", "strict_with_fallback"}
-)
-HIGH_ELECTRON_RISK_SCORE = 2
-ELECTRON_BALANCE_TOLERANCE = 1e-9
-# (名称, 氧化态, 还原态)。仅核算明确出现在定向反应方程中的载体。
-ELECTRON_CARRIER_PAIRS = (
-    ("nadh", "C00003", "C00004"),
-    ("nadph", "C00006", "C00005"),
-    ("generic_electron_acceptor", "C00028", "C00030"),
-    ("ferredoxin", "C00139", "C00138"),
-    ("thioredoxin", "C00343", "C00342"),
-    ("hemoprotein_reductase", "C03161", "C03024"),
-)
-ELECTRON_CARRIER_CLASSES = {
-    carrier_id: pair_name
-    for pair_name, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS
-    for carrier_id in (oxidized_id, reduced_id)
-}
-# C14818 在当前知识库中没有同时登记可核算的配对成员，保留为待确认载体。
-ELECTRON_CARRIER_CLASSES["C14818"] = "ferredoxin"
-PAIRED_ELECTRON_CARRIER_IDS = frozenset(
-    carrier_id
-    for _, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS
-    for carrier_id in (oxidized_id, reduced_id)
-)
-DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS = 20
-DEFAULT_ELECTRON_FALLBACK_MAX_NEW_ENZYMES = 20
-DEFAULT_ELECTRON_FALLBACK_MAX_REACTIONS_PER_COMPOUND = 15
-DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE = 5
-
 EndogenousDirectionIndex = Dict[str, frozenset[str]]
 SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
-ELECTRON_INFERENCE_VERSION = "route_carrier_balance.v5"
 REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
 ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS = "gem_bounds"
@@ -126,7 +92,7 @@ COMPONENT_STEP_COMMENT_PATTERN = re.compile(
     r"[ -]?step reaction\b"
 )
 
-# 这些通用小分子连接度极高。它们仍参与辅因子/电子风险计分，但不会作为
+# 这些通用小分子连接度极高。它们仍参与辅因子负担计分，但不会作为
 # “必须继续向上游解决的主要前体”，否则反向搜索树会被水、ATP、NADPH 等淹没。
 IGNORED_COMMON_COMPOUNDS = {
     "C00001",  # H2O
@@ -241,24 +207,11 @@ class ReactionScreening:
 
 
 @dataclass(frozen=True)
-class ElectronRequirement:
-    """一个定向反应的电子载体需求及其工程风险。"""
-
-    carrier_ids: Tuple[str, ...]
-    requirement_classes: Tuple[str, ...]
-    risk_level: str
-    risk_score: int
-    evidence: Tuple[str, ...]
-    carrier_net_stoichiometry: Tuple[Tuple[str, float], ...]
-    avoid_if_alternative_exists: bool
-
-
-@dataclass(frozen=True)
 class ReactionOption:
     """某反应以指定方向生成当前目标化合物时形成的一个搜索选项。
 
     ``precursor_compounds`` 是必须继续追溯的主要前体。水、辅因子等通用小分子
-    在构造选项时被排除；筛查和电子需求各自收拢为一个不可变对象。
+    在构造选项时被排除；方向与辅因子筛查保存为不可变对象。
     """
 
     produced_compound: str
@@ -266,7 +219,6 @@ class ReactionOption:
     direction: str
     precursor_compounds: Tuple[str, ...]
     screening: ReactionScreening
-    electron_requirement: ElectronRequirement
 
 
 @dataclass(frozen=True)
@@ -365,14 +317,11 @@ class SearchQueueItem:
 
 @dataclass(frozen=True)
 class SearchExecutionResult:
-    """搜索结果及 module/电子风险兜底过程的可审计元数据。"""
+    """搜索结果及 module 搜索回退过程的可审计元数据。"""
 
     solutions: Tuple[Solution, ...]
     search_mode_used: str
     did_fallback: bool
-    electron_avoidance_mode: str
-    electron_avoidance_fallback: bool
-    electron_fallback_parameters: Dict[str, int]
     target_compound_module_ids: Tuple[str, ...]
     matched_target_module_ids: Tuple[str, ...]
     direct_producing_reaction_ids: Tuple[str, ...]
@@ -396,10 +345,8 @@ class ModuleChainContext:
 
 # 路线签名由“本步产物、反应 ID、方向”组成，用于识别重复历史。
 StateRouteSignature = Tuple[Tuple[str, str, str], ...]
-# 状态记录保存“最大电子风险、异源步数、总步数、路线签名”，用于同状态
-# Top-K 剪枝。电子风险必须进入状态成本：否则一条更短但依赖通用/未建模电子
-# 载体的路线会把稍长、却可由 GEM 表达的显式低风险路线挤出搜索空间。
-StateRouteRecord = Tuple[int, int, int, StateRouteSignature]
+# 同一状态保留异源步数、总步数和历史签名，用于 Top-K 剪枝。
+StateRouteRecord = Tuple[int, int, StateRouteSignature]
 
 
 # ---------------------------------------------------------------------------
@@ -468,157 +415,6 @@ def dedupe_keep_order(values: Iterable[str]) -> Tuple[str, ...]:
         seen.add(value)
         ordered.append(value)
     return tuple(ordered)
-
-
-def infer_electron_requirement(
-    *,
-    consumed_stoichiometry: Sequence[Tuple[str, float]],
-    produced_stoichiometry: Sequence[Tuple[str, float]],
-) -> ElectronRequirement:
-    """仅根据反应计量中的显式电子载体记录风险和净变化。"""
-
-    consumed_ids = {compound_id for compound_id, _ in consumed_stoichiometry}
-    produced_ids = {compound_id for compound_id, _ in produced_stoichiometry}
-    involved_ids = consumed_ids | produced_ids
-    carrier_ids = dedupe_keep_order(
-        compound_id
-        for compound_id in ELECTRON_CARRIER_CLASSES
-        if compound_id in involved_ids
-    )
-    requirement_classes = list(
-        dedupe_keep_order(
-            ELECTRON_CARRIER_CLASSES[compound_id] for compound_id in carrier_ids
-        )
-    )
-    evidence: List[str] = [
-        f"explicit_carrier:{compound_id}" for compound_id in carrier_ids
-    ]
-
-    high_risk_classes = {
-        "ferredoxin",
-        "thioredoxin",
-        "generic_electron_acceptor",
-        "hemoprotein_reductase",
-    }
-    if high_risk_classes.intersection(requirement_classes):
-        risk_score = 2
-    elif requirement_classes:
-        risk_score = 1
-    else:
-        risk_score = 0
-    risk_level = {0: "none", 1: "low", 2: "high"}[risk_score]
-
-    carrier_net: Dict[str, float] = {carrier_id: 0.0 for carrier_id in carrier_ids}
-    for compound_id, coefficient in consumed_stoichiometry:
-        if compound_id in carrier_net:
-            carrier_net[compound_id] -= float(coefficient)
-    for compound_id, coefficient in produced_stoichiometry:
-        if compound_id in carrier_net:
-            carrier_net[compound_id] += float(coefficient)
-    carrier_net_stoichiometry = tuple(
-        (carrier_id, carrier_net[carrier_id]) for carrier_id in carrier_ids
-    )
-
-    return ElectronRequirement(
-        carrier_ids=carrier_ids,
-        requirement_classes=tuple(requirement_classes),
-        risk_level=risk_level,
-        risk_score=risk_score,
-        evidence=tuple(evidence),
-        carrier_net_stoichiometry=carrier_net_stoichiometry,
-        avoid_if_alternative_exists=risk_score >= HIGH_ELECTRON_RISK_SCORE,
-    )
-
-
-def format_electron_carrier_net_changes(
-    values: Iterable[Tuple[str, float]],
-) -> str:
-    """将有符号载体净变化编码为稳定、可审计的 CSV 文本。"""
-
-    parts: List[str] = []
-    for carrier_id, value in values:
-        normalized_value = float(value)
-        if abs(normalized_value) <= ELECTRON_BALANCE_TOLERANCE:
-            normalized_value = 0.0
-        parts.append(f"{carrier_id}:{normalized_value:g}")
-    return ";".join(parts)
-
-
-def parse_electron_carrier_net_changes(value: Any) -> Dict[str, float]:
-    """解析 ``Cxxxxx:+/-n`` 形式的电子载体净变化。"""
-
-    if isinstance(value, dict):
-        return {str(key): float(amount) for key, amount in value.items()}
-    changes: Dict[str, float] = {}
-    for item in str(value or "").split(";"):
-        token = item.strip()
-        if not token:
-            continue
-        try:
-            carrier_id, raw_amount = token.split(":", 1)
-            amount = float(raw_amount)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"无效的电子载体净变化：{token!r}") from exc
-        carrier_id = carrier_id.strip()
-        if not carrier_id:
-            raise ValueError(f"无效的电子载体净变化：{token!r}")
-        changes[carrier_id] = changes.get(carrier_id, 0.0) + amount
-    return changes
-
-
-def summarize_solution_electron_requirements(
-    step_fields: Iterable[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Summarize explicit carrier stoichiometry without protein-design claims."""
-    rows = list(step_fields)
-    carrier_ids = dedupe_keep_order(
-        carrier_id
-        for row in rows
-        for carrier_id in str(row.get("electron_carrier_ids", "")).split(";")
-        if carrier_id
-    )
-    max_score = max((int(row.get("electron_risk_score", 0)) for row in rows), default=0)
-    carrier_net_totals: Dict[str, float] = {}
-    for row in rows:
-        for carrier_id, amount in parse_electron_carrier_net_changes(
-            row.get("electron_carrier_net_changes")
-        ).items():
-            carrier_net_totals[carrier_id] = carrier_net_totals.get(carrier_id, 0.0) + amount
-    balanced_pairs: List[str] = []
-    unbalanced_pairs: List[str] = []
-    present_carrier_ids = set(carrier_ids)
-    for pair_name, oxidized_id, reduced_id in ELECTRON_CARRIER_PAIRS:
-        if not ({oxidized_id, reduced_id} & present_carrier_ids):
-            continue
-        balanced = all(
-            abs(carrier_net_totals.get(identifier, 0.0)) <= ELECTRON_BALANCE_TOLERANCE
-            for identifier in (oxidized_id, reduced_id)
-        )
-        (balanced_pairs if balanced else unbalanced_pairs).append(pair_name)
-    unresolved_ids = [identifier for identifier in carrier_ids if identifier not in PAIRED_ELECTRON_CARRIER_IDS]
-    if unbalanced_pairs:
-        balance_status = "unbalanced"
-    elif unresolved_ids:
-        balance_status = "unresolved"
-    elif balanced_pairs:
-        balance_status = "internally_balanced"
-    else:
-        balance_status = "not_applicable"
-    return {
-        "max_electron_risk_level": {0: "none", 1: "low", 2: "high"}.get(max_score, "high"),
-        "max_electron_risk_score": max_score,
-        "electron_balance_status": balance_status,
-        "electron_carrier_ids": ";".join(carrier_ids),
-        "electron_requirement_classes": ";".join(dedupe_keep_order(
-            value for row in rows for value in str(row.get("electron_requirement_classes", "")).split(";") if value
-        )),
-        "electron_carrier_net_changes": format_electron_carrier_net_changes(
-            (identifier, carrier_net_totals.get(identifier, 0.0)) for identifier in carrier_ids
-        ),
-        "balanced_electron_carrier_pairs": ";".join(balanced_pairs),
-        "unbalanced_electron_carrier_pairs": ";".join(unbalanced_pairs),
-        "unresolved_electron_carrier_ids": ";".join(unresolved_ids),
-    }
 
 
 def load_endogenous_direction_index(
@@ -1574,13 +1370,13 @@ def make_reaction_option(
     """把一个 KEGG 反应的确定方向转换为可排序、可扩展的搜索选项。"""
 
     # 反向搜索只关心“为了生成 compound_id，需要消耗哪些前体”。
-    consumed_stoichiometry, produced_stoichiometry = directional_stoichiometry(reaction, direction)
+    consumed_stoichiometry, _ = directional_stoichiometry(reaction, direction)
     precursors = dedupe_keep_order(
         precursor_id
         for precursor_id, _ in consumed_stoichiometry
         if precursor_id != compound_id
     )
-    # 通用辅因子不进入未解决状态，但会在下方继续计算负担和电子风险。
+    # 通用辅因子不进入未解决状态，但会在下方继续计算辅因子负担。
     tracked = dedupe_keep_order(x for x in precursors if x not in ignored_common_compounds)
     (
         oxygen_required,
@@ -1593,11 +1389,6 @@ def make_reaction_option(
         reaction=reaction,
         direction=direction,
         consumed_stoichiometry=consumed_stoichiometry,
-    )
-    # 记录显式电子载体的计量风险，供路线平衡检查使用。
-    electron_requirement = infer_electron_requirement(
-        consumed_stoichiometry=consumed_stoichiometry,
-        produced_stoichiometry=produced_stoichiometry,
     )
     return ReactionOption(
         produced_compound=compound_id,
@@ -1612,7 +1403,6 @@ def make_reaction_option(
             thermo_direction=thermo_direction,
             rule_hits=screening_rule_hits,
         ),
-        electron_requirement=electron_requirement,
     )
 
 
@@ -1832,57 +1622,6 @@ def filter_reaction_options(
             continue
         filtered.append(option)
     return filtered
-
-
-def validate_electron_avoidance_mode(mode: str) -> str:
-    """校验电子风险规避模式，避免静默使用未知策略。"""
-
-    normalized = str(mode or DEFAULT_ELECTRON_AVOIDANCE_MODE).strip()
-    if normalized not in ELECTRON_AVOIDANCE_MODES:
-        raise ValueError(
-            "electron_avoidance_mode must be one of: "
-            + ", ".join(sorted(ELECTRON_AVOIDANCE_MODES))
-            + f". Got: {mode}"
-        )
-    return normalized
-
-
-def apply_electron_avoidance_filter(
-    options: Sequence[ReactionOption],
-    electron_avoidance_mode: str,
-) -> List[ReactionOption]:
-    """在严格模式下优先删除高电子风险候选。
-
-    如果当前化合物的所有候选均为高风险，则全部保留，防止单个节点因电子
-    风险直接断路；全局 ``strict_with_fallback`` 兜底逻辑在搜索调度层处理。
-    """
-
-    option_list = list(options)
-    if electron_avoidance_mode not in {"strict", "strict_with_fallback"}:
-        return option_list
-    lower_risk = [
-        option for option in option_list
-        if option.electron_requirement.risk_score < HIGH_ELECTRON_RISK_SCORE
-    ]
-    if not lower_risk:
-        return option_list
-    high_risk = [
-        option for option in option_list
-        if option.electron_requirement.risk_score >= HIGH_ELECTRON_RISK_SCORE
-    ]
-    if not high_risk:
-        return lower_risk
-    # 保留一个高风险备用分支，防止低风险候选在更上游落入 incomplete
-    # 死路后无法回溯到计量完整的显式电子反应。
-    backup = min(
-        high_risk,
-        key=lambda option: (
-            option.electron_requirement.risk_score,
-            option.reaction.reaction_id,
-            option.direction,
-        ),
-    )
-    return [*lower_risk, backup]
 
 
 # ---------------------------------------------------------------------------
@@ -2159,18 +1898,16 @@ def rank_reaction_options(
     target_pathway_ids: set[str],
     max_major_precursors: int,
     allowed_reaction_ids: set[str] | None = None,
-    electron_avoidance_mode: str = "prefer",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> List[ReactionOption]:
     """按生物学启发式对生成当前化合物的反应候选做字典序排序。
 
-    先应用方向准入策略，再综合方向标签、SAM/NADPH/CoA 负担、电子风险、
+    先应用方向准入策略，再综合方向标签、SAM/NADPH/CoA 负担、
     前体距离和注释完整性排序。方向策略是硬限制，最终通量可行性由 GEM 验证。
     """
 
     unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
-    electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     one_step_cache: Dict[str, int] = {}
 
     def estimate_distance_to_reachable(compound_id: str) -> int:
@@ -2204,7 +1941,7 @@ def rank_reaction_options(
         one_step_cache[compound_id] = best
         return best
 
-    # 先控制主要前体分支数，再按电子规避模式做局部过滤，限制组合爆炸。
+    # 控制主要前体分支数，限制组合爆炸。
     filtered: List[ReactionOption] = []
 
     for option in options:
@@ -2216,7 +1953,6 @@ def rank_reaction_options(
         if len(precursor_set) > max_major_precursors:
             continue
         filtered.append(option)
-    filtered = apply_electron_avoidance_filter(filtered, electron_avoidance_mode)
 
     scored: List[Tuple[Tuple[Any, ...], ReactionOption]] = []
     for option in filtered:
@@ -2242,18 +1978,12 @@ def rank_reaction_options(
         enzyme_penalty = 0 if option.reaction.enzyme_ecs or option.reaction.ko_ids else 1
 
         reachable_penalty = 0 if reachable_count > 0 else 1
-        electron_risk_penalty = (
-            0
-            if electron_avoidance_mode == "off"
-            else option.electron_requirement.risk_score
-        )
         # 元组按字段依次比较，因此前面的方向和辅因子指标优先级更高。
         score = (
             thermo_penalty,
             option.screening.sam_burden,
             option.screening.nadph_burden,
             option.screening.coa_burden,
-            electron_risk_penalty,
             reachable_penalty,
             distance_score,
             unresolved_count,
@@ -2289,19 +2019,10 @@ def plan_route_signature(plan_steps: Sequence[PlanStep]) -> StateRouteSignature:
     )
 
 
-def state_route_sort_key(
-    record: StateRouteRecord,
-) -> Tuple[int, int, int, int, StateRouteSignature]:
+def state_route_sort_key(record: StateRouteRecord) -> Tuple[int, int, int, StateRouteSignature]:
     """定义同一状态下历史路线的保留优先级。"""
-
-    max_electron_risk_score, heterologous_steps, total_steps, route_signature = record
-    return (
-        max_electron_risk_score,
-        heterologous_steps,
-        total_steps,
-        len(route_signature),
-        route_signature,
-    )
+    heterologous_steps, total_steps, route_signature = record
+    return heterologous_steps, total_steps, len(route_signature), route_signature
 
 
 def remember_state_route(
@@ -2311,46 +2032,19 @@ def remember_state_route(
     total_steps: int,
     route_signature: StateRouteSignature,
     max_routes_per_state: int,
-    max_electron_risk_score: int = 0,
 ) -> bool:
-    """为同一未解决状态保留成本最低且历史不同的前 K 条路线。
-
-    不能只为每个状态保留一条路线：两条路线即使得到相同未解决前体，也可能
-    已使用不同反应，后续受到不同的环路约束。返回值表示新路线是否进入 Top-K。
-    """
-
-    route_limit = max(1, max_routes_per_state)
-    for record in routes_by_state.get(state, []):
-        if record[3] == route_signature and record[:3] <= (
-            max_electron_risk_score,
-            heterologous_steps,
-            total_steps,
-        ):
-            return False
-
-    records = [
-        record
-        for record in routes_by_state.get(state, [])
-        if record[3] != route_signature
-    ]
-    records.append(
-        (
-            max_electron_risk_score,
-            heterologous_steps,
-            total_steps,
-            route_signature,
-        )
-    )
+    """为同一未解决状态保留成本最低且历史不同的前 K 条路线。"""
+    cost = (heterologous_steps, total_steps)
+    records = routes_by_state.get(state, [])
+    if any(record[2] == route_signature and record[:2] <= cost for record in records):
+        return False
+    records = [record for record in records if record[2] != route_signature]
+    candidate = (heterologous_steps, total_steps, route_signature)
+    records.append(candidate)
     records.sort(key=state_route_sort_key)
-    kept = records[:route_limit]
+    kept = records[:max(1, max_routes_per_state)]
     routes_by_state[state] = kept
-    return any(
-        record[0] == max_electron_risk_score
-        and record[1] == heterologous_steps
-        and record[2] == total_steps
-        and record[3] == route_signature
-        for record in kept
-    )
+    return candidate in kept
 
 
 def is_state_route_active(
@@ -2359,17 +2053,9 @@ def is_state_route_active(
     heterologous_steps: int,
     total_steps: int,
     route_signature: StateRouteSignature,
-    max_electron_risk_score: int = 0,
 ) -> bool:
     """检查从堆中弹出的路线是否仍在该状态的 Top-K 活跃集合中。"""
-
-    return any(
-        record[0] == max_electron_risk_score
-        and record[1] == heterologous_steps
-        and record[2] == total_steps
-        and record[3] == route_signature
-        for record in routes_by_state.get(state, [])
-    )
+    return (heterologous_steps, total_steps, route_signature) in routes_by_state.get(state, [])
 
 
 def split_precursors_by_reachability(
@@ -2480,13 +2166,6 @@ def _bridge_plan_sort_key(
     return (
         sum(not step.is_endogenous for step in steps),
         len(steps),
-        max(
-            (
-                step.option.electron_requirement.risk_score
-                for step in steps
-            ),
-            default=0,
-        ),
         sum(step.option.screening.sam_burden for step in steps),
         sum(step.option.screening.nadph_burden for step in steps),
         sum(step.option.screening.coa_burden for step in steps),
@@ -2909,14 +2588,13 @@ def search_gap_solutions_once(
     max_routes_per_state: int,
     ignored_common_compounds: set[str],
     allowed_reaction_ids: set[str] | None,
-    electron_avoidance_mode: str,
     reaction_resolution_mode: str = "strict",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
     base_reachable_compounds: set[str] | None = None,
     expansion_bundle: Any | None = None,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> SearchRoundResult:
-    """在固定 module 白名单、电子策略和资源上限下执行一次反向最佳优先搜索。
+    """在固定 module 白名单和资源上限下执行一次反向最佳优先搜索。
 
     状态是尚未接到底盘可达集合的主要前体集合。每次选择其中候选最少的一个
     化合物，用能够生成它的反应替换为更上游前体；当集合为空时得到完整路线。
@@ -2924,7 +2602,6 @@ def search_gap_solutions_once(
     """
 
     unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
-    electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
     )
@@ -3002,7 +2679,7 @@ def search_gap_solutions_once(
 
     # 同一未解决集合保留多条不同历史，兼顾剪枝强度与环路约束下的路线多样性。
     routes_by_state: Dict[frozenset[str], List[StateRouteRecord]] = {
-        start_state: [(0, 0, 0, tuple())],
+        start_state: [(0, 0, tuple())],
     }
     solutions: List[Solution] = []
     rejected_solutions: List[Solution] = []
@@ -3016,17 +2693,6 @@ def search_gap_solutions_once(
         unresolved = item.unresolved
         plan_steps = item.plan_steps
         route_signature = plan_route_signature(plan_steps)
-        max_electron_risk_score = (
-            0
-            if electron_avoidance_mode == "off"
-            else max(
-                (
-                    step.option.electron_requirement.risk_score
-                    for step in plan_steps
-                ),
-                default=0,
-            )
-        )
         used_reaction_ids = {
             step.option.reaction.reaction_id
             for step in plan_steps
@@ -3043,7 +2709,6 @@ def search_gap_solutions_once(
             heterologous_steps=heterologous_steps,
             total_steps=total_steps,
             route_signature=route_signature,
-            max_electron_risk_score=max_electron_risk_score,
         ):
             continue
 
@@ -3118,7 +2783,6 @@ def search_gap_solutions_once(
             target_pathway_ids=target_entry_pathways,
             max_major_precursors=max_major_precursors,
             allowed_reaction_ids=allowed_reaction_ids,
-            electron_avoidance_mode=electron_avoidance_mode,
             endogenous_direction_index=endogenous_direction_index,
             unpre_re_reaction=unpre_re_reaction,
         )
@@ -3203,17 +2867,6 @@ def search_gap_solutions_once(
 
             next_plan = plan_steps + tuple(next_plan_steps)
             next_route_signature = plan_route_signature(next_plan)
-            next_max_electron_risk_score = (
-                0
-                if electron_avoidance_mode == "off"
-                else max(
-                    max_electron_risk_score,
-                    *(
-                        step.option.electron_requirement.risk_score
-                        for step in next_plan_steps
-                    ),
-                )
-            )
             # 只有进入该状态 Top-K 的历史才继续入堆，控制状态组合爆炸。
             if next_state and not remember_state_route(
                 routes_by_state=routes_by_state,
@@ -3222,7 +2875,6 @@ def search_gap_solutions_once(
                 total_steps=next_total_steps,
                 route_signature=next_route_signature,
                 max_routes_per_state=max_routes_per_state,
-                max_electron_risk_score=next_max_electron_risk_score,
             ):
                 continue
 
@@ -3259,23 +2911,20 @@ def run_search_gap_analysis(
     module_filter_mode: str = DEFAULT_MODULE_FILTER_MODE,
     max_routes_per_state: int = DEFAULT_MAX_ROUTES_PER_STATE,
     max_module_chain_depth: int = DEFAULT_MAX_MODULE_CHAIN_DEPTH,
-    electron_avoidance_mode: str = DEFAULT_ELECTRON_AVOIDANCE_MODE,
     reaction_resolution_mode: str = "strict",
     endogenous_direction_index: EndogenousDirectionIndex | None = None,
     base_reachable_compounds: set[str] | None = None,
     expansion_bundle: Any | None = None,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> SearchExecutionResult:
-    """构建 module 上下文并调度 module 与电子风险两层搜索兜底。
+    """构建 module 上下文并按 module 筛选策略搜索。
 
     ``module_filter_mode`` 控制是否先在 KEGG module 链内搜索；``prefer`` 在
-    module 内无解时回退到完整反应空间。``strict_with_fallback`` 则先规避高
-    电子风险候选，无解后放宽为 prefer，并同时扩大搜索资源上限。
+    module 内无解时回退到完整反应空间。
     所有阶段始终遵循 ``unpre_re_reaction``，不会回退或放宽方向限制。
     """
 
     unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
-    electron_avoidance_mode = validate_electron_avoidance_mode(electron_avoidance_mode)
     reaction_resolution_mode = validate_reaction_resolution_mode(
         reaction_resolution_mode
     )
@@ -3290,9 +2939,6 @@ def run_search_gap_analysis(
             rejected_solutions=tuple(),
             search_mode_used="not_required_target_in_chassis",
             did_fallback=False,
-            electron_avoidance_mode=electron_avoidance_mode,
-            electron_avoidance_fallback=False,
-            electron_fallback_parameters={},
             target_compound_module_ids=tuple(),
             matched_target_module_ids=tuple(),
             direct_producing_reaction_ids=tuple(),
@@ -3330,32 +2976,18 @@ def run_search_gap_analysis(
             unpre_re_reaction=unpre_re_reaction,
         )
     allowed_reaction_id_set = set(module_chain_context.allowed_reaction_ids)
-    # 基础上限来自调用参数；电子兜底只会放宽，不会缩小用户给定上限。
+    # 搜索资源上限来自调用参数。
     base_search_limits = {
         "max_total_steps": max_total_steps,
         "max_new_enzymes": max_new_enzymes,
         "max_reactions_per_compound": max_reactions_per_compound,
         "max_routes_per_state": max_routes_per_state,
     }
-    expanded_fallback_limits = {
-        "max_total_steps": max(max_total_steps, DEFAULT_ELECTRON_FALLBACK_MAX_TOTAL_STEPS),
-        "max_new_enzymes": max(max_new_enzymes, DEFAULT_ELECTRON_FALLBACK_MAX_NEW_ENZYMES),
-        "max_reactions_per_compound": max(
-            max_reactions_per_compound,
-            DEFAULT_ELECTRON_FALLBACK_MAX_REACTIONS_PER_COMPOUND,
-        ),
-        "max_routes_per_state": max(
-            max_routes_per_state,
-            DEFAULT_ELECTRON_FALLBACK_MAX_ROUTES_PER_STATE,
-        ),
-    }
-
     def run_once(
         allowed_reaction_ids: set[str] | None,
-        active_electron_mode: str,
         search_limits: Dict[str, int],
     ) -> SearchRoundResult:
-        """把本阶段白名单、电子策略和资源上限传给单轮搜索。"""
+        """把本阶段白名单和资源上限传给单轮搜索。"""
 
         return search_gap_solutions_once(
             target_compound=target_compound,
@@ -3371,7 +3003,6 @@ def run_search_gap_analysis(
             max_routes_per_state=search_limits["max_routes_per_state"],
             ignored_common_compounds=ignored_common_compounds,
             allowed_reaction_ids=allowed_reaction_ids,
-            electron_avoidance_mode=active_electron_mode,
             reaction_resolution_mode=reaction_resolution_mode,
             endogenous_direction_index=endogenous_direction_index,
             expansion_bundle=expansion_bundle,
@@ -3379,7 +3010,6 @@ def run_search_gap_analysis(
         )
 
     def run_module_pipeline(
-        active_electron_mode: str,
         search_limits: Dict[str, int],
     ) -> Tuple[SearchRoundResult, str, bool]:
         """执行 module 筛选策略，并返回解、实际模式及是否发生全空间回退。"""
@@ -3388,20 +3018,20 @@ def run_search_gap_analysis(
         did_fallback = False
         round_result = SearchRoundResult(tuple(), tuple())
         if module_filter_mode == "off":
-            round_result = run_once(None, active_electron_mode, search_limits)
+            round_result = run_once(None, search_limits)
         elif module_filter_mode == "strict":
             search_mode_used = "module_chained_strict"
             if module_chain_context.expanded_module_ids:
-                round_result = run_once(allowed_reaction_id_set, active_electron_mode, search_limits)
+                round_result = run_once(allowed_reaction_id_set, search_limits)
         else:
             if module_chain_context.expanded_module_ids:
                 search_mode_used = "module_chained"
-                round_result = run_once(allowed_reaction_id_set, active_electron_mode, search_limits)
+                round_result = run_once(allowed_reaction_id_set, search_limits)
 
             if not round_result.solutions:
                 did_fallback = bool(module_chain_context.expanded_module_ids)
                 search_mode_used = "fallback_full" if did_fallback else "full_only"
-                fallback_result = run_once(None, active_electron_mode, search_limits)
+                fallback_result = run_once(None, search_limits)
                 round_result = SearchRoundResult(
                     solutions=fallback_result.solutions,
                     rejected_solutions=(
@@ -3411,32 +3041,13 @@ def run_search_gap_analysis(
                 )
         return round_result, search_mode_used, did_fallback
 
-    # strict_with_fallback 的第二阶段同时放宽电子偏好和搜索宽度/深度。
-    electron_avoidance_fallback = False
-    electron_fallback_parameters: Dict[str, int] = {}
-    active_electron_mode = "strict" if electron_avoidance_mode == "strict_with_fallback" else electron_avoidance_mode
-    round_result, search_mode_used, did_fallback = run_module_pipeline(active_electron_mode, base_search_limits)
-    if electron_avoidance_mode == "strict_with_fallback" and not round_result.solutions:
-        electron_avoidance_fallback = True
-        electron_fallback_parameters = dict(expanded_fallback_limits)
-        fallback_round, search_mode_used, did_fallback = run_module_pipeline("prefer", expanded_fallback_limits)
-        round_result = SearchRoundResult(
-            solutions=fallback_round.solutions,
-            rejected_solutions=(
-                *round_result.rejected_solutions,
-                *fallback_round.rejected_solutions,
-            ),
-        )
-        search_mode_used = f"electron_expanded_fallback_{search_mode_used}"
+    round_result, search_mode_used, did_fallback = run_module_pipeline(base_search_limits)
 
     return SearchExecutionResult(
         solutions=round_result.solutions,
         rejected_solutions=round_result.rejected_solutions,
         search_mode_used=search_mode_used,
         did_fallback=did_fallback,
-        electron_avoidance_mode=electron_avoidance_mode,
-        electron_avoidance_fallback=electron_avoidance_fallback,
-        electron_fallback_parameters=electron_fallback_parameters,
         target_compound_module_ids=target_compound_module_ids,
         matched_target_module_ids=matched_target_module_ids,
         direct_producing_reaction_ids=direct_producing_reaction_ids,
@@ -3466,23 +3077,6 @@ def compound_label(compound_id: str, client: KeggRestClient) -> str:
     return f"{compound_id} ({name})" if name else compound_id
 
 
-def step_electron_fields(step: PlanStep) -> Dict[str, Any]:
-    """把单步电子需求转换为路线汇总所需的标量字典。"""
-
-    requirement = step.option.electron_requirement
-    return {
-        "electron_carrier_ids": ";".join(requirement.carrier_ids),
-        "electron_requirement_classes": ";".join(requirement.requirement_classes),
-        "electron_risk_level": requirement.risk_level,
-        "electron_risk_score": requirement.risk_score,
-        "electron_risk_evidence": "; ".join(requirement.evidence),
-        "electron_carrier_net_changes": format_electron_carrier_net_changes(
-            requirement.carrier_net_stoichiometry
-        ),
-        "avoid_if_alternative_exists": requirement.avoid_if_alternative_exists,
-    }
-
-
 def solution_burden_totals(solution: Solution) -> Dict[str, Any]:
     """汇总整条路线的辅因子、氧气和方向负担。"""
 
@@ -3505,14 +3099,6 @@ def solution_burden_totals(solution: Solution) -> Dict[str, Any]:
             if step.option.screening.thermo_direction == "disfavored"
         ),
     }
-
-
-def solution_electron_summary(solution: Solution) -> Dict[str, Any]:
-    """汇总一条路线的电子传递系统风险。"""
-
-    return summarize_solution_electron_requirements(
-        step_electron_fields(step) for step in solution.steps
-    )
 
 
 def build_solution_summary_rows(
@@ -3560,7 +3146,6 @@ def build_solution_summary_rows(
             for step in solution.steps
         )
         burden_totals = solution_burden_totals(solution)
-        electron_summary = solution_electron_summary(solution)
 
         rows.append(
             {
@@ -3587,11 +3172,6 @@ def build_solution_summary_rows(
                     default=0,
                 ),
                 **burden_totals,
-                "max_electron_risk_level": electron_summary["max_electron_risk_level"],
-                "max_electron_risk_score": electron_summary["max_electron_risk_score"],
-                "electron_balance_status": electron_summary[
-                    "electron_balance_status"
-                ],
             }
         )
 
@@ -3640,7 +3220,6 @@ def build_solution_step_rows(
             "expansion_anchor_compounds": ";".join(
                 step.expansion_anchor_compounds
             ),
-            **step_electron_fields(step),
         }
         # These source annotations are optional in KEGG.  Keep them when they
         # exist instead of manufacturing empty evidence in every exported row.
@@ -3682,57 +3261,6 @@ def build_rejected_solution_rows(
             "eligible_for_recommendation": False,
         })
     return rows
-
-
-def build_electron_requirement_rows(result: SearchExecutionResult) -> List[Dict[str, Any]]:
-    """生成仅包含高于零风险步骤的精简电子系统需求表。"""
-
-    rows: List[Dict[str, Any]] = []
-    for solution_id, solution in enumerate(result.solutions, start=1):
-        for step_index, step in enumerate(solution.steps, start=1):
-            requirement = step.option.electron_requirement
-            if requirement.risk_score <= 0:
-                continue
-            rows.append(
-                {
-                    "solution_id": solution_id,
-                    "step_index": step_index,
-                    "reaction_id": step.option.reaction.reaction_id,
-                    "electron_carrier_ids": ";".join(requirement.carrier_ids),
-                    "electron_requirement_classes": ";".join(requirement.requirement_classes),
-                    "electron_risk_level": requirement.risk_level,
-                    "electron_risk_score": requirement.risk_score,
-                    "electron_risk_evidence": "; ".join(requirement.evidence),
-                    "electron_carrier_net_changes": (
-                        format_electron_carrier_net_changes(
-                            requirement.carrier_net_stoichiometry
-                        )
-                    ),
-                }
-            )
-    return rows
-
-
-def build_solution_electron_summary_rows(result: SearchExecutionResult) -> List[Dict[str, Any]]:
-    """为每条路线生成独立于基础路线表的电子风险汇总。"""
-
-    return [
-        {
-            "solution_id": solution_id,
-            **solution_electron_summary(solution),
-        }
-        for solution_id, solution in enumerate(result.solutions, start=1)
-    ]
-
-
-def electron_search_stage(result: SearchExecutionResult) -> str:
-    """由电子规避模式和兜底状态推导实际搜索阶段。"""
-
-    if result.electron_avoidance_mode != "strict_with_fallback":
-        return result.electron_avoidance_mode
-    if result.electron_avoidance_fallback:
-        return "prefer_expanded_fallback"
-    return "strict_primary"
 
 
 def write_outputs(
@@ -3815,19 +3343,6 @@ def write_outputs(
         encoding="utf-8-sig",
     )
 
-    # 单独导出显式电子载体相关步骤，供反应计量审查使用。
-    electron_requirement_rows = build_electron_requirement_rows(result)
-    pd.DataFrame(electron_requirement_rows).to_csv(
-        target_dir / "route_electron_requirements.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    electron_summary_rows = build_solution_electron_summary_rows(result)
-    pd.DataFrame(electron_summary_rows).to_csv(
-        target_dir / "solution_electron_summary.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
     # 保存输入参数和实际兜底路径，保证搜索结果可复现、可审计。
     run_config = dict(run_args)
     run_config.update(
@@ -3836,12 +3351,7 @@ def write_outputs(
             "unpre_re_reaction": result.unpre_re_reaction,
             "reaction_direction_policy_version": REACTION_DIRECTION_POLICY_VERSION,
             "did_fallback": result.did_fallback,
-            "electron_avoidance_mode": result.electron_avoidance_mode,
-            "electron_avoidance_fallback": result.electron_avoidance_fallback,
-            "electron_fallback_parameters": result.electron_fallback_parameters,
-            "electron_search_stage_used": electron_search_stage(result),
             "screening_rule_version": SCREENING_RULE_VERSION,
-            "electron_inference_version": ELECTRON_INFERENCE_VERSION,
             "reaction_resolution_version": REACTION_RESOLUTION_VERSION,
             "reaction_resolution_mode": result.reaction_resolution_mode,
             "status": result.status,
@@ -3941,9 +3451,6 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
     module_filter_mode = str(
         getattr(config, "module_filter_mode", DEFAULT_MODULE_FILTER_MODE)
     ).strip().lower()
-    electron_avoidance_mode = validate_electron_avoidance_mode(
-        getattr(config, "electron_avoidance_mode", DEFAULT_ELECTRON_AVOIDANCE_MODE)
-    )
     reaction_resolution_mode = validate_reaction_resolution_mode(
         getattr(config, "reaction_resolution_mode", "strict")
     )
@@ -4010,7 +3517,6 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         module_filter_mode=module_filter_mode,
         max_routes_per_state=max_routes_per_state,
         max_module_chain_depth=max_module_chain_depth,
-        electron_avoidance_mode=electron_avoidance_mode,
         reaction_resolution_mode=reaction_resolution_mode,
         endogenous_direction_index=endogenous_direction_index,
         expansion_bundle=expansion_bundle,
@@ -4036,7 +3542,6 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         "max_module_chain_depth": max_module_chain_depth,
         "module_filter_mode": module_filter_mode,
         "unpre_re_reaction": unpre_re_reaction,
-        "electron_avoidance_mode": electron_avoidance_mode,
         "reaction_resolution_mode": reaction_resolution_mode,
         "endogenous_direction_mode": ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS,
         "endogenous_direction_compartments": sorted(
@@ -4080,8 +3585,6 @@ def kegg_gap_analyze(config: Any) -> dict[str, Any]:
         "search_mode_used": result.search_mode_used,
         "unpre_re_reaction": result.unpre_re_reaction,
         "did_fallback": result.did_fallback,
-        "electron_avoidance_mode": result.electron_avoidance_mode,
-        "electron_avoidance_fallback": result.electron_avoidance_fallback,
         "reaction_resolution_mode": result.reaction_resolution_mode,
         "rejected_reaction_route_count": len(result.rejected_solutions),
     }

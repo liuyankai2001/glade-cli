@@ -43,6 +43,7 @@ MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "auxiliary_protein_selection",
     "enzyme_system_selection",
     "electron_inference",
+    "electron_balance",
     "cds_selection",
     "expression_box_selection",
     "expression_cassette_assembly",

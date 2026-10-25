@@ -7,7 +7,6 @@ from typing import Any
 
 from src.pathway_analyze.gem_validation import validation_depth_output_dir
 from src.pathway_analyze.kegg_gap_analyze import (
-    ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
 from src.pathway_analyze.target_id import validate_target_compound_id
@@ -146,29 +145,6 @@ RETROPATH_VALIDATION_FIELDS = (
     "combination_truncated",
 )
 
-ELECTRON_SUMMARY_FIELDS = (
-    "max_electron_risk_level",
-    "max_electron_risk_score",
-    "electron_balance_status",
-    "electron_carrier_ids",
-    "electron_requirement_classes",
-    "electron_carrier_net_changes",
-    "balanced_electron_carrier_pairs",
-    "unbalanced_electron_carrier_pairs",
-    "unresolved_electron_carrier_ids",
-)
-
-ELECTRON_RISK_STEP_FIELDS = (
-    "step_index",
-    "gap_step_index",
-    "reaction_id",
-    "electron_carrier_ids",
-    "electron_requirement_classes",
-    "electron_risk_level",
-    "electron_risk_score",
-    "electron_risk_evidence",
-    "electron_carrier_net_changes",
-)
 
 SOLUTION_DOWNSTREAM_SECTIONS = (
     "main_enzyme_selection",
@@ -176,6 +152,7 @@ SOLUTION_DOWNSTREAM_SECTIONS = (
     "auxiliary_protein_selection",
     "enzyme_system_selection",
     "electron_inference",
+    "electron_balance",
     "cds_selection",
     "expression_box_selection",
     "expression_cassette_assembly",
@@ -374,45 +351,6 @@ def _renumber_steps_forward(
                 raise ValueError("RetroPath 路线步骤的计量假设身份不一致")
         forward_rows.append(forward_row)
     return forward_rows, gap_to_forward
-
-
-def _remap_electron_steps(
-    rows: list[dict[str, Any]],
-    gap_to_forward: dict[int, int],
-) -> list[dict[str, Any]]:
-    remapped_rows: list[dict[str, Any]] = []
-    for row in rows:
-        gap_step_index = _integer_step_index(row.get("step_index"))
-        if gap_step_index not in gap_to_forward:
-            raise ValueError(
-                f"电子风险步骤引用了不存在的 gap step：{gap_step_index}"
-            )
-        remapped_row = dict(row)
-        remapped_row["gap_step_index"] = gap_step_index
-        remapped_row["step_index"] = gap_to_forward[gap_step_index]
-        remapped_rows.append(remapped_row)
-    remapped_rows.sort(key=lambda row: int(row["step_index"]))
-    return remapped_rows
-
-
-def _select_optional_solution_row(path: Path, solution_id: int) -> dict[str, Any]:
-    for row in _read_csv_rows(path, required=False):
-        if _row_solution_id(row) == solution_id:
-            return _normalize_row(row)
-    return {}
-
-
-def _select_optional_solution_rows(
-    path: Path,
-    solution_id: int,
-) -> list[dict[str, Any]]:
-    rows = [
-        row
-        for row in _read_csv_rows(path, required=False)
-        if _row_solution_id(row) == solution_id
-    ]
-    rows.sort(key=lambda row: int(str(row.get("step_index", "0")).strip()))
-    return [_normalize_row(row) for row in rows]
 
 
 def _parse_solution_ids(value: Any) -> tuple[int, ...]:
@@ -723,24 +661,6 @@ def write_solution(config: Any) -> dict[str, Any]:
     validation_dir = validation_depth_output_dir(gap_root_dir, expansion_depth)
     manifest_path = Path(config.manifest_output_path).expanduser()
     solutions_path = gap_dir / "solutions.csv"
-    if not solutions_path.is_file() and (gap_dir / "run_config.json").is_file():
-        try:
-            early_run_config = json.loads(
-                (gap_dir / "run_config.json").read_text(encoding="utf-8-sig")
-            )
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"无法读取 gap 运行配置：{gap_dir / 'run_config.json'}"
-            ) from exc
-        if (
-            not isinstance(early_run_config, dict)
-            or early_run_config.get("electron_inference_version")
-            != ELECTRON_INFERENCE_VERSION
-        ):
-            raise ValueError(
-                "gap 结果使用旧版电子推断，请重新运行："
-                f"gap -i <输入文件> -d {expansion_depth}"
-            )
     summary = _select_solution_summary(solutions_path, solution_id)
     solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
     promotion: dict[str, Any] | None = None
@@ -776,15 +696,8 @@ def write_solution(config: Any) -> dict[str, Any]:
             run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError) as exc:
             raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
-        if (
-            not isinstance(run_config, dict)
-            or run_config.get("electron_inference_version")
-            != ELECTRON_INFERENCE_VERSION
-        ):
-            raise ValueError(
-                "gap 结果使用旧版电子推断，请重新运行："
-                f"gap -i <输入文件> -d {expansion_depth}"
-            )
+        if not isinstance(run_config, dict):
+            raise ValueError(f"gap 运行配置根节点必须是对象：{run_config_path}")
     if summary.get("target_compound_id") != target_compound:
         raise ValueError(
             f"solution {solution_id} 的目标化合物是 {summary.get('target_compound_id')}，"
@@ -802,7 +715,7 @@ def write_solution(config: Any) -> dict[str, Any]:
         gap_dir / "all_solution_steps.csv",
         solution_id,
     )
-    steps, gap_to_forward = _renumber_steps_forward(gap_steps, target_compound)
+    steps, _ = _renumber_steps_forward(gap_steps, target_compound)
     if materialization is not None:
         validation, promotion_mapping = _select_retropath_materialization_validation(
             materialization,
@@ -818,29 +731,6 @@ def write_solution(config: Any) -> dict[str, Any]:
             validation_dir / "gem_validation_summary.csv",
             solution_id,
         )
-    electron_summary = _select_optional_solution_row(
-        gap_dir / "solution_electron_summary.csv",
-        solution_id,
-    )
-    required_electron_fields = {
-        "electron_balance_status",
-    }
-    if (
-        not electron_summary
-        or required_electron_fields.difference(electron_summary)
-    ):
-        raise ValueError(
-            "gap 结果使用旧版电子推断，请重新运行："
-            f"gap -i <输入文件> -d {expansion_depth}"
-        )
-    electron_steps = _remap_electron_steps(
-        _select_optional_solution_rows(
-            gap_dir / "route_electron_requirements.csv",
-            solution_id,
-        ),
-        gap_to_forward,
-    )
-
     summary_payload = _keep_fields(summary, SOLUTION_SUMMARY_FIELDS)
     validation_payload = _keep_fields(validation, VALIDATION_FIELDS)
     step_payloads = [
@@ -942,23 +832,12 @@ def write_solution(config: Any) -> dict[str, Any]:
                 or (commit.get("inputs", {}).get("rr02") or {}).get("sha256")
             ),
         }
-    electron_payload = {
-        "summary": (
-            _keep_fields(electron_summary, ELECTRON_SUMMARY_FIELDS)
-            if electron_summary
-            else {}
-        ),
-        "risk_steps": [
-            _keep_fields(step, ELECTRON_RISK_STEP_FIELDS) for step in electron_steps
-        ],
-    }
 
     manifest = update_design_manifest(
         manifest_path,
         target_compound_id=target_compound,
         sections={
             "solution": solution_payload,
-            "electron_balance": electron_payload,
         },
         discard_sections=SOLUTION_DOWNSTREAM_SECTIONS,
     )
@@ -971,7 +850,6 @@ def write_solution(config: Any) -> dict[str, Any]:
         "步骤数量": len(steps),
         "通量验证状态": validation.get("validation_status"),
         "辅因子模式": validation.get("cofactor_mode"),
-        "电子载体平衡状态": electron_summary.get("electron_balance_status"),
         "清单文件": str(manifest_path.resolve()),
         "清单版本": manifest["revision"],
     }

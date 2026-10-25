@@ -672,8 +672,6 @@ def _run_task(
                 for name in (
                     "solutions.csv",
                     "all_solution_steps.csv",
-                    "solution_electron_summary.csv",
-                    "route_electron_requirements.csv",
                 ):
                     path = gap_dir / name
                     if path.is_file():

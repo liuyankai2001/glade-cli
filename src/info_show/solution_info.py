@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from src.pathway_analyze.kegg_gap_analyze import (
-    ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
 from src.pathway_analyze.retropath_compound_annotation import annotation_view
@@ -220,24 +219,6 @@ def _retropath_compound_aliases(
     return aliases, view
 
 
-def _risk_name(value: Any) -> str:
-    return {
-        "none": "无",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-    }.get(str(value or "").strip().lower(), str(value or "").strip())
-
-
-def _balance_name(value: Any) -> str:
-    return {
-        "not_applicable": "不涉及电子载体",
-        "internally_balanced": "路线内已平衡",
-        "unbalanced": "存在净消耗",
-        "unresolved": "载体配对待确认",
-    }.get(str(value or "").strip(), str(value or "").strip())
-
-
 def _select_solution_summary(
     rows: list[dict[str, str]],
     solution_id: int,
@@ -366,8 +347,6 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         f"路线来源：{source}",
         f"路线规模：共 {total_steps} 步，其中异源反应 {heterologous_steps} 步",
         f"起始代谢物：{'、'.join(starts)}",
-        f"最大电子风险：{result.get('最大电子风险', '未知')}",
-        f"电子载体平衡：{result.get('电子载体平衡', '未知')}",
     ]
     if source == "RetroPath预测":
         lines.append(
@@ -859,12 +838,6 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         raise ValueError(f"gap 分析没有生成候选路线：{summaries_path}")
     if "solution_id" not in summary_rows[0]:
         raise ValueError(f"路线结果缺少 solution_id 字段：{summaries_path}")
-    required_electron_columns = {
-        "electron_balance_status",
-    }
-    missing_electron_columns = required_electron_columns.difference(
-        summary_rows[0]
-    )
     summary = _select_solution_summary(summary_rows, selected_solution_id)
     solution_source = str(summary.get("solution_source") or "kegg").strip().lower()
     if solution_source == "retropath":
@@ -890,26 +863,14 @@ def get_solution_info(config: Any) -> dict[str, Any]:
                 expansion_depth=expansion_depth,
                 solution_id=selected_solution_id,
             )
-        if missing_electron_columns:
-            raise ValueError(
-                "RetroPath 路线缺少电子系统字段，请重新运行 gap --retropath"
-            )
     else:
         run_config_path = gap_dir / "run_config.json"
         try:
             run_config = json.loads(run_config_path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError) as exc:
             raise ValueError(f"无法读取 gap 运行配置：{run_config_path}") from exc
-        if (
-            not isinstance(run_config, dict)
-            or run_config.get("electron_inference_version")
-            != ELECTRON_INFERENCE_VERSION
-            or missing_electron_columns
-        ):
-            raise ValueError(
-                "gap 结果使用旧版电子推断，请重新运行："
-                f"gap -i <输入文件> -d {expansion_depth}"
-            )
+        if not isinstance(run_config, dict):
+            raise ValueError(f"gap 运行配置根节点必须是对象：{run_config_path}")
 
     all_rows = _read_csv_rows(steps_path)
     if not all_rows:
@@ -1006,8 +967,6 @@ def get_solution_info(config: Any) -> dict[str, Any]:
             summary.get("reachable_anchor_labels")
             or summary.get("reachable_anchor_compounds")
         ),
-        "最大电子风险": _risk_name(summary.get("max_electron_risk_level")),
-        "电子载体平衡": _balance_name(summary.get("electron_balance_status")),
         "可以推荐": bool(summary.get("eligible_for_recommendation")),
         "预测风险待复核": bool(summary.get("prediction_review_required")),
         "RetroPath候选排名": summary.get("retropath_candidate_rank"),

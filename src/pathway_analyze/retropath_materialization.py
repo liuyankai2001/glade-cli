@@ -16,8 +16,6 @@ from src.pathway_analyze.retropath_analyze import (
     CANDIDATE_STEPS_FILE_NAME,
 )
 from src.pathway_analyze.retropath_promotion import (
-    _ELECTRON_STEP_COLUMNS,
-    _ELECTRON_SUMMARY_COLUMNS,
     _STEP_BASE_COLUMNS,
     _STEP_RETROPATH_COLUMNS,
     _SUMMARY_BASE_COLUMNS,
@@ -29,8 +27,6 @@ from src.pathway_analyze.retropath_promotion import (
     _candidate_steps_by_id,
     _canonical_hash,
     _complete_ecs,
-    _electron_row,
-    _electron_summary,
     _field_order,
     _format_equation,
     _labels,
@@ -56,7 +52,7 @@ from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v3"
+RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v4"
 MATERIALIZATION_MANIFEST_FILE_NAME = "solution_materialization.json"
 
 _SUMMARY_STATE_COLUMNS = (
@@ -121,11 +117,10 @@ def _raw_solution_rows(
     target: str,
     materialization_id: str,
     kegg: KeggRestClient,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     candidate_rank = _as_int(route.get("candidate_rank"), "candidate_rank", minimum=1)
     candidate_id = str(route.get("candidate_id") or "").strip()
     rows: list[dict[str, Any]] = []
-    electron_rows: list[dict[str, Any]] = []
     heterologous_reactions: list[str] = []
     heterologous_ecs: list[str] = []
     heterologous_kos: list[str] = []
@@ -299,17 +294,8 @@ def _raw_solution_rows(
         else:
             raise ValueError(f"unsupported hybrid step source: {step_source}")
 
-        electron = _electron_row(
-            solution_id=solution_id,
-            step_index=step_index,
-            reaction_id=str(row["reaction_id"]),
-            left=left,
-            right=right,
-        )
         rows.append(row)
-        electron_rows.append(electron)
 
-    electron_summary = _electron_summary(solution_id, electron_rows)
     anchors = _split(route.get("sink_kegg_ids"))
     summary = {
         "solution_id": solution_id,
@@ -338,7 +324,6 @@ def _raw_solution_rows(
             "C00007" in _split(row.get("precursor_compound_ids")) for row in rows
         ),
         "thermo_disfavored_steps": 0,
-        **{key: value for key, value in electron_summary.items() if key != "solution_id"},
         "solution_source": "retropath",
         "retropath_candidate_rank": candidate_rank,
         "retropath_candidate_id": candidate_id,
@@ -369,7 +354,7 @@ def _raw_solution_rows(
             route.get("candidate_top_k_truncated") or "false"
         ),
     }
-    return summary, rows, electron_summary, electron_rows
+    return summary, rows
 
 
 def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
@@ -408,12 +393,8 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
 
     solution_path = gap_dir / "solutions.csv"
     step_path = gap_dir / "all_solution_steps.csv"
-    electron_summary_path = gap_dir / "solution_electron_summary.csv"
-    electron_step_path = gap_dir / "route_electron_requirements.csv"
     existing_summaries = _read_csv(solution_path)
     existing_steps = _read_csv(step_path)
-    existing_electron_summaries = _read_csv(electron_summary_path)
-    existing_electron_steps = _read_csv(electron_step_path)
     kegg_summaries = [
         row for row in existing_summaries
         if str(row.get("solution_source") or "kegg").strip().lower() != "retropath"
@@ -427,22 +408,12 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
         row for row in existing_steps
         if _as_int(row.get("solution_id"), "solution_id", minimum=1) in kegg_ids
     ]
-    kegg_electron_summaries = [
-        row for row in existing_electron_summaries
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1) in kegg_ids
-    ]
-    kegg_electron_steps = [
-        row for row in existing_electron_steps
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1) in kegg_ids
-    ]
     for row in kegg_summaries:
         row.setdefault("solution_source", "kegg")
 
     kegg = KeggRestClient(Path(config.cache_dir).resolve() / "kegg")
     rp_summaries: list[dict[str, Any]] = []
     rp_steps: list[dict[str, Any]] = []
-    rp_electron_summaries: list[dict[str, Any]] = []
-    rp_electron_steps: list[dict[str, Any]] = []
     mappings: list[dict[str, Any]] = []
     for offset, route in enumerate(routes):
         candidate_id = str(route.get("candidate_id") or "").strip()
@@ -450,7 +421,7 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
         if not steps:
             raise ValueError(f"P5 candidate has no steps: {candidate_id}")
         solution_id = next_solution_id + offset
-        summary, step_rows, electron_summary, electron_rows = _raw_solution_rows(
+        summary, step_rows = _raw_solution_rows(
             solution_id=solution_id,
             route=route,
             steps=steps,
@@ -460,8 +431,6 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
         )
         rp_summaries.append(summary)
         rp_steps.extend(step_rows)
-        rp_electron_summaries.append(electron_summary)
-        rp_electron_steps.extend(electron_rows)
         mappings.append(
             {
                 "solution_id": solution_id,
@@ -483,8 +452,6 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
 
     summary_rows = [*kegg_summaries, *rp_summaries]
     step_rows = [*kegg_steps, *rp_steps]
-    electron_summary_rows = [*kegg_electron_summaries, *rp_electron_summaries]
-    electron_step_rows = [*kegg_electron_steps, *rp_electron_steps]
     texts = {
         "solutions.csv": _render_csv(
             _field_order(
@@ -501,14 +468,6 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
                 (*_STEP_RETROPATH_COLUMNS, *_STEP_STATE_COLUMNS),
             ),
             step_rows,
-        ),
-        "solution_electron_summary.csv": _render_csv(
-            _field_order(electron_summary_rows, _ELECTRON_SUMMARY_COLUMNS, ()),
-            electron_summary_rows,
-        ),
-        "route_electron_requirements.csv": _render_csv(
-            _field_order(electron_step_rows, _ELECTRON_STEP_COLUMNS, ()),
-            electron_step_rows,
         ),
     }
     output_hashes = {
@@ -601,8 +560,6 @@ def verify_retropath_solution_materialization(
     for name in (
         "solutions.csv",
         "all_solution_steps.csv",
-        "solution_electron_summary.csv",
-        "route_electron_requirements.csv",
     ):
         record = payload.get("artifacts", {}).get(name)
         expected = (resolved_gap / name).resolve()
@@ -787,12 +744,6 @@ def apply_retropath_validation_overlay(
     mnxref_dir = Path(config.data_dir) / "retropath" / "mnxref" / "3.0"
     existing_solution_rows = _read_csv(gap_dir / "solutions.csv")
     existing_step_rows = _read_csv(gap_dir / "all_solution_steps.csv")
-    existing_electron_summaries = _read_csv(
-        gap_dir / "solution_electron_summary.csv"
-    )
-    existing_electron_steps = _read_csv(
-        gap_dir / "route_electron_requirements.csv"
-    )
     retropath_solution_ids = {
         _as_int(item.get("solution_id"), "solution_id", minimum=1)
         for item in materialization.get("solution_mappings", [])
@@ -805,16 +756,6 @@ def apply_retropath_validation_overlay(
     ]
     step_rows = [
         row for row in existing_step_rows
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1)
-        not in retropath_solution_ids
-    ]
-    electron_summaries = [
-        row for row in existing_electron_summaries
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1)
-        not in retropath_solution_ids
-    ]
-    electron_steps = [
-        row for row in existing_electron_steps
         if _as_int(row.get("solution_id"), "solution_id", minimum=1)
         not in retropath_solution_ids
     ]
@@ -837,10 +778,8 @@ def apply_retropath_validation_overlay(
         )
         solution_rows.append(raw[0])
         step_rows.extend(raw[1])
-        electron_summaries.append(raw[2])
-        electron_steps.extend(raw[3])
     mapping_updates: list[dict[str, Any]] = []
-    selected_by_solution: dict[int, tuple[dict[str, str], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]] = {}
+    selected_by_solution: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
 
     with MnxrefIndex(mnxref_dir, rules_path) as mnxref:
         for original in materialization.get("solution_mappings", []):
@@ -924,7 +863,7 @@ def apply_retropath_validation_overlay(
                     target_compound=target,
                     promotion_id=str(materialization.get("materialization_id") or ""),
                 )
-                selected_by_solution[solution_id] = (selected, validated[1], validated[2], validated[3])
+                selected_by_solution[solution_id] = (selected, validated[1])
                 combination_id = str(selected.get("combination_id") or "")
             else:
                 status = "failed"
@@ -978,11 +917,6 @@ def apply_retropath_validation_overlay(
                 if validation["cofactor_relaxed"]
                 else "predicted_strict_stoichiometry"
             )
-            validated_electron_summary = selected_by_solution[solution_id][2]
-            for field, value in validated_electron_summary.items():
-                if field not in {"solution_id", "solution_source"}:
-                    row[field] = value
-
     validation_step_fields = {
         "retropath_hypothesis_id",
         "source_mnxr_id",
@@ -1014,7 +948,7 @@ def apply_retropath_validation_overlay(
         row["validation_status"] = validation["status"]
         row["stoichiometry_status"] = validation["stoichiometry_status"]
         row["gem_status"] = validation["gem_status"]
-    for solution_id, (_, validated_steps, _, _) in selected_by_solution.items():
+    for solution_id, (_, validated_steps) in selected_by_solution.items():
         validated_by_step = {
             str(row.get("retropath_step_id") or ""): row
             for row in validated_steps
@@ -1028,19 +962,6 @@ def apply_retropath_validation_overlay(
                 for field in validation_step_fields:
                     row[field] = validated.get(field, "")
 
-    validated_solution_ids = set(selected_by_solution)
-    electron_summaries = [
-        row for row in electron_summaries
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1) not in validated_solution_ids
-    ]
-    electron_steps = [
-        row for row in electron_steps
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1) not in validated_solution_ids
-    ]
-    for _, (_, _, summary, rows) in selected_by_solution.items():
-        electron_summaries.append(summary)
-        electron_steps.extend(rows)
-
     texts = {
         "solutions.csv": _render_csv(
             _field_order(solution_rows, _SUMMARY_BASE_COLUMNS, (*_SUMMARY_RETROPATH_COLUMNS, *_SUMMARY_STATE_COLUMNS)),
@@ -1049,12 +970,6 @@ def apply_retropath_validation_overlay(
         "all_solution_steps.csv": _render_csv(
             _field_order(step_rows, _STEP_BASE_COLUMNS, (*_STEP_RETROPATH_COLUMNS, *_STEP_STATE_COLUMNS)),
             step_rows,
-        ),
-        "solution_electron_summary.csv": _render_csv(
-            _field_order(electron_summaries, _ELECTRON_SUMMARY_COLUMNS, ()), electron_summaries
-        ),
-        "route_electron_requirements.csv": _render_csv(
-            _field_order(electron_steps, _ELECTRON_STEP_COLUMNS, ()), electron_steps
         ),
     }
     output_hashes = {

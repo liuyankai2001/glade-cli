@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from src.pathway_analyze.kegg_gap_analyze import (
-    ELECTRON_INFERENCE_VERSION,
     gap_depth_output_dir,
 )
 from src.pathway_analyze.target_status import (
@@ -69,24 +68,6 @@ def _split(value: Any) -> list[str]:
         for item in str(value or "").split(";")
         if item.strip()
     ]
-
-
-def _risk_name(value: Any) -> str:
-    return {
-        "none": "无",
-        "low": "低",
-        "medium": "中",
-        "high": "高",
-    }.get(str(value or "").strip().lower(), str(value or "").strip())
-
-
-def _balance_name(value: Any) -> str:
-    return {
-        "not_applicable": "不涉及电子载体",
-        "internally_balanced": "路线内已平衡",
-        "unbalanced": "存在净消耗",
-        "unresolved": "载体配对待确认",
-    }.get(str(value or "").strip(), str(value or "").strip())
 
 
 def _solution_source(row: dict[str, str]) -> str:
@@ -199,28 +180,12 @@ def get_gap_info(config: Any) -> dict[str, Any]:
     retropath_rejected = _read_optional_csv(
         gap_dir / "retropath" / "rejected_routes.csv"
     )
-    required_electron_columns = {
-        "electron_balance_status",
-    }
-    missing_electron_columns = (
-        required_electron_columns.difference(solutions[0]) if solutions else set()
-    )
     kegg_solutions = [
         row for row in solutions if _solution_source(row) == "KEGG"
     ]
     retropath_solutions = [
         row for row in solutions if _solution_source(row) == "RetroPath"
     ]
-    if missing_electron_columns or (
-        kegg_solutions
-        and run_config.get("electron_inference_version")
-        != ELECTRON_INFERENCE_VERSION
-    ):
-        raise ValueError(
-            "gap 结果使用旧版电子推断，请重新运行："
-            f"gap -i <输入文件> -d {depth}"
-        )
-
     warnings: list[str] = []
     if run_config:
         recorded_depth = _as_int(run_config.get("expansion_depth"), depth)
@@ -274,8 +239,6 @@ def get_gap_info(config: Any) -> dict[str, Any]:
             "可达起始化合物": _split(row.get("reachable_anchor_compounds")),
             "需要氧气步骤数": _as_int(row.get("oxygen_required_steps")),
             "热力学不利步骤数": _as_int(row.get("thermo_disfavored_steps")),
-            "最大电子风险": _risk_name(row.get("max_electron_risk_level")),
-            "电子载体平衡": _balance_name(row.get("electron_balance_status")),
             "可以推荐": _as_bool(row.get("eligible_for_recommendation")),
             "需要预测结果复核": _as_bool(
                 row.get("prediction_review_required")

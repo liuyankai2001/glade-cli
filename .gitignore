@@ -17,6 +17,7 @@ cache/*
 other/*
 tests/*
 model/*
+genomes
 data/retropath/
 
 !inputs/.gitkeep
