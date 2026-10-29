@@ -14,6 +14,7 @@ class RunConfig:
         self.inputs_dir: Path = config.INPUTS_DIR
         self.outputs_dir: Path = config.OUTPUTS_DIR
         self.cache_dir: Path = config.CACHE_DIR
+        self.genome_file: Path | None = None
 
         self.model_path: Path = self.gem_dir / 'iML1515.json'
         self.medium_path: Path = self.medium_dir / 'default_medium.json'

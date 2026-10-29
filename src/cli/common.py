@@ -3,9 +3,13 @@ from src.config.run_config import RunConfig
 from src.config.config import INPUTS_DIR
 
 def load_input(path):
+    from src.main_protein_selection.genome_ec_filter import resolve_genome_path
+
     with open(path, 'r', encoding='utf-8') as f:
-        target_name = json.load(f).get('target_name')
-    return RunConfig(target_name=target_name)
+        payload = json.load(f)
+    config = RunConfig(target_name=payload.get('target_name'))
+    config.genome_file = resolve_genome_path(payload.get('genome_file'), config.root_dir)
+    return config
 
 
 def apply_args_to_config(config, args):

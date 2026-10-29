@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.main_protein_selection.common import get_solution_steps, read_manifest
+from src.main_protein_selection.common import get_solution_steps, heterologous_requirements, read_manifest
+from src.main_protein_selection.genome_ec_filter import validate_genome_ec_filter
 from src.main_protein_selection.literature_activity.storage import (
     artifact_fingerprint as literature_artifact_fingerprint,
 )
@@ -279,6 +280,8 @@ def _load_current_selection_context(
     selection = _read_selection(_selection_path(config))
     manifest = read_manifest(config.manifest_output_path)
     solution_id, steps = get_solution_steps(manifest)
+    validate_genome_ec_filter(selection.genome_ec_filter, heterologous_requirements(steps),
+                             selection.chassis_key, getattr(config, "genome_file", None))
     current_fingerprint = solution_fingerprint(solution_id, steps)
 
     if selection.selected_solution_id != solution_id:
@@ -319,8 +322,9 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
             f"可用步骤：{sorted(steps_by_index)}"
         )
 
+    genome_steps = {item.step_index: item for item in selection.genome_ec_filter.matched_steps} if selection.genome_ec_filter else {}
     if selected_step is None:
-        step_indexes = sorted(selection.candidates_by_step)
+        step_indexes = sorted(set(selection.candidates_by_step) | set(genome_steps))
     else:
         step_indexes = [selected_step]
 
@@ -337,7 +341,9 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         )
         candidate_note = ""
         if not candidates:
-            if str(step.get("status") or "").strip() == "endogenous":
+            if step_index in genome_steps:
+                candidate_note = "基因组 EC 已命中，跳过外源酶选型和 CDS 构建"
+            elif str(step.get("status") or "").strip() == "endogenous":
                 candidate_note = "该步骤为内源反应，无需选择主酶"
             else:
                 candidate_note = "该步骤没有可用的主酶候选"
@@ -346,6 +352,7 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
             "反应ID": step.get("reaction_id"),
             "候选数量": len(candidates),
             "说明": candidate_note,
+            **({"基因组匹配": genome_steps[step_index].model_dump(mode="json")} if step_index in genome_steps else {}),
             "候选酶": [
                 {
                     "排名": candidate.candidate_rank,
@@ -389,6 +396,7 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         "分类学评分策略": selection.taxonomy_scoring_policy_version,
         "候选评分权重": dict(selection.scoring_weights),
         "候选生成状态": selection.status,
+        "基因组支持步骤": filter_step_indexes(sorted(genome_steps)),
     }
     if selected_step is not None:
         result["查看步骤"] = selected_step
@@ -539,6 +547,8 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
         key=lambda item: item.candidate_rank,
     )
     if not step_candidates:
+        if selection.genome_ec_filter and step_index in selection.genome_ec_filter.supported_step_indexes:
+            raise ValueError(f"Step {step_index} 基因组 EC 已命中，无需选择外源主酶")
         if str(step.get("status") or "").strip() == "endogenous":
             raise ValueError(f"Step {step_index} 为内源反应，无需选择主酶")
         raise ValueError(f"Step {step_index} 没有可用的主酶候选")

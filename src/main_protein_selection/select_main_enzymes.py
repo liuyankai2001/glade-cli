@@ -63,6 +63,7 @@ from src.main_protein_selection.retropath_enzyme_selection import (
     retrieve_manifest_retropath_candidates,
 )
 from src.main_protein_selection.provenance import file_sha256, solution_fingerprint
+from src.main_protein_selection.genome_ec_filter import build_genome_ec_filter
 from src.main_protein_selection.selenzyme_retrieval import (
     COMPLETE_EC_PATTERN,
     SelenzymeClient,
@@ -274,6 +275,7 @@ def select_main_enzymes(
     literature_search: bool = False,
     retropath_rules_path: str | Path | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    genome_path: str | Path | None = None,
 ) -> dict:
     """
     为已选 solution 的异源步骤选择主反应酶候选。
@@ -322,6 +324,15 @@ def select_main_enzymes(
                     "RetroPath manifest RR02 binding is stale; rerun gap "
                     "--retropath and write --solution N"
                 )
+        genome_filter = (
+            build_genome_ec_filter(genome_path, all_requirements, chassis_key)
+            if genome_path is not None else None
+        )
+        if genome_filter is not None:
+            external = set(genome_filter.external_required_step_indexes)
+            all_requirements = [item for item in all_requirements if item["step_index"] in external]
+            requirements = [item for item in requirements if item["step_index"] in external]
+            retropath_requirements = [item for item in retropath_requirements if item["step_index"] in external]
         all_ecs = unique_main_ecs(all_requirements)
         ecs = list(dict.fromkeys(
             ec_number
@@ -334,7 +345,7 @@ def select_main_enzymes(
             chassis_key,
             session=session,
             cache_root=cache_path,
-            allow_network=fetch_proteins,
+            allow_network=fetch_proteins and bool(all_requirements),
         )
         query_errors: dict[str, str] = {}
         ko_query_errors: dict[str, str] = {}
@@ -385,7 +396,7 @@ def select_main_enzymes(
             session=session,
             cache_root=cache_path / "direction",
         )
-        if fetch_proteins:
+        if fetch_proteins and requirements:
             reaction_evidence = reaction_evidence_for_requirements(
                 requirements,
                 client=RheaClient(
@@ -1040,6 +1051,9 @@ def select_main_enzymes(
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
             "heterologous_step_count": len(all_requirements),
+            "external_required_step_count": len(all_requirements),
+            "genome_supported_step_indexes": genome_filter.supported_step_indexes if genome_filter else [],
+            "genome_ec_filter": genome_filter.model_dump(mode="json") if genome_filter else None,
             "step_candidate_count": len(selected_step_rows),
             "evaluated_step_candidate_count": len(step_rows),
             "verified_step_candidate_count": len(verified_step_rows),
@@ -1139,6 +1153,7 @@ def select_main_enzymes(
             else 0
         )
         canonical_result = MainEnzymeSelectionResult(
+            genome_ec_filter=genome_filter,
             ok=result["ok"],
             status=result["status"],
             selected_solution_id=solution_id,
@@ -1220,6 +1235,7 @@ def _main_enzyme_cli_summary(
         if int(value) > 0
     })
     covered_steps = max(0, total_steps - len(uncovered_steps))
+    genome_supported = result.get("genome_supported_step_indexes", [])
     source_unavailable = str(result.get("status") or "") == "source_unavailable"
     requires_review = bool(review_steps) or (
         total_steps > 0
@@ -1238,6 +1254,9 @@ def _main_enzyme_cli_summary(
     else:
         status_text = "已覆盖全部步骤"
         conclusion = "可以继续生成主酶组合"
+    if genome_supported and total_steps == 0:
+        status_text = "无需外源酶和 CDS 构建"
+        conclusion = status_text
 
     return {
         "运行成功": bool(result.get("ok")),
@@ -1245,13 +1264,14 @@ def _main_enzyme_cli_summary(
         "路径编号": int(result.get("selected_solution_id") or 0),
         "候选生成状态": status_text,
         "步骤覆盖": f"{covered_steps}/{total_steps}",
+        "基因组支持步骤": genome_supported,
         "正式候选数量": int(result.get("step_candidate_count") or 0),
         "每步候选上限": int(getattr(config, "top_n", 5) or 5),
         "未覆盖步骤": uncovered_steps,
         "需要人工复核的步骤": review_steps,
         "序列检查": "已排除含未知或非标准氨基酸的候选",
         "结论": conclusion,
-        "下一步": "python main.py main-enzyme-sets -i <同一输入文件>",
+        "下一步": "无需后续构建" if genome_supported and total_steps == 0 else "python main.py main-enzyme-sets -i <同一输入文件>",
         "查看详情": (
             "python main.py info -i <同一输入文件> "
             "--main-enzyme-candidates"
@@ -1265,6 +1285,7 @@ def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
 
     if hasattr(config, "top_n"):
         selection_options.setdefault("top_n", config.top_n)
+    selection_options.setdefault("genome_path", getattr(config, "genome_file", None))
     selection_options.setdefault(
         "literature_search", bool(getattr(config, "literature_search", False))
     )

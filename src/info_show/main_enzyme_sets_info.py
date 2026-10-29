@@ -9,8 +9,10 @@ from typing import Any
 
 from src.main_protein_selection.common import (
     get_solution_steps,
+    heterologous_requirements,
     read_manifest,
 )
+from src.main_protein_selection.genome_ec_filter import validate_genome_ec_filter
 from src.main_protein_selection.models import (
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
     MainEnzymeSet,
@@ -161,6 +163,9 @@ def _load_current_context(
     result = _read_sets(_sets_path(config))
     manifest = read_manifest(config.manifest_output_path)
     solution_id, steps = get_solution_steps(manifest)
+    if result.genome_ec_filter is not None:
+        validate_genome_ec_filter(result.genome_ec_filter, heterologous_requirements(steps),
+                                 result.chassis_key, getattr(config, "genome_file", None))
     return result, solution_id, steps
 
 
@@ -221,7 +226,10 @@ def get_main_enzyme_sets_info(config: Any) -> dict[str, Any]:
         "路径编号": solution_id,
         "组合生成状态": RESULT_STATUS_NAMES.get(
             result.status, result.status
-        ),
+        ) if not (result.genome_ec_filter and result.genome_ec_filter.no_external_enzymes_required)
+        else "无需外源酶和 CDS 构建",
+        "基因组支持步骤": result.genome_ec_filter.supported_step_indexes if result.genome_ec_filter else [],
+        "需外源酶步骤": result.required_step_indexes,
         "搜索是否完整": result.search_complete,
         "最少主酶数量": result.minimum_protein_count,
         "组合数量": len(result.sets),

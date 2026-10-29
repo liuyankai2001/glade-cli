@@ -171,6 +171,9 @@ def heterologous_requirements(steps: list[dict[str, Any]]) -> list[dict[str, Any
             "resolution_evidence": _split_list_field(step.get("resolution_evidence")),
             "rhea_ids": _split_list_field(step.get("rhea_ids")),
             "ec_numbers": _split_list_field(step.get("enzyme_ecs")),
+            # Preserve literal fields separately from the retrieval fallback below.
+            "enzyme_ecs": _split_list_field(step.get("enzyme_ecs")),
+            "locked_enzyme_ecs": _split_list_field(step.get("locked_enzyme_ecs")),
             "locked_ec_numbers": _split_list_field(
                 step.get("locked_enzyme_ecs")
                 if str(step.get("step_source") or "").strip() == "retropath"

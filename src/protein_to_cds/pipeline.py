@@ -17,6 +17,7 @@ from src.protein_to_cds.codon_generation import GENERATION_MODE, generate_protei
 from src.protein_to_cds.artifacts import ArtifactTransaction
 from src.protein_to_cds.config import HostProfile, host_profile_for_chassis
 from src.protein_to_cds.get_protein_selection_context import ProteinToCdsContext, get_proteins_for_cds
+from src.main_protein_selection.genome_ec_filter import read_current_genome_selection
 from src.protein_to_cds.search_protein_sequence import (
     search_protein_sequence,
 )
@@ -80,7 +81,16 @@ def run_protein_to_cds(
 
     manifest_path = Path(config.manifest_output_path).expanduser().resolve()
     project_root = Path(config.project_output_path).expanduser().resolve()
-    context = get_proteins_for_cds(manifest_path)
+    genome_path = getattr(config, "genome_file", None)
+    current_selection = read_current_genome_selection(manifest_path, genome_path)
+    if (current_selection is not None and current_selection.ok
+            and current_selection.genome_ec_filter is not None
+            and current_selection.genome_ec_filter.no_external_enzymes_required):
+        return {"ok": True, "status": "not_required", "message": "无需外源酶和 CDS 构建",
+                "counts": {"selected": 0, "succeeded": 0, "failed": 0},
+                "genome_supported_step_indexes": current_selection.genome_ec_filter.supported_step_indexes,
+                "manifest_written": False, "manifest_path": str(manifest_path)}
+    context = get_proteins_for_cds(manifest_path, genome_path=genome_path)
     host = host_profile_for_chassis(context.chassis_key)
     requested_device = (
         str(

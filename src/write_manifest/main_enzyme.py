@@ -13,7 +13,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from src.main_protein_selection.common import get_solution_steps
+from src.main_protein_selection.common import get_solution_steps, heterologous_requirements
+from src.main_protein_selection.genome_ec_filter import (
+    UNSPECIFIED_GENOME, read_current_genome_selection, validate_genome_ec_filter,
+)
 from src.main_protein_selection.models import (
     MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
@@ -584,6 +587,15 @@ def _manifest_payload(
                 literature_provenance["artifact_fingerprint"]
             ),
         })
+    if result.genome_ec_filter is not None:
+        genome_filter = result.genome_ec_filter
+        manifest_payload["genome_ec_filter"] = genome_filter.model_dump(mode="json")
+        manifest_payload["coverage"].update({
+            "required_step_indexes": genome_filter.required_step_indexes,
+            "external_required_step_indexes": result.required_step_indexes,
+            "genome_supported_step_indexes": genome_filter.supported_step_indexes,
+            "covered_step_indexes": sorted(set(selected.covered_step_indexes) | set(genome_filter.supported_step_indexes)),
+        })
     return manifest_payload
 
 
@@ -625,9 +637,23 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
             f"与当前输入目标 {target_compound} 不一致"
         )
 
-    solution_id, _, _, _ = _current_solution_context(manifest)
+    solution_id, depth, steps, route_fingerprint = _current_solution_context(manifest)
 
     result = _read_sets(_sets_path(config))
+    genome_path = getattr(config, "genome_file", UNSPECIFIED_GENOME)
+    genome_filter = validate_genome_ec_filter(
+        result.genome_ec_filter, heterologous_requirements(steps), result.chassis_key, genome_path,
+    )
+    if genome_filter is not None:
+        if (result.solution_fingerprint != route_fingerprint or result.expansion_depth != depth):
+            raise ValueError("Selected route changed; rerun main-enzyme and main-enzyme-sets")
+        current = read_current_genome_selection(manifest_path, genome_path)
+        from src.main_protein_selection.build_main_enzyme_sets import main_enzyme_selection_fingerprint
+        if (current is None or current.genome_ec_filter != genome_filter
+                or result.source_artifacts.get("candidate_selection_fingerprint") != main_enzyme_selection_fingerprint(current)):
+            raise ValueError("Genome candidate results changed; rerun main-enzyme-sets")
+        if genome_filter.no_external_enzymes_required:
+            raise ValueError("无需外源酶和 CDS 构建，无需选择主酶组合")
     selected = _select_set(result, set_id)
     literature_provenance = None
     payload = _manifest_payload(

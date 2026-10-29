@@ -15,7 +15,7 @@ def _run(config: Any) -> dict[str, Any]:
         additional_forbidden_motifs=getattr(config, "forbidden_motif", ()),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if result["status"] != "complete":
+    if result["status"] not in {"complete", "not_required"}:
         raise SystemExit(2)
     return result
 

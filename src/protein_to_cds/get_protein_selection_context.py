@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from src.write_manifest.store import read_design_manifest
+from src.main_protein_selection.genome_ec_filter import (
+    UNSPECIFIED_GENOME, read_current_genome_selection, validate_genome_ec_filter,
+)
 
 @dataclass(frozen=True, slots=True)
 class SelectedProteinForCds:
@@ -109,7 +112,9 @@ def _main_proteins(
     return proteins
 
 
-def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
+def get_proteins_for_cds(
+    manifest_path: str | Path, *, genome_path: Any = UNSPECIFIED_GENOME,
+) -> ProteinToCdsContext:
     """Return the unique manifest-selected proteins that require CDS design."""
 
     from src.write_manifest.main_enzyme import (
@@ -157,6 +162,29 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
         )
 
     proteins = _main_proteins(selection)
+    from src.main_protein_selection.common import get_solution_steps, heterologous_requirements
+    from src.main_protein_selection.provenance import solution_fingerprint
+
+    solution_id, steps = get_solution_steps(manifest)
+    genome_filter = validate_genome_ec_filter(
+        selection.get("genome_ec_filter"), heterologous_requirements(steps), chassis_key, genome_path,
+    )
+    if genome_filter is not None:
+        source = _mapping(selection.get("source"), "main_enzyme_selection.source")
+        if source.get("solution_fingerprint") != solution_fingerprint(solution_id, steps):
+            raise ValueError("Selected route changed; rerun main-enzyme and write --main-enzyme-set")
+        assigned = {step for protein in proteins.values() for step in protein.assigned_step_indexes}
+        if (assigned != set(genome_filter.external_required_step_indexes)
+                or coverage.get("required_step_indexes") != genome_filter.required_step_indexes
+                or coverage.get("covered_step_indexes") != genome_filter.required_step_indexes):
+            raise ValueError("Genome and external enzyme coverage are inconsistent; rerun main-enzyme")
+        current_path = path.parent / "main_protein_selection" / "main_enzyme_selection.json"
+        if current_path.is_file():
+            current = read_current_genome_selection(path, genome_path)
+            from src.main_protein_selection.build_main_enzyme_sets import main_enzyme_selection_fingerprint
+            if (current is None or current.genome_ec_filter != genome_filter
+                    or source.get("candidate_selection_fingerprint") != main_enzyme_selection_fingerprint(current)):
+                raise ValueError("Genome candidate results changed; rerun main-enzyme-sets and write --main-enzyme-set")
     ordered = tuple(proteins[accession] for accession in sorted(proteins))
     fingerprint_payload = {
         "schema_version": "protein_to_cds.input.v3",
@@ -177,6 +205,7 @@ def get_proteins_for_cds(manifest_path: str | Path) -> ProteinToCdsContext:
             }
             for item in ordered
         ],
+        **({"genome_ec_filter_fingerprint": genome_filter.fingerprint} if genome_filter else {}),
     }
     return ProteinToCdsContext(
         manifest_path=path,

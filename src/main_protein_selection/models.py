@@ -8,6 +8,7 @@ from math import isclose
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from src.main_protein_selection.genome_ec_filter import GenomeEcFilter
 
 from src.main_protein_selection.taxonomy_compatibility import (
     normalize_scoring_weights,
@@ -221,12 +222,19 @@ class MainEnzymeSelectionResult(BaseModel):
     direction_rejected_step_indexes: list[int] = Field(default_factory=list)
     direction_risk_step_indexes: list[int] = Field(default_factory=list)
     evidence_files: dict[str, str] = Field(default_factory=dict)
+    genome_ec_filter: GenomeEcFilter | None = None
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MainEnzymeSelectionResult":
         normalize_scoring_weights(self.scoring_weights)
         if self.ok != (self.status == "complete"):
             raise ValueError("ok must agree with selection status")
+        if self.genome_ec_filter is not None:
+            external = set(self.genome_ec_filter.external_required_step_indexes)
+            if self.genome_ec_filter.chassis_key != self.chassis_key:
+                raise ValueError("genome filter chassis does not match selection")
+            if not (set(self.candidates_by_step) | set(self.uncovered_step_indexes)).issubset(external):
+                raise ValueError("genome-supported steps must not require external candidates")
         for step_index, candidates in self.candidates_by_step.items():
             if step_index < 1:
                 raise ValueError("candidate step indexes must be positive")
@@ -667,6 +675,7 @@ class MainEnzymeSetsResult(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     source_artifacts: dict[str, str] = Field(default_factory=dict)
+    genome_ec_filter: GenomeEcFilter | None = None
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MainEnzymeSetsResult":
@@ -679,6 +688,10 @@ class MainEnzymeSetsResult(BaseModel):
             "uncovered_step_indexes",
         )
         required = set(self.required_step_indexes)
+        if self.genome_ec_filter is not None:
+            if (self.genome_ec_filter.external_required_step_indexes != self.required_step_indexes
+                    or self.genome_ec_filter.chassis_key != self.chassis_key):
+                raise ValueError("genome filter does not match external set requirements")
         if not set(self.uncovered_step_indexes).issubset(required):
             raise ValueError(
                 "uncovered_step_indexes must be required steps"

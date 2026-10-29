@@ -38,6 +38,7 @@ from .models import (
     MainEnzymeSetsResult,
 )
 from .provenance import file_sha256, solution_fingerprint, stable_json_hash
+from .genome_ec_filter import GenomeEcFilter, UNSPECIFIED_GENOME, validate_genome_ec_filter
 from .sequence_quality import analyze_protein_sequence
 
 
@@ -1063,6 +1064,7 @@ def _candidate_pool_fingerprint(
     chassis_key: str,
     required_steps: list[dict[str, Any]],
     candidate_rows: Sequence[Mapping[str, Any]],
+    genome_ec_filter: GenomeEcFilter | None = None,
 ) -> str:
     candidates = sorted(
         (
@@ -1084,6 +1086,7 @@ def _candidate_pool_fingerprint(
             "required_steps": required_steps,
             "candidate_scope": "top_n_shortlist",
             "candidates": candidates,
+            **({"genome_ec_filter_fingerprint": genome_ec_filter.fingerprint} if genome_ec_filter else {}),
         }
     )
 
@@ -1133,6 +1136,7 @@ def build_main_enzyme_sets_from_rows(
     max_sets: int = 20,
     max_search_nodes: int = 1_000_000,
     source_artifacts: Mapping[str, str] | None = None,
+    genome_ec_filter: GenomeEcFilter | None = None,
 ) -> dict[str, Any]:
     """Pure, offline enzyme-set search over validated shortlist-like rows."""
 
@@ -1148,6 +1152,12 @@ def build_main_enzyme_sets_from_rows(
         raise ValueError("max_search_nodes must be positive")
 
     requirements_list = _canonical_required_steps(required_steps)
+    if genome_ec_filter is not None:
+        if (sorted(item["step_index"] for item in requirements_list) != genome_ec_filter.required_step_indexes
+                or chassis_key != genome_ec_filter.chassis_key):
+            raise ValueError("Genome filter does not match the original requirements")
+        external = set(genome_ec_filter.external_required_step_indexes)
+        requirements_list = [item for item in requirements_list if item["step_index"] in external]
     requirement_map = {
         item["step_index"]: item for item in requirements_list
     }
@@ -1157,6 +1167,7 @@ def build_main_enzyme_sets_from_rows(
         chassis_key=chassis_key,
         required_steps=requirements_list,
         candidate_rows=candidate_rows,
+        genome_ec_filter=genome_ec_filter,
     )
     input_fingerprint = _input_fingerprint(
         candidate_pool_fingerprint,
@@ -1171,6 +1182,7 @@ def build_main_enzyme_sets_from_rows(
 
     if not required_indexes:
         result = MainEnzymeSetsResult(
+            genome_ec_filter=genome_ec_filter,
             schema_version=MAIN_ENZYME_SETS_SCHEMA_VERSION,
             algorithm_version=MAIN_ENZYME_SETS_ALGORITHM_VERSION,
             ok=True,
@@ -1189,7 +1201,8 @@ def build_main_enzyme_sets_from_rows(
             sets=[],
             uncovered_step_indexes=[],
             blocking_reasons=[],
-            warnings=["The selected route has no enzyme-requiring heterologous steps."],
+            warnings=["无需外源酶和 CDS 构建" if genome_ec_filter and genome_ec_filter.no_external_enzymes_required
+                      else "The selected route has no enzyme-requiring heterologous steps."],
             source_artifacts=dict(source_artifacts or {}),
         )
         return result.model_dump(mode="json")
@@ -1209,6 +1222,7 @@ def build_main_enzyme_sets_from_rows(
         if rejected_reasons:
             blocking.extend(sorted(rejected_reasons))
         result = MainEnzymeSetsResult(
+            genome_ec_filter=genome_ec_filter,
             schema_version=MAIN_ENZYME_SETS_SCHEMA_VERSION,
             algorithm_version=MAIN_ENZYME_SETS_ALGORITHM_VERSION,
             ok=False,
@@ -1291,6 +1305,7 @@ def build_main_enzyme_sets_from_rows(
         schema_version=MAIN_ENZYME_SETS_SCHEMA_VERSION,
         algorithm_version=MAIN_ENZYME_SETS_ALGORITHM_VERSION,
         ok=ok,
+        genome_ec_filter=genome_ec_filter,
         status=status,
         selected_solution_id=solution_id,
         expansion_depth=expansion_depth,
@@ -1314,6 +1329,7 @@ def build_main_enzyme_sets_from_rows(
 
 def _selection_projection(selection: MainEnzymeSelectionResult) -> dict[str, Any]:
     return {
+        **({"genome_ec_filter_fingerprint": selection.genome_ec_filter.fingerprint} if selection.genome_ec_filter else {}),
         "schema_version": selection.schema_version,
         "selected_solution_id": selection.selected_solution_id,
         "expansion_depth": selection.expansion_depth,
@@ -1608,6 +1624,7 @@ def build_main_enzyme_sets(
     *,
     max_sets: int = 20,
     max_search_nodes: int = 1_000_000,
+    genome_path: Any = UNSPECIFIED_GENOME,
 ) -> dict[str, Any]:
     """Validate persisted inputs, enumerate sets, and write three artifacts."""
 
@@ -1684,6 +1701,10 @@ def build_main_enzyme_sets(
         stale_reasons.append("selected expansion depth changed")
     if selection.solution_fingerprint != route_fingerprint:
         stale_reasons.append("selected route fingerprint changed")
+    try:
+        validate_genome_ec_filter(selection.genome_ec_filter, requirements, selection.chassis_key, genome_path)
+    except (OSError, ValueError) as exc:
+        stale_reasons.append(str(exc))
     if stale_reasons:
         result = _failure_result(
             status="stale_input",
@@ -1766,6 +1787,7 @@ def build_main_enzyme_sets(
         max_sets=max_sets,
         max_search_nodes=max_search_nodes,
         source_artifacts=source_artifacts,
+        genome_ec_filter=selection.genome_ec_filter,
     )
     output_files = _write_set_outputs(output_dir, result)
     return {**result, "output_files": output_files}
@@ -1780,6 +1802,7 @@ def run_main_enzyme_sets(config: Any) -> dict[str, Any]:
         selection_path=output_dir / "main_enzyme_selection.json",
         candidate_csv_path=output_dir / "step_main_enzyme_candidates.csv",
         output_dir=output_dir,
+        genome_path=getattr(config, "genome_file", None),
         max_sets=_int(getattr(config, "max_sets", 20), 20),
         max_search_nodes=_int(
             getattr(config, "max_search_nodes", 1_000_000), 1_000_000
@@ -1796,6 +1819,12 @@ def run_main_enzyme_sets(config: Any) -> dict[str, Any]:
         "阻塞原因": result.get("blocking_reasons", []),
         "警告": result.get("warnings", []),
     }
+    if result.get("genome_ec_filter") is not None:
+        genome_filter = GenomeEcFilter.model_validate(result["genome_ec_filter"])
+        summary["基因组支持步骤"] = genome_filter.supported_step_indexes
+        summary["需外源酶步骤"] = result["required_step_indexes"]
+        if genome_filter.no_external_enzymes_required:
+            summary["结论"] = "无需外源酶和 CDS 构建，无需选择主酶组合"
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return result
 
