@@ -18,7 +18,7 @@ other/*
 tests/*
 model/*
 genomes
-data/retropath/
+data
 
 !inputs/.gitkeep
 !outputs/.gitkeep

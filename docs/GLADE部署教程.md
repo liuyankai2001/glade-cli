@@ -13,6 +13,7 @@ docker官方下载地址：https://www.docker.com/products/docker-desktop/
 | `chassis`、`expand`、KEGG `gap`、KEGG 路线验证 | Python 环境、GEM、培养基、KEGG 网络 |
 | `gap --retropath` | 上述组件、Docker Desktop、RetroRules 文件 |
 | RetroPath 路线 GEM 验证 | 上述组件、MNXref v3.0 索引 |
+| 可选 `gem-build`（从注释基因组构建 GEM） | Docker Desktop、Bactabolize 服务、参考 GEM JSON、参考与目标 GBFF |
 | 主酶、CDS、表达元件、质粒和组装 | CodonTransformer、Milvus；研究功能还需大模型和 Selenzyme |
 
 建议先完成基础部署和冒烟测试，再安装可选组件。
@@ -222,6 +223,131 @@ uv run python -m src.pathway_analyze.retropath_mnxref status
 如果连接成功但仍提示字段或版本不匹配，应修复远端集合数据，不能仅修改集合名称绕过
 检查。`model/bge-m3` 当前不参与这些推荐，无需下载。
 
+### 3.5 Bactabolize 模型构建服务（可选）
+
+已有 GEM 时可直接运行 `chassis`，无需安装本组件。需要从目标菌株基因组构建
+GEM 时，先部署 Bactabolize，再调用 `gem-build`。服务独立于 RetroPath，默认地址为
+`http://127.0.0.1:8766`，两个服务可以分别启动。
+
+本组件要求 Docker Desktop 使用 Linux 容器。正式镜像固定 Bactabolize 1.0.6、
+Python 3.9.0、COBRApy 0.21、Biopython 1.79、BLAST 2.16 和 Prodigal 2.6.3；
+科学运行栈由 `services/bactabolize/environment-linux-64.lock` 固定，HTTP 层单独锁定。
+宿主项目仍使用原有 Python 3.12 和 `uv.lock`。构建上下文仅为
+`services/bactabolize`，不包含项目 `.env`、数据或实验目录，也不依赖 `tests`。
+该历史科学环境的部分上游依赖声明与实际锁定版本不一致（例如 COBRApy 的
+pandas、Pydantic 声明），全局 `pip check` 会报告既有冲突；不要据此升级科学运行栈。
+镜像构建单独校验核心版本和新增 HTTP 包的依赖，实际模型生成仍需结合验证报告验收。
+
+首次部署（在项目根目录执行）：
+
+```powershell
+docker info
+docker compose -f compose.bactabolize.yml config --quiet
+docker compose -f compose.bactabolize.yml build bactabolize
+docker compose -f compose.bactabolize.yml up -d bactabolize
+Invoke-RestMethod http://127.0.0.1:8766/health | ConvertTo-Json -Depth 5
+```
+
+等待 `/health` 的 `ready` 为 `true`，检查 `versions`。首次冷构建需要从 Conda
+和 PyPI 下载锁定的软件包，耗时取决于网络；已有镜像后的容器启动无需重复安装。
+构建和启动属于部署步骤，日常每次 `gem-build` 只提交任务，不启动 Docker 服务。
+
+服务以非 root 用户运行，单工作进程串行执行构建，队列总容量为 8（含运行中任务），
+单任务最长 1800 秒，上传请求上限为 64 MiB。作业和 SQLite 状态保存在
+`glade-bactabolize_bactabolize-jobs` 命名卷；重启后排队任务继续处理，已中断的
+运行中任务标为失败，不会被当作成功结果。
+
+默认限制为 2 CPU、2 GiB 内存。可在项目根目录已有 `.env` 中加入：
+
+```dotenv
+BACTABOLIZE_CONTAINER_CPUS=2.0
+BACTABOLIZE_CONTAINER_MEMORY_LIMIT=2g
+```
+
+调整后执行 `docker compose -f compose.bactabolize.yml up -d --force-recreate bactabolize`。
+资源限制应小于 Docker/WSL 实际可用资源。服务内部关闭宽限为 30 秒，Compose 等待
+40 秒后才强制终止，以便清理子进程。端口只绑定本机；不要直接暴露到公网。
+
+准备三个文件：参考 GEM（COBRA JSON）、与参考模型基因 ID 对应的参考 GBFF、
+已注释的目标 GBFF。此流程固定使用已有注释（`no_reannotation=true`），不接受裸
+FASTA 替代 GBFF。下例路径是示例，须换成实际文件；数据文件不会随镜像提供。
+创建 `inputs/gem_build_demo.json`：
+
+```json
+{
+  "target_name": "C00811",
+  "model_file": "outputs/gem_models/my_strain.json",
+  "bactabolize": {
+    "reference_model_file": "data/gem_models/reference.json",
+    "reference_genome_file": "data/genomes/reference.gbff",
+    "target_genome_file": "data/genomes/my_strain.gbff",
+    "min_pident": 80,
+    "min_coverage": 25,
+    "media_type": "m9",
+    "atmosphere_type": "aerobic",
+    "biomass_reaction_id": null
+  }
+}
+```
+
+JSON 内文件路径相对于项目根目录，也可使用绝对路径。`gem-build` 必须明确提供
+`model_file` 作为输出，且不要求 `target_name`；例中加入目标是为了接着运行
+`chassis`。三个嵌套输入文件必填，其余 Bactabolize 参数均可省略，默认值如上。
+相似度与覆盖度取值为 `(0, 100]`；培养基支持 `m9`/`lb`，气氛支持
+`aerobic`/`anaerobic`。生物量 ID 为 `null` 时从参考模型唯一正向目标反应推导，
+无法唯一确定时应显式指定。`medium_path` 可在顶层指定 `gem-build` 的宿主 FBA
+复验培养基，默认 `data/mediums/default_medium.json`，与服务的 `media_type`
+分别使用；该选项仅用于构建复验，后续分析命令继续使用项目已有培养基配置。
+
+```powershell
+uv run python main.py gem-build -i gem_build_demo.json
+uv run python main.py chassis -i gem_build_demo.json
+```
+
+`--input`/`-i` 只跟 `inputs` 下文件名。普通分析命令的 `model_file` 省略、`null`
+或空白时仍使用默认 `data/gem_models/iML1515.json`；`gem-build` 要求显式输出路径。
+顶层 `genome_file` 用于已有主酶流程的基因组 EC 过滤，与这里的目标 GBFF 输入独立，
+不会自动由 `bactabolize.target_genome_file` 替换。本次不扩展蛋白选型和 CDS 的
+Nissle 1917 宿主预设。
+
+自定义模型的分析输出按模型内容隔离，例如
+`outputs/C00811/model_<SHA256前16位>/`。修改模型内容后会使用新的结果目录，
+需要重新运行 `chassis` 再继续路线分析；默认 iML1515 保持原有输出目录。
+
+每次执行都会提交新的重建任务，已有 JSON 不会触发缓存复用。构建完成后只保存
+`model_file` 指定的原始模型 JSON；输出目录中不新增 XML、`model_build`、日志或
+验证报告，也不向模型添加缓存字段。原始 Bactabolize 注释和救援基因别名保留。
+
+客户端在系统临时目录中完成输入/结果哈希核验、JSON 结构检查、COBRApy 读取和
+FBA 复验，清理临时数据后原子发布模型；终端显示任务 ID、模型路径和必要提示。
+并发锁存放在系统临时目录；输出请使用独立子目录，不能把包含锁目录的系统临时
+根目录直接作为输出目录，否则会在提交任务前报 `output_temp_conflict`。
+生成可读模型与验证能否生长是不同结果：生长失败时模型仍可发布为未验证草稿，
+终端会提示；它不能证明模型具有生物学准确性。任务失败、超时、取消或结果
+校验失败不会覆盖已有正式模型。本地不保留任务恢复记录，排查使用终端任务 ID
+及 Docker 服务内的日志和结果。
+
+旧 `--force` 参数继续接受，与普通运行行为相同。之前生成的 XML 和 `model_build`
+不会被自动删除，但后续运行不再读写这些产物。服务地址可用嵌套
+`bactabolize.service_url` 或环境变量 `BACTABOLIZE_SERVICE_URL` 覆盖；默认使用本机 8766。
+
+日常维护与故障排查：
+
+```powershell
+docker compose -f compose.bactabolize.yml ps
+docker compose -f compose.bactabolize.yml logs --tail 200 bactabolize
+Invoke-RestMethod http://127.0.0.1:8766/health | ConvertTo-Json -Depth 5
+docker stats --no-stream
+docker compose -f compose.bactabolize.yml down
+```
+
+`down` 保留作业卷；不要默认使用 `down -v`，它会删除任务、上传文件和结果。
+健康检查失败先检查软件版本、卷写权限和服务日志；无法连接时检查 Docker、容器状态
+和端口；构建失败检查 Conda/PyPI 网络；作业失败根据终端的任务 ID 查询服务任务
+接口及容器任务卷内日志，并检查模型/GBFF 基因 ID 对应关系。出现 OOM、超时或
+队列已满时按诊断调整资源或等待空闲后重试。服务代码或锁文件更新后重新 `build`
+并 `up -d --force-recreate`；备份模型 JSON，需要服务端历史时另行备份作业卷。
+
 ## 4. 冒烟测试
 
 创建 `inputs/deploy_smoke.json`：
@@ -274,6 +400,7 @@ uv run python main.py info -i deploy_smoke.json --retropath -d 0
 - [ ] GEM 和培养基文件存在；
 - [ ] `chassis` 冒烟测试成功；
 - [ ] 使用 RetroPath 时，规则哈希正确且 `/health` 返回 `ready: true`；
+- [ ] 使用 `gem-build` 时，Bactabolize `/health` 就绪，构建产物与验证报告已检查；
 - [ ] 验证 RetroPath 路线时，MNXref `status` 通过；
 - [ ] 使用 CDS 优化时，CodonTransformer 三个关键文件存在；
 - [ ] 使用表达元件和质粒推荐时，两个 Milvus 集合存在；

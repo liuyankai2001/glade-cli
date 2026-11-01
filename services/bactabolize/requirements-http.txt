@@ -1,0 +1,6 @@
+# HTTP layer only. Install with --no-deps --require-hashes.
+# Core dependencies (including h11==0.16.0) are supplied by the Conda lock.
+fastapi==0.115.12 --hash=sha256:e94613d6c05e27be7ffebdd6ea5f388112e5e430c8f7d6494a9d1d88d43e814d
+starlette==0.46.2 --hash=sha256:595633ce89f8ffa71a015caed34a5b2dc1c0cdb3f0f1fbd1e69339cf2abeec35
+uvicorn==0.34.3 --hash=sha256:16246631db62bdfbf069b0645177d6e8a77ba950cfedbfd093acef9444e4d885
+python-multipart==0.0.20 --hash=sha256:8a62d3a8335e06589fe01f2a3e178cdcc632f3fbe0d492ad9ee0ec35aab1f104

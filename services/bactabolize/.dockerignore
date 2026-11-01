@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!.dockerignore
+!environment-linux-64.lock
+!requirements-http.txt
+!verify_environment.py
+!app/
+!app/**
+**/__pycache__/
+**/*.pyc
+**/.env

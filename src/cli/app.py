@@ -6,6 +6,7 @@ from src.cli.commands import (
     expression,
     expand,
     gap,
+    gem_build,
     info,
     main_enzyme,
     main_enzyme_sets,
@@ -21,6 +22,7 @@ from src.config.config import INPUTS_DIR
 
 COMMAND_MODULES = [
     assembly,
+    gem_build,
     chassis,
     expression,
     expand,
@@ -48,7 +50,7 @@ def main():
     args = parser.parse_args()
 
     config_path = INPUTS_DIR / args.input
-    config = load_input(config_path)
+    config = load_input(config_path, command=args.command)
     config = apply_args_to_config(config, args)
 
     args.func(config)

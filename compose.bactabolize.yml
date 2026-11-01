@@ -1,0 +1,35 @@
+name: glade-bactabolize
+
+services:
+  bactabolize:
+    build:
+      context: ./services/bactabolize
+      dockerfile: Dockerfile
+    image: glade-bactabolize:1.0.6-service1
+    platform: linux/amd64
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8766:8000"
+    environment:
+      BACTABOLIZE_JOBS_DIR: /var/lib/bactabolize/jobs
+      BACTABOLIZE_MAX_QUEUE: 8
+      BACTABOLIZE_JOB_TIMEOUT_SECONDS: 1800
+      BACTABOLIZE_UPLOAD_LIMIT_BYTES: 67108864
+      BACTABOLIZE_SHUTDOWN_GRACE_SECONDS: 30
+    volumes:
+      - bactabolize-jobs:/var/lib/bactabolize/jobs
+    cpus: ${BACTABOLIZE_CONTAINER_CPUS:-2.0}
+    mem_limit: ${BACTABOLIZE_CONTAINER_MEMORY_LIMIT:-2g}
+    stop_grace_period: 40s
+    healthcheck:
+      test: ["CMD", "/opt/conda/bin/python", "-m", "app.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  bactabolize-jobs:
+    name: glade-bactabolize_bactabolize-jobs

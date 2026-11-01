@@ -1,11 +1,12 @@
 import sys
 import os
+import hashlib
 from pathlib import Path
 from dataclasses import dataclass
 from src.config import config
 
 class RunConfig:
-    def __init__(self, target_name: str = None):
+    def __init__(self, target_name: str = None, *, model_path: Path | None = None):
         # 基础配置
         self.root_dir: Path = config.ROOT
         self.data_dir: Path = config.DATA_DIR
@@ -16,11 +17,23 @@ class RunConfig:
         self.cache_dir: Path = config.CACHE_DIR
         self.genome_file: Path | None = None
 
-        self.model_path: Path = self.gem_dir / 'iML1515.json'
+        default_model = self.gem_dir / 'iML1515.json'
+        self.model_path: Path = (
+            Path(model_path).expanduser().resolve() if model_path is not None else default_model
+        )
         self.medium_path: Path = self.medium_dir / 'default_medium.json'
 
         self.target_name: str = target_name
         self.project_output_path: Path = self.outputs_dir / self.target_name
+        self.model_sha256: str | None = None
+        if self.model_path.resolve() != default_model.resolve():
+            if not self.model_path.is_file():
+                raise FileNotFoundError(f'model_file does not exist: {self.model_path}')
+            with self.model_path.open('rb') as stream:
+                self.model_sha256 = hashlib.file_digest(stream, 'sha256').hexdigest()
+            self.project_output_path = (
+                self.project_output_path / f'model_{self.model_sha256[:16]}'
+            )
 
         # 底盘细胞分析输出文件
         self.chassis_output_path: Path = self.project_output_path / 'chassis_result'
