@@ -75,7 +75,7 @@ New-Item -ItemType Directory -Force -Path inputs, outputs, cache, model | Out-Nu
 
 ### 2.3 可选：配置外部服务
 
-基础路线分析不需要 `.env`。运行主酶文献检索、Selenzyme、表达元件或质粒
+基础路线分析不需要 `.env`。运行 Selenzyme、表达元件或质粒
 推荐时，在项目根目录创建 `.env`：
 
 ```dotenv
@@ -529,7 +529,6 @@ python main.py info -i demo01.json --solution 1 --all --verbose -d 0
 | 目的 | 命令示例 |
 |---|---|
 | 每步保留 10 个主酶候选 | `python main.py main-enzyme -i demo01.json --top-n 10` |
-| 检索主酶文献证据 | `python main.py main-enzyme -i demo01.json --literature-search` |
 | 最多生成 10 个主酶组合 | `python main.py main-enzyme-sets -i demo01.json --max-sets 10` |
 | 查看第 1 步的主酶候选 2 | `python main.py info -i demo01.json --main-enzyme-candidate 2 --step 1` |
 | 使用 CPU 生成 CDS | `python main.py protein-to-cds -i demo01.json --device cpu` |
@@ -540,6 +539,13 @@ python main.py info -i demo01.json --solution 1 --all --verbose -d 0
 | 指定双酶切 / Gibson 组装 | `python main.py assembly --plan -i demo01.json --method restriction` / `--method gibson` |
 
 元件方案数量范围 3～96、默认 12；质粒候选数量范围 1～20、默认 5。
+
+主酶选型先使用 UniProt、Rhea、KO 等常规数据库，仍缺候选时使用 Selenzyme 兜底。
+自动搜索论文及抽取酶活证据的功能已移除；数据库自带的论文引用、实验注释和
+交叉引用继续保留。旧 `--literature-search` 参数不再接受，也不再生成文献检索审计文件。
+升级前的酶候选、组合及 manifest 主酶选择结果需要重新生成：运行 `main-enzyme`、
+`main-enzyme-sets`，再通过 `write --main-enzyme-set N` 写入组合，并重新构建下游设计。
+原有文件不会自动删除；此次升级无需重新运行 `gem-build`、`chassis` 或路线搜索。
 质粒优先级支持 `--priority stability`、`balanced`、`expression`，默认 `stability`。
 指定组装方法后，任一方案不可行都会使计划不完整，需要处理后才能接受。
 

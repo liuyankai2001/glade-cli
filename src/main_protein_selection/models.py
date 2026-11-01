@@ -15,10 +15,10 @@ from src.main_protein_selection.taxonomy_compatibility import (
 )
 
 
-MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v5"
-MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v5"
+MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v6"
+MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v6"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
-    "evidence_constrained_assignment.v5_main_enzyme_only_taxonomy_ranked"
+    "evidence_constrained_assignment.v6_main_enzyme_only_taxonomy_ranked"
 )
 AcceptedReactionFitStatus = Literal[
     "verified",
@@ -178,7 +178,6 @@ class MainEnzymeSelectionParameters(BaseModel):
     max_results: int = Field(ge=1)
     allow_transmembrane: bool
     fetch_proteins: bool
-    literature_search: bool = False
 
 
 class MainEnzymeSelectionResult(BaseModel):
@@ -186,7 +185,7 @@ class MainEnzymeSelectionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_selection.v5"] = (
+    schema_version: Literal["main_enzyme_selection.v6"] = (
         MAIN_ENZYME_SELECTION_SCHEMA_VERSION
     )
     ok: bool
@@ -649,11 +648,11 @@ class MainEnzymeSetsResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_sets.v5"] = (
+    schema_version: Literal["main_enzyme_sets.v6"] = (
         MAIN_ENZYME_SETS_SCHEMA_VERSION
     )
     algorithm_version: Literal[
-        "evidence_constrained_assignment.v5_main_enzyme_only_taxonomy_ranked"
+        "evidence_constrained_assignment.v6_main_enzyme_only_taxonomy_ranked"
     ] = (
         MAIN_ENZYME_SETS_ALGORITHM_VERSION
     )

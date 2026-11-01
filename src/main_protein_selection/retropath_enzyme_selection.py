@@ -2125,11 +2125,6 @@ def select_retropath_enzymes(
 
 
 def run_retropath_enzyme_selection(config: Any) -> dict[str, Any]:
-    if bool(getattr(config, "literature_search", False)):
-        raise ValueError(
-            "--literature-search is not supported for RetroPath P9; "
-            "use the audited source-template and SelenzymeRF evidence"
-        )
     result = select_retropath_enzymes(
         config,
         top_n=int(getattr(config, "top_n", 5)),

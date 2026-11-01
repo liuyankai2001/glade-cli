@@ -48,10 +48,6 @@ from src.main_protein_selection.kegg_ko_retrieval import (
     KeggKOSourceUnavailable,
     retrieve_ko_candidates,
 )
-from src.main_protein_selection.literature_activity import (
-    run_literature_activity_search,
-    write_source_unavailable_artifact,
-)
 from src.main_protein_selection.models import (
     MainEnzymeCandidate,
     MainEnzymeSelectionParameters,
@@ -272,7 +268,6 @@ def select_main_enzymes(
     max_results: int = 1000,
     allow_transmembrane: bool = False,
     fetch_proteins: bool = True,
-    literature_search: bool = False,
     retropath_rules_path: str | Path | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
     genome_path: str | Path | None = None,
@@ -379,10 +374,6 @@ def select_main_enzymes(
         ko_evidence: list[dict] = []
         ko_query_ids: list[str] = []
         ko_results_by_id: dict[str, dict] = {}
-        literature_status = "disabled"
-        literature_query_errors: dict[str, str] = {}
-        literature_evidence_count = 0
-        literature_candidate_count = 0
         selenzyme_evidence: list[dict] = []
         selenzyme_query_ids: list[str] = []
         selenzyme_results_by_query: dict[tuple[str, str], dict] = {}
@@ -557,73 +548,11 @@ def select_main_enzymes(
                 for row in rows_after_ko
                 if _candidate_is_selectable(row)
             }
-            literature_requirements = [
-                requirement
-                for requirement in requirements
-                if int(requirement.get("step_index") or 0)
-                not in verified_after_ko
-            ]
-            try:
-                literature_result = run_literature_activity_search(
-                    literature_requirements,
-                    enabled=literature_search,
-                    output_dir=output_path,
-                    cache_dir=cache_path,
-                    chassis_key=chassis_key,
-                    top_n=top_n,
-                    max_results=min(max_results, 25),
-                    allow_transmembrane=allow_transmembrane,
-                    session=session,
-                    taxonomy_profile=taxonomy_profile,
-                    scoring_weights=active_weights,
-                )
-                literature_status = str(literature_result.status)
-                literature_query_errors.update(literature_result.query_errors)
-                literature_evidence_count = int(
-                    literature_result.artifact.summary.evidence_count
-                )
-                for step_index, literature_candidates in (
-                    literature_result.candidates_by_step.items()
-                ):
-                    candidates_by_step.setdefault(int(step_index), []).extend(
-                        literature_candidates
-                    )
-                    literature_candidate_count += len(literature_candidates)
-            except Exception as exc:
-                # Literature research is an optional evidence source.  Its
-                # failure must never discard standard candidates or prevent
-                # the deterministic Selenzyme fallback from running.
-                failure_result = write_source_unavailable_artifact(
-                    literature_requirements,
-                    output_dir=output_path,
-                    chassis_key=chassis_key,
-                    message=f"{type(exc).__name__}: {exc}",
-                    top_n=top_n,
-                    max_results=min(max_results, 25),
-                    allow_transmembrane=allow_transmembrane,
-                    scoring_weights=active_weights,
-                )
-                literature_status = str(failure_result.status)
-                literature_query_errors.update(failure_result.query_errors)
-                literature_evidence_count = int(
-                    failure_result.artifact.summary.evidence_count
-                )
-
-            rows_after_literature = candidate_rows_for_requirements(
-                requirements,
-                candidates_by_ec,
-                candidates_by_step,
-            )
-            verified_after_literature = {
-                int(row.get("step_index") or 0)
-                for row in rows_after_literature
-                if _candidate_is_selectable(row)
-            }
             fallback_requirements = [
                 requirement
                 for requirement in requirements
                 if int(requirement.get("step_index") or 0)
-                not in verified_after_literature
+                not in verified_after_ko
             ]
 
             if fallback_requirements:
@@ -786,22 +715,6 @@ def select_main_enzymes(
                             "circuit_open": True,
                         })
         else:
-            literature_result = run_literature_activity_search(
-                requirements,
-                enabled=False,
-                output_dir=output_path,
-                cache_dir=cache_path,
-                chassis_key=chassis_key,
-                top_n=top_n,
-                max_results=min(max_results, 25),
-                allow_transmembrane=allow_transmembrane,
-                session=session,
-                scoring_weights=active_weights,
-            )
-            literature_status = str(literature_result.status)
-            literature_evidence_count = int(
-                literature_result.artifact.summary.evidence_count
-            )
             reaction_evidence = [{
                 "step_index": int(requirement.get("step_index") or 0),
                 "reaction_id": str(requirement.get("reaction_id") or ""),
@@ -968,7 +881,7 @@ def select_main_enzymes(
             "policy": {
                 "scope": "unverified_steps_with_kegg_ko",
                 "acceptance": "exact_requirement_ko_intersection",
-                "fallback": "literature_activity_then_selenzyme_rf",
+                "fallback": "selenzyme_rf",
             },
             "evidence": ko_evidence,
             "query_ids": list(dict.fromkeys(
@@ -979,7 +892,7 @@ def select_main_enzymes(
             "schema_version": "selenzyme_evidence.v4",
             "selected_solution_id": solution_id,
             "policy": {
-                "ec_scope": "all_steps_without_verified_ec_rhea_ko_or_literature_candidate",
+                "ec_scope": "all_steps_without_verified_ec_rhea_ko_candidate",
                 "auto_accept": "kegg_query_valid_combined_reaction_similarity",
                 "exact_match": "kegg_query_combined_reaction_similarity_equal_1",
                 "risk_fallback": "kegg_similarity_or_complete_ec_association_requires_review",
@@ -1066,11 +979,6 @@ def select_main_enzymes(
                 for row in step_rows
                 if str(row.get("reaction_confidence") or "") == "ko_exact"
             ),
-            "literature_search_enabled": bool(literature_search and fetch_proteins),
-            "literature_status": literature_status,
-            "literature_evidence_count": literature_evidence_count,
-            "literature_candidate_count": literature_candidate_count,
-            "literature_query_errors": literature_query_errors,
             "selenzyme_evidence_count": len(selenzyme_evidence),
             "retropath_evidence_count": len(retropath_result["evidence"]),
             "selenzyme_exact_candidate_count": sum(
@@ -1117,12 +1025,6 @@ def select_main_enzymes(
             "reaction_evidence_json": rel_or_abs(paths["reaction_evidence_json"]),
             "direction_evidence_json": rel_or_abs(paths["direction_evidence_json"]),
             "ko_evidence_json": rel_or_abs(paths["ko_evidence_json"]),
-            "literature_activity_evidence_json": rel_or_abs(
-                paths["literature_activity_evidence_json"]
-            ),
-            "literature_activity_evidence_csv": rel_or_abs(
-                paths["literature_activity_evidence_csv"]
-            ),
             "selenzyme_evidence_json": rel_or_abs(paths["selenzyme_evidence_json"]),
             "taxonomy_evidence_json": rel_or_abs(paths["taxonomy_evidence_json"]),
             "route_repair_requests_json": rel_or_abs(paths["route_repair_requests_json"]),
@@ -1173,7 +1075,6 @@ def select_main_enzymes(
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
                 fetch_proteins=fetch_proteins,
-                literature_search=literature_search,
             ),
             shortlist_decision_fingerprint=shortlist_decision_fingerprint(
                 selected_step_rows
@@ -1286,9 +1187,6 @@ def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     if hasattr(config, "top_n"):
         selection_options.setdefault("top_n", config.top_n)
     selection_options.setdefault("genome_path", getattr(config, "genome_file", None))
-    selection_options.setdefault(
-        "literature_search", bool(getattr(config, "literature_search", False))
-    )
     configured_weights = getattr(config, "candidate_protein_scoring_weights", None)
     if configured_weights is not None:
         selection_options.setdefault("scoring_weights", configured_weights)

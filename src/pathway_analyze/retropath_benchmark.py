@@ -689,7 +689,6 @@ def _run_task(
         ):
             config.solution = int(metrics["formal_exact_solution_id"])
             config.top_n = 10
-            config.literature_search = False
             try:
                 write_solution(config)
                 enzyme_result = run_main_protein_selection(config)

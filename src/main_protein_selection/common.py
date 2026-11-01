@@ -37,8 +37,6 @@ DIRECTION_EVIDENCE_FILENAME = "direction_evidence.json"
 KO_EVIDENCE_FILENAME = "ko_evidence.json"
 SELENZYME_EVIDENCE_FILENAME = "selenzyme_evidence.json"
 TAXONOMY_EVIDENCE_FILENAME = "taxonomy_evidence.json"
-LITERATURE_ACTIVITY_EVIDENCE_FILENAME = "literature_activity_evidence.json"
-LITERATURE_ACTIVITY_EVIDENCE_CSV_FILENAME = "literature_activity_evidence.csv"
 ROUTE_REPAIR_REQUESTS_FILENAME = "route_repair_requests.json"
 
 
@@ -103,12 +101,6 @@ def evidence_paths(output_dir: str | Path) -> dict[str, Path]:
         "reaction_evidence_json": root / REACTION_EVIDENCE_FILENAME,
         "direction_evidence_json": root / DIRECTION_EVIDENCE_FILENAME,
         "ko_evidence_json": root / KO_EVIDENCE_FILENAME,
-        "literature_activity_evidence_json": (
-            root / LITERATURE_ACTIVITY_EVIDENCE_FILENAME
-        ),
-        "literature_activity_evidence_csv": (
-            root / LITERATURE_ACTIVITY_EVIDENCE_CSV_FILENAME
-        ),
         "selenzyme_evidence_json": root / SELENZYME_EVIDENCE_FILENAME,
         "taxonomy_evidence_json": root / TAXONOMY_EVIDENCE_FILENAME,
         "route_repair_requests_json": root / ROUTE_REPAIR_REQUESTS_FILENAME,
@@ -306,30 +298,14 @@ def candidate_rows_for_requirements(
     }
 
     def evidence_source_priority(row: dict[str, Any]) -> int:
-        """Keep deterministic evidence precedence independent of raw scores.
-
-        Literature-derived activities deliberately remain
-        ``verified_with_risk``.  Selenzyme can nevertheless label a unit
-        similarity hit ``verified``, so reaction-fit status alone cannot
-        express the required source precedence.
-        """
+        """Keep deterministic database-to-Selenzyme precedence independent of scores."""
 
         strategies = {
             value.lower()
             for value in _split_list_field(row.get("retrieval_strategy"))
         }
-        confidence = {
-            value.lower()
-            for value in _split_list_field(row.get("reaction_confidence"))
-        }
         if strategies & {"ec_exact", "rhea_reaction", "kegg_ko_exact"}:
             return 0
-        if "literature_experimental_activity" in strategies:
-            if "literature_grade_a" in confidence:
-                return 1
-            if "literature_grade_b" in confidence:
-                return 2
-            return 2
         if "selenzyme_kegg_exact" in strategies:
             return 3
         if "selenzyme_ec_risk" in strategies:
@@ -739,8 +715,6 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 __all__ = [
     "KO_EVIDENCE_FILENAME",
-    "LITERATURE_ACTIVITY_EVIDENCE_CSV_FILENAME",
-    "LITERATURE_ACTIVITY_EVIDENCE_FILENAME",
     "MAIN_CANDIDATES_FILENAME",
     "MAIN_ENZYME_SELECTION_FILENAME",
     "PROTEIN_CANDIDATE_COLUMNS",

@@ -17,7 +17,7 @@ REACTION_FIT_REJECTED = "rejected"
 
 # These rules describe directionally unsupported uses of otherwise correctly
 # annotated EC classes.  They are keyed by biochemical function, never by
-# benchmark target or literature-gold accession.
+# benchmark target or hand-picked protein accession.
 REVERSE_DIRECTION_BLOCK_RULES: dict[str, dict[str, str]] = {
     "1.2.1.67": {
         "rule_id": "reverse_vanillin_dehydrogenase_not_supported",
@@ -123,17 +123,6 @@ def evaluate_candidate_reaction_fit(
     shared_reaction_ec_overlap = (
         "shared_reaction_ec_overlap" in selenzyme_ec_relations
     )
-    literature_grade = (
-        "a"
-        if "literature_grade_a" in reaction_confidence
-        else "b"
-        if "literature_grade_b" in reaction_confidence
-        else ""
-    )
-    literature_activity_match = (
-        "literature_experimental_activity" in retrieval_strategies
-        and bool(literature_grade)
-    )
     candidate_ec_value = (
         candidate.get("ec_numbers")
         if "ec_numbers" in candidate
@@ -155,7 +144,6 @@ def evaluate_candidate_reaction_fit(
         status != "complete"
         and not exact_rhea_match
         and not exact_ko_match
-        and not literature_activity_match
         and not exact_selenzyme_match
         and not ec_selenzyme_match
         and not risk_selenzyme_match
@@ -290,20 +278,6 @@ def evaluate_candidate_reaction_fit(
             "evidence": evidence,
         }, supported_rule="ec_candidate_direction_supported")
 
-    if literature_activity_match:
-        level = literature_grade.upper()
-        return direction_checked({
-            "status": REACTION_FIT_VERIFIED_WITH_RISK,
-            "score": 90.0 if literature_grade == "a" else 80.0,
-            "rule_ids": [
-                f"literature_experimental_activity_grade_{literature_grade}"
-            ],
-            "evidence": [
-                f"Literature Grade {level} experimental activity supports the locked reaction",
-                "Literature-derived non-standard activity requires human review",
-            ],
-        }, supported_rule="literature_candidate_direction_supported")
-
     if exact_selenzyme_match:
         return direction_checked({
             "status": REACTION_FIT_VERIFIED,
@@ -392,7 +366,7 @@ def evaluate_candidate_reaction_fit(
         "score": 0.0,
         "rule_ids": ["candidate_lacks_supported_reaction_evidence"],
         "evidence": [
-            "Candidate lacks exact EC/Rhea/KO, Grade A/B literature, or Selenzyme reaction evidence"
+            "Candidate lacks exact EC/Rhea/KO or Selenzyme reaction evidence"
         ],
     }
 
