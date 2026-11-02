@@ -19,8 +19,8 @@ from src.main_protein_selection.settings import (
     UNIPROT_PAGE_SIZE as CONFIGURED_UNIPROT_PAGE_SIZE,
     UNIPROT_SEARCH_URL as CONFIGURED_UNIPROT_SEARCH_URL,
 )
+from src.main_protein_selection.host_registry import get_host_preset
 from src.main_protein_selection.taxonomy_compatibility import (
-    CHASSIS_TAXON_PRESETS,
     ChassisTaxonomyProfile,
     TaxonomyFit,
     normalize_scoring_weights,
@@ -1307,8 +1307,7 @@ def candidate_from_reaction_entry(
     scoring_weights: Mapping[str, Any] | None = None,
 ) -> ProteinCandidate | None:
     active_weights = normalize_scoring_weights(scoring_weights)
-    if chassis_key not in CHASSIS_TAXON_PRESETS:
-        raise ValueError(f"Unknown chassis_key: {chassis_key}")
+    get_host_preset(chassis_key)
     profile = taxonomy_profile or resolve_chassis_taxonomy(
         chassis_key,
         allow_network=False,
@@ -1381,8 +1380,7 @@ def recommend_uniprot_proteins(
 ) -> list[ProteinCandidate]:
     active_weights = normalize_scoring_weights(scoring_weights)
     ec_number = normalize_ec_number(ec_number)
-    if chassis_key not in CHASSIS_TAXON_PRESETS:
-        raise ValueError(f"Unknown chassis_key: {chassis_key}")
+    get_host_preset(chassis_key)
     http = session or requests.Session()
     chassis_profile = taxonomy_profile or resolve_chassis_taxonomy(
         chassis_key,

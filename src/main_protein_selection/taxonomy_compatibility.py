@@ -9,6 +9,8 @@ from typing import Any, Mapping, Sequence
 
 import requests
 
+from .host_registry import get_host_preset, get_taxonomy_snapshot
+
 
 TAXONOMY_PROFILE_SCHEMA = "taxonomy_profile.v1"
 TAXONOMY_SCORING_POLICY_VERSION = "taxonomy_lca_rank.v1"
@@ -39,57 +41,6 @@ RANK_SCORES = {
     "superkingdom": 12.0,
 }
 ROOT_ONLY_SCORE = 8.0
-
-
-CHASSIS_TAXON_PRESETS: dict[str, dict[str, Any]] = {
-    "ecoli": {
-        "name": "Escherichia coli",
-        "taxon_id": 562,
-        "species_taxon_id": 562,
-        "strain_taxon_id": None,
-    },
-    "ecoli_mg1655": {
-        "name": "Escherichia coli K-12 MG1655",
-        "taxon_id": 511145,
-        "species_taxon_id": 562,
-        "strain_taxon_id": 511145,
-    },
-}
-
-
-_ECOLI_LINEAGE = (
-    {"scientificName": "cellular organisms", "taxonId": 131567, "rank": "no rank"},
-    {"scientificName": "Bacteria", "taxonId": 2, "rank": "domain"},
-    {"scientificName": "Pseudomonadati", "taxonId": 3379134, "rank": "kingdom"},
-    {"scientificName": "Pseudomonadota", "taxonId": 1224, "rank": "phylum"},
-    {"scientificName": "Gammaproteobacteria", "taxonId": 1236, "rank": "class"},
-    {"scientificName": "Enterobacterales", "taxonId": 91347, "rank": "order"},
-    {"scientificName": "Enterobacteriaceae", "taxonId": 543, "rank": "family"},
-    {"scientificName": "Escherichia", "taxonId": 561, "rank": "genus"},
-)
-
-BUILTIN_TAXONOMY_SNAPSHOTS: dict[int, dict[str, Any]] = {
-    562: {
-        "scientificName": "Escherichia coli",
-        "taxonId": 562,
-        "rank": "species",
-        "lineage": list(_ECOLI_LINEAGE),
-    },
-    511145: {
-        "scientificName": "Escherichia coli str. K-12 substr. MG1655",
-        "taxonId": 511145,
-        "rank": "no rank",
-        "lineage": [
-            *_ECOLI_LINEAGE,
-            {"scientificName": "Escherichia coli", "taxonId": 562, "rank": "species"},
-            {
-                "scientificName": "Escherichia coli (strain K12)",
-                "taxonId": 83333,
-                "rank": "strain",
-            },
-        ],
-    },
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,9 +284,7 @@ def resolve_chassis_taxonomy(
     timeout_seconds: float = 20.0,
     allow_network: bool = True,
 ) -> ChassisTaxonomyProfile:
-    preset = CHASSIS_TAXON_PRESETS.get(chassis_key)
-    if preset is None:
-        raise ValueError(f"Unknown chassis_key: {chassis_key}")
+    preset = get_host_preset(chassis_key)
     taxon_id = int(preset["taxon_id"])
     cache_path = (
         Path(cache_root).expanduser().resolve() / "taxonomy" / f"{taxon_id}.json"
@@ -373,7 +322,7 @@ def resolve_chassis_taxonomy(
     else:
         error = "network disabled"
 
-    snapshot = BUILTIN_TAXONOMY_SNAPSHOTS.get(taxon_id)
+    snapshot = get_taxonomy_snapshot(taxon_id)
     if snapshot is not None:
         profile = _profile_from_record(chassis_key, snapshot, source="builtin_snapshot")
         return ChassisTaxonomyProfile(
@@ -504,15 +453,11 @@ def score_taxonomic_fit(
 
 
 def chassis_host_taxon_id(chassis_key: str) -> int:
-    preset = CHASSIS_TAXON_PRESETS.get(chassis_key)
-    if preset is None:
-        raise ValueError(f"Unknown chassis_key: {chassis_key}")
+    preset = get_host_preset(chassis_key)
     return int(preset["taxon_id"])
 
 
 __all__ = [
-    "BUILTIN_TAXONOMY_SNAPSHOTS",
-    "CHASSIS_TAXON_PRESETS",
     "ChassisTaxonomyProfile",
     "RANK_SCORES",
     "ROOT_ONLY_SCORE",

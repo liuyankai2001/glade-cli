@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import json
 import re
-import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from Bio import BiopythonParserWarning, SeqIO
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .provenance import file_sha256, stable_json_hash
-from .taxonomy_compatibility import CHASSIS_TAXON_PRESETS
+from .provenance import stable_json_hash
+from .host_registry import get_host_preset
+from .genome_identity import GenomeIdentity, read_genome_identity
 
 
 UNSPECIFIED_GENOME = object()
@@ -106,59 +105,47 @@ def _values(value: Any) -> list[str]:
     return sorted({part.strip() for part in re.split(r"[;|,]", str(value or "")) if part.strip()})
 
 
-def _genome_index(path: Path, chassis_key: str) -> tuple[list[str], dict[str, list[GenomeGeneEvidence]]]:
-    if not path.is_file():
-        raise FileNotFoundError(f"genome_file not found: {path}")
-    preset = CHASSIS_TAXON_PRESETS.get(chassis_key)
-    if preset is None:
-        raise ValueError(f"Unknown genome chassis: {chassis_key}")
-    accepted_taxa = {str(preset["taxon_id"])}
+def _genome_index(path: Path, chassis_key: str, identity: GenomeIdentity) -> tuple[list[str], dict[str, list[GenomeGeneEvidence]]]:
+    preset = get_host_preset(chassis_key)
+    accepted_taxa = {preset["taxon_id"]}
     if chassis_key == "ecoli":
-        accepted_taxa.add("511145")
+        accepted_taxa.add(511145)
+    if identity.taxon_id not in accepted_taxa:
+        raise ValueError(f"genome_file 菌株与 {chassis_key} 不匹配: taxon={identity.taxon_id}")
     index: dict[str, list[GenomeGeneEvidence]] = {}
-    record_ids: list[str] = []
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", BiopythonParserWarning)
-            for record in SeqIO.parse(path, "genbank"):
-                record_ids.append(record.id)
-                sources = [feature for feature in record.features if feature.type == "source"]
-                taxa = {value.removeprefix("taxon:") for feature in sources
-                        for value in feature.qualifiers.get("db_xref", []) if value.startswith("taxon:")}
-                if not taxa or not taxa.issubset(accepted_taxa):
-                    raise ValueError(f"genome_file 菌株与 {chassis_key} 不匹配: {record.id}, taxon={sorted(taxa)}")
-                pseudo_loci = {locus for feature in record.features if feature.type == "gene"
-                               and ("pseudo" in feature.qualifiers or "pseudogene" in feature.qualifiers)
-                               for locus in feature.qualifiers.get("locus_tag", [])}
-                for feature in record.features:
-                    qualifiers = feature.qualifiers
-                    if (feature.type != "CDS" or "pseudo" in qualifiers or "pseudogene" in qualifiers
-                            or pseudo_loci.intersection(qualifiers.get("locus_tag", []))):
-                        continue
-                    gene = GenomeGeneEvidence(record_id=record.id, **{
-                        name: str((qualifiers.get(name) or [""])[0])
-                        for name in ("locus_tag", "gene", "protein_id", "product")
-                    })
-                    for ec in sorted(set(qualifiers.get("EC_number", []))):
-                        if _COMPLETE_EC.fullmatch(ec):
-                            index.setdefault(ec, []).append(gene)
-    except (OSError, ValueError, BiopythonParserWarning) as exc:
-        raise ValueError(f"Invalid GenBank genome_file {path}: {exc}") from exc
-    if not record_ids:
-        raise ValueError(f"genome_file contains no GenBank records: {path}")
-    return sorted(record_ids), index
+    for record in identity.records:
+        pseudo_loci = {locus for feature in record.features if feature.type == "gene"
+                       and ("pseudo" in feature.qualifiers or "pseudogene" in feature.qualifiers)
+                       for locus in feature.qualifiers.get("locus_tag", [])}
+        for feature in record.features:
+            qualifiers = feature.qualifiers
+            if (feature.type != "CDS" or "pseudo" in qualifiers or "pseudogene" in qualifiers
+                    or pseudo_loci.intersection(qualifiers.get("locus_tag", []))):
+                continue
+            gene = GenomeGeneEvidence(record_id=record.id, **{
+                name: str((qualifiers.get(name) or [""])[0])
+                for name in ("locus_tag", "gene", "protein_id", "product")
+            })
+            for ec in sorted(set(qualifiers.get("EC_number", []))):
+                if _COMPLETE_EC.fullmatch(ec):
+                    index.setdefault(ec, []).append(gene)
+    return sorted(record.id for record in identity.records), index
 
 
 def build_genome_ec_filter(
     genome_path: str | Path, requirements: Sequence[Mapping[str, Any]], chassis_key: str,
+    *, genome_identity: GenomeIdentity | None = None,
 ) -> GenomeEcFilter:
     path = resolve_genome_path(genome_path)
     if path is None:
         raise ValueError("genome_file must not be empty when filtering")
-    before_sha = file_sha256(path) if path.is_file() else ""
-    record_ids, index = _genome_index(path, chassis_key)
-    if file_sha256(path) != before_sha:
-        raise ValueError("genome_file changed while being read; rerun main-enzyme")
+    identity = genome_identity if genome_identity is not None else read_genome_identity(path)
+    if identity.path != path:
+        raise ValueError("genome_file identity belongs to a different path")
+    identity.assert_current()
+    before_sha = identity.genome_sha256
+    record_ids, index = _genome_index(path, chassis_key, identity)
+    identity.assert_current()
     matched: list[GenomeSupportedStep] = []
     input_requirements: list[dict[str, Any]] = []
     required = sorted({int(item["step_index"]) for item in requirements})

@@ -306,9 +306,9 @@ uv run python main.py chassis -i gem_build_demo.json
 
 `--input`/`-i` 只跟 `inputs` 下文件名。普通分析命令的 `model_file` 省略、`null`
 或空白时仍使用默认 `data/gem_models/iML1515.json`；`gem-build` 要求显式输出路径。
-顶层 `genome_file` 用于已有主酶流程的基因组 EC 过滤，与这里的目标 GBFF 输入独立，
-不会自动由 `bactabolize.target_genome_file` 替换。本次不扩展蛋白选型和 CDS 的
-Nissle 1917 宿主预设。
+顶层 `genome_file` 同时用于主酶选型的宿主身份识别和已有 EC 过滤，与这里的目标
+GBFF 输入独立，不会自动由 `bactabolize.target_genome_file` 替换。新宿主可自动登记
+并用于酶选型；CDS 密码子模型和表达元件仍需独立支持，不会自动借用 MG1655 配置。
 
 自定义模型的分析输出按模型内容隔离，例如
 `outputs/C00811/model_<SHA256前16位>/`。修改模型内容后会使用新的结果目录，
@@ -347,6 +347,56 @@ docker compose -f compose.bactabolize.yml down
 接口及容器任务卷内日志，并检查模型/GBFF 基因 ID 对应关系。出现 OOM、超时或
 队列已满时按诊断调整资源或等待空闲后重试。服务代码或锁文件更新后重新 `build`
 并 `up -d --force-recreate`；备份模型 JSON，需要服务端历史时另行备份作业卷。
+
+### 3.6 从 GBFF 自动识别宿主并过滤已有 EC
+
+主酶选型复用顶层 `genome_file`，从 GBFF 的 `source` 注释读取 `organism` 和
+`db_xref="taxon:..."`，得到宿主名称与 Taxonomy ID。同一份文件继续用于 EC 过滤，
+命中步骤跳过外源酶选型与 CDS 构建。输入示例：
+
+```json
+{
+  "target_name": "C00811",
+  "model_file": "inputs/model.json",
+  "genome_file": "data/genomes/my_strain.gbff"
+}
+```
+
+路径相对于项目根目录，也支持绝对路径。`bactabolize.target_genome_file` 只用于
+模型重建，不会替代顶层 `genome_file`。未填写、填写 `null` 或空白时，仍默认
+MG1655，关闭 EC 过滤，也不执行自动登记。不新增 `chassis_key` 输入项。
+
+宿主登记文件为 `data/chassis_taxonomy.json`，包含 `chassis_taxon_presets` 和独立的
+`taxonomy_snapshots`。每个宿主条目严格只有 `name`、`taxon_id` 两个字段。程序按
+Taxonomy ID 复用已有代号；首次发现新宿主时，自动新增 `taxon_<ID>`，例如：
+
+```json
+"taxon_316435": {
+  "name": "Escherichia coli Nissle 1917",
+  "taxon_id": 316435
+}
+```
+
+完成路线选择并写入 manifest 后，运行：
+
+```powershell
+uv run python main.py main-enzyme -i ecn.json
+```
+
+本次运行立即使用识别出的宿主进行普通及 RetroPath 酶选型，Selenzyme 使用同一
+宿主编号。重复识别不覆盖已有名称，也不重写登记文件。身份提取无需联网；完整
+分类树继续通过现有在线查询、缓存或离线快照获取，缺少分类依据时保留未知状态。
+
+GBFF 缺少身份注释、多记录身份冲突、本次选型过程中变化，或登记文件缺失、损坏、
+存在重复编号时，会在外部检索前报错，不静默恢复默认表。新增宿主需要登记文件
+所在目录具有写权限；写入加锁并原子替换，失败保留原文件。请随部署和备份携带
+该文件。锁放系统临时目录，不在 data 中留下锁文件或成功写入后的临时文件。
+当前 Git 忽略规则包含整个 data 目录；通过 Git 或部署包交付时，需要显式携带
+`data/chassis_taxonomy.json`，不能只更新 Python 源码。
+
+组合、manifest 写入、信息查看和 CDS 校验只读登记表，不会自动补登记。自动识别
+不包含新宿主的密码子模型或表达元件适配；存在外源构建需求而宿主尚未支持时，
+CDS 阶段仍明确报错。已有 EC 全部命中时，仍可返回无需 CDS 构建。
 
 ## 4. 冒烟测试
 

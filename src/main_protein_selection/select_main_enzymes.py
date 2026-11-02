@@ -59,7 +59,9 @@ from src.main_protein_selection.retropath_enzyme_selection import (
     retrieve_manifest_retropath_candidates,
 )
 from src.main_protein_selection.provenance import file_sha256, solution_fingerprint
-from src.main_protein_selection.genome_ec_filter import build_genome_ec_filter
+from src.main_protein_selection.genome_ec_filter import build_genome_ec_filter, resolve_genome_path
+from src.main_protein_selection.genome_identity import read_genome_identity, resolve_genome_chassis
+from src.main_protein_selection.host_registry import get_host_preset
 from src.main_protein_selection.selenzyme_retrieval import (
     COMPLETE_EC_PATTERN,
     SelenzymeClient,
@@ -263,7 +265,7 @@ def select_main_enzymes(
     manifest_path: str | Path,
     output_dir: str | Path,
     cache_dir: str | Path,
-    chassis_key: str = "ecoli_mg1655",
+    chassis_key: str | None = None,
     top_n: int = 5,
     max_results: int = 1000,
     allow_transmembrane: bool = False,
@@ -319,8 +321,15 @@ def select_main_enzymes(
                     "RetroPath manifest RR02 binding is stale; rerun gap "
                     "--retropath and write --solution N"
                 )
+        genome_path = resolve_genome_path(genome_path)
+        genome_identity = read_genome_identity(genome_path) if genome_path is not None else None
+        if genome_identity is not None:
+            chassis_key = resolve_genome_chassis(genome_identity, chassis_key)
+        elif chassis_key is None:
+            chassis_key = "ecoli_mg1655"
+        get_host_preset(chassis_key)
         genome_filter = (
-            build_genome_ec_filter(genome_path, all_requirements, chassis_key)
+            build_genome_ec_filter(genome_path, all_requirements, chassis_key, genome_identity=genome_identity)
             if genome_path is not None else None
         )
         if genome_filter is not None:
@@ -823,6 +832,19 @@ def select_main_enzymes(
                         "was selected for this predicted reaction"
                     ),
                 })
+        # Finish direction lookups before publishing artifacts so late GBFF
+        # edits cannot leave a successful selection bound to obsolete input.
+        direction_artifact = direction_evidence_artifact(
+            solution_id=solution_id,
+            requirements=requirements,
+            context_records=direction_context,
+            candidates_by_step=_candidates_for_direction_analysis(
+                requirements, candidates_by_ec, candidates_by_step
+            ),
+            client=direction_client,
+        )
+        if genome_identity is not None:
+            genome_identity.assert_current()
         retropath_requirements_path = output_path / "retropath_enzyme_requirements.json"
         retropath_evidence_path = output_path / "retropath_selenzyme_evidence.json"
         if retropath_requirements:
@@ -865,15 +887,6 @@ def select_main_enzymes(
             "evidence": reaction_evidence,
             "query_ids": list(dict.fromkeys(reaction_query_ids)),
         })
-        direction_artifact = direction_evidence_artifact(
-            solution_id=solution_id,
-            requirements=requirements,
-            context_records=direction_context,
-            candidates_by_step=_candidates_for_direction_analysis(
-                requirements, candidates_by_ec, candidates_by_step
-            ),
-            client=direction_client,
-        )
         write_json_atomic(paths["direction_evidence_json"], direction_artifact)
         write_json_atomic(paths["ko_evidence_json"], {
             "schema_version": "ko_evidence.v1",
@@ -1105,6 +1118,8 @@ def select_main_enzymes(
                 ),
             },
         )
+        if genome_identity is not None:
+            genome_identity.assert_current()
         write_json_atomic(
             paths["main_enzyme_selection_json"],
             canonical_result.model_dump(mode="json"),
