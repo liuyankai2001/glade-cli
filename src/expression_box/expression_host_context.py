@@ -54,9 +54,11 @@ class ExpressionHostResolution:
     expression_host_key: str
     milvus_host_labels: tuple[str, ...]
     query_name: str
+    host_name: str = ''
+    taxon_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "source": "cds_selection.host",
             "codon_transformer_name": self.codon_transformer_name,
             "codon_transformer_organism_id": self.codon_transformer_organism_id,
@@ -65,6 +67,9 @@ class ExpressionHostResolution:
             "milvus_host_labels": list(self.milvus_host_labels),
             "mapping_mode": "read_only_expression_adapter",
         }
+        if self.taxon_id is not None:
+            payload.update(host_name=self.host_name, taxon_id=self.taxon_id)
+        return payload
 
 
 def _host_payload(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +198,23 @@ def _validate_requested_host(requested_name: str, expression_host_key: str) -> N
     )
 
 
+def _expression_identity(host: dict[str, Any], name: str, organism_id: int | None, reference_name: str) -> str:
+    """New CDS records identify the real chassis independently of the model."""
+    taxon_id = host.get('taxon_id')
+    if taxon_id is None:
+        return _choose_identity(name=name, organism_id=organism_id, id_reference_name=reference_name)
+    if type(taxon_id) is not int or taxon_id <= 0 or not name or not host.get('chassis_key'):
+        raise HostContextConflictError('cds_selection.host has invalid actual chassis identity')
+    if taxon_id == 511145:
+        return 'ecoli_k12_mg1655'
+    if taxon_id == 562:
+        return 'ecoli_general'
+    known_identity = _identity_from_name(name)
+    if known_identity in V3_HOST_LABELS_BY_KEY:
+        return str(known_identity)
+    return f'taxon_{taxon_id}'
+
+
 def resolve_expression_host(
     manifest: dict[str, Any],
     requested_host: str | None = None,
@@ -202,14 +224,11 @@ def resolve_expression_host(
     host = _host_payload(manifest)
     original_name = str(host.get("name") or "").strip()
     organism_id = _organism_id(host.get("codon_transformer_organism_id"))
-    id_reference_name = _codon_transformer_name_for_id(organism_id)
-    expression_host_key = _choose_identity(
-        name=original_name,
-        organism_id=organism_id,
-        id_reference_name=id_reference_name,
-    )
+    id_reference_name = str(host.get('codon_transformer_organism_name') or '').strip() or _codon_transformer_name_for_id(organism_id)
+    expression_host_key = _expression_identity(host, original_name, organism_id, id_reference_name)
     requested_name = str(requested_host or "").strip()
-    _validate_requested_host(requested_name, expression_host_key)
+    if requested_name and _normalized_name(requested_name) != _normalized_name(original_name):
+        _validate_requested_host(requested_name, expression_host_key)
 
     if _is_general_identity(expression_host_key):
         raise HostStrainRequiredError(
@@ -229,12 +248,14 @@ def resolve_expression_host(
         )
 
     return ExpressionHostResolution(
-        codon_transformer_name=original_name,
+        codon_transformer_name=id_reference_name if host.get('taxon_id') is not None else original_name,
         codon_transformer_organism_id=organism_id,
         requested_name=requested_name,
         expression_host_key=expression_host_key,
         milvus_host_labels=tuple(labels),
         query_name=original_name or id_reference_name or labels[0],
+        host_name=original_name,
+        taxon_id=host.get('taxon_id'),
     )
 
 
@@ -244,13 +265,9 @@ def describe_manifest_host(manifest: dict[str, Any]) -> dict[str, Any]:
     host = _host_payload(manifest)
     original_name = str(host.get("name") or "").strip()
     organism_id = _organism_id(host.get("codon_transformer_organism_id"))
-    id_reference_name = _codon_transformer_name_for_id(organism_id)
+    id_reference_name = str(host.get('codon_transformer_organism_name') or '').strip() or _codon_transformer_name_for_id(organism_id)
     try:
-        identity_key = _choose_identity(
-            name=original_name,
-            organism_id=organism_id,
-            id_reference_name=id_reference_name,
-        )
+        identity_key = _expression_identity(host, original_name, organism_id, id_reference_name)
         conflict = False
     except HostContextMissingError:
         identity_key = ""
@@ -262,6 +279,8 @@ def describe_manifest_host(manifest: dict[str, Any]) -> dict[str, Any]:
         "available": bool(original_name or organism_id is not None),
         "name": original_name,
         "codon_transformer_organism_id": organism_id,
+        "codon_transformer_organism_name": id_reference_name,
+        "taxon_id": host.get('taxon_id'),
         "expression_host_key": identity_key,
         "requires_strain_confirmation": _is_general_identity(identity_key),
         "conflict": conflict,

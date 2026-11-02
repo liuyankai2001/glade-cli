@@ -356,12 +356,19 @@ def assess_generated_cds(
     protein_sequence: str,
     organism_id: int,
     additional_forbidden_motifs: Iterable[str] = (),
+    *,
+    host_taxon_id: int | None = None,
 ) -> dict[str, Any]:
     """Measure the model output and require encoding identity only; never edit it."""
     motifs = dict(DEFAULT_FORBIDDEN_MOTIFS)
     user_motifs = _validate_additional_motifs(additional_forbidden_motifs)
     motifs.update(user_motifs)
-    audit = audit_cds(sequence, protein_sequence, _profile_for_organism(organism_id), motifs)
+    if host_taxon_id is None:
+        profile = _profile_for_organism(organism_id)
+    else:
+        profile = dict(MG1655_PROFILE if host_taxon_id == 511145 else GENERIC_PROFILE)
+        profile['organism_id'] = int(organism_id)
+    audit = audit_cds(sequence, protein_sequence, profile, motifs)
     audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(sequence, user_motifs.values())
     failed = [
         name for name in (

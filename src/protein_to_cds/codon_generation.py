@@ -54,7 +54,7 @@ def generate_protein_cds(
         "schema_version": GENERATION_SCHEMA_VERSION,
         "processing_mode": GENERATION_MODE,
         "protein_sequence_sha256": protein.sequence_sha256,
-        "host_organism_id": host.codon_transformer_organism_id,
+        "host": host.to_dict(),
         "assessment_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
         "additional_forbidden_motifs": motifs,
         "model": model_identity,
@@ -70,7 +70,8 @@ def generate_protein_cds(
             candidate = json.loads(report_path.read_text(encoding="utf-8"))
             sequence = _read_dna_fasta(raw_path)
             audit = assess_generated_cds(
-                sequence, protein.sequence, host.codon_transformer_organism_id, motifs
+                sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
+                host_taxon_id=host.taxon_id,
             )
             if (
                 isinstance(candidate, dict)
@@ -83,7 +84,7 @@ def generate_protein_cds(
                 and candidate.get("changes", {}).get("codon_change_count") == 0
                 and candidate.get("changes", {}).get("nucleotide_change_count") == 0
                 and candidate.get("protein", {}).get("sequence_sha256") == protein.sequence_sha256
-                and candidate.get("host", {}).get("codon_transformer_organism_id") == host.codon_transformer_organism_id
+                and candidate.get("host") == host.to_dict()
                 and (
                     not candidate.get("raw_cds", {}).get("file_sha256")
                     or candidate["raw_cds"]["file_sha256"] == hashlib.sha256(raw_path.read_bytes()).hexdigest()
@@ -102,7 +103,8 @@ def generate_protein_cds(
         try:
             sequence, device_name = predict_cds_sequence(protein, host, device)
             audit = assess_generated_cds(
-                sequence, protein.sequence, host.codon_transformer_organism_id, motifs
+                sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
+                host_taxon_id=host.taxon_id,
             )
         except Exception as exc:
             failure_path = report_path.with_name(f"{protein.primary_accession}.generation.failed.json") if report_path.exists() else report_path
@@ -128,11 +130,7 @@ def generate_protein_cds(
                 "sequence_sha256": protein.sequence_sha256,
                 "length_aa": protein.length_aa,
             },
-            "host": {
-                "name": host.host_name,
-                "chassis_key": host.chassis_key,
-                "codon_transformer_organism_id": host.codon_transformer_organism_id,
-            },
+            "host": host.to_dict(),
             "model": {
                 **model_identity, "deterministic": True,
                 "match_protein": True, "device": device_name,

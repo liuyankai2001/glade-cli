@@ -91,7 +91,10 @@ def run_protein_to_cds(
                 "genome_supported_step_indexes": current_selection.genome_ec_filter.supported_step_indexes,
                 "manifest_written": False, "manifest_path": str(manifest_path)}
     context = get_proteins_for_cds(manifest_path, genome_path=genome_path)
-    host = host_profile_for_chassis(context.chassis_key)
+    host = host_profile_for_chassis(
+        context.chassis_key,
+        codon_transformer_organism=getattr(config, 'codon_transformer_organism', None),
+    )
     requested_device = (
         str(
             (device if device is not None else getattr(config, "device", "auto"))
@@ -185,11 +188,7 @@ def _run_batch(
         "source_manifest": str(context.manifest_path),
         "source_manifest_revision": context.manifest_revision,
         "source_fingerprint": context.source_fingerprint,
-        "host": {
-            "chassis_key": host.chassis_key,
-            "name": host.host_name,
-            "codon_transformer_organism_id": (host.codon_transformer_organism_id),
-        },
+        "host": host.to_dict(),
         "device_request": requested_device,
         "additional_forbidden_motifs": list(motifs),
         "counts": {
@@ -258,6 +257,7 @@ def _run_batch(
     return {
         "ok": status == "complete",
         "status": status,
+        "host": host.to_dict(),
         "processing_mode": GENERATION_MODE,
         "target_compound_id": context.target_compound_id,
         "counts": summary["counts"],

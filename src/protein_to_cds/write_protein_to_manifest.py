@@ -330,11 +330,7 @@ def _write_cds_selection_to_manifest(
             "selected_solution_id": context.selected_solution_id,
             "selected_set_id": context.selected_set_id,
         },
-        "host": {
-            "chassis_key": host.chassis_key,
-            "name": host.host_name,
-            "codon_transformer_organism_id": (host.codon_transformer_organism_id),
-        },
+        "host": host.to_dict(),
         "counts": {
             "selected": len(context.proteins),
             "succeeded": len(success_items),

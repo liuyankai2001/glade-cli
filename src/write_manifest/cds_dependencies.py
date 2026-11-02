@@ -43,6 +43,7 @@ def cds_dependency_update(
     original_box = manifest.get("expression_box_selection")
     if (
         not isinstance(previous, Mapping)
+        or previous.get('host') != selection.get('host')
         or previous.get("status") != "complete"
         or selection.get("status") != "complete"
         or not isinstance(original_box, Mapping)

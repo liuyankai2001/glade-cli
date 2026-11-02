@@ -28,6 +28,7 @@ def load_input(path, *, command=None):
                 raise FileNotFoundError(f'model_file does not exist: {model_path}')
     config = RunConfig(target_name=payload.get('target_name'), model_path=model_path)
     config.genome_file = resolve_genome_path(payload.get('genome_file'), config.root_dir)
+    config.codon_transformer_organism = payload.get('codon_transformer_organism')
     return config
 
 

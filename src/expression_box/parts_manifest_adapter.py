@@ -261,7 +261,7 @@ def load_expression_parts_context(
         target_compound_id=target,
         expression_box_selection_fingerprint=selection_fingerprint,
         cds_selection_source_fingerprint=cds_source,
-        host_name=host.codon_transformer_name,
+        host_name=host.query_name,
         host_key=host.expression_host_key,
         host_labels=host.milvus_host_labels,
         input_fingerprint=_stable_hash(fingerprint_payload),

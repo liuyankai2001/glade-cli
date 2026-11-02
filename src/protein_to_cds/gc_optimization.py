@@ -113,10 +113,14 @@ class CdsEditInput:
     extras: list[str]
     source_path: Path
     source_sequence: str
+    host_taxon_id: int | None = None
 
     def audit(self, sequence: str, enzymes: list[str], maximum: int | None = None) -> dict:
         return with_homopolymer_audit(
-            with_restriction_audit(assess_generated_cds(sequence, self.protein, self.organism_id, self.extras), sequence, enzymes),
+            with_restriction_audit(assess_generated_cds(
+                sequence, self.protein, self.organism_id, self.extras,
+                host_taxon_id=self.host_taxon_id,
+            ), sequence, enzymes),
             sequence, maximum,
         )
 
@@ -134,9 +138,13 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
     if not raw_path.is_relative_to(root / "protein_to_cds/raw_cds"):
         raise ValueError("原始 CDS 必须位于当前项目的 raw_cds 目录")
     _, protein = _read_record(root, item.get("protein_sequence", {}), accession, guards)
-    organism_id = int(selection.get("host", {}).get("codon_transformer_organism_id", 0))
-    if not organism_id:
+    host = selection.get('host', {})
+    organism_id = host.get('codon_transformer_organism_id')
+    if type(organism_id) is not int or organism_id < 0:
         raise ValueError("CDS 结果缺少宿主信息")
+    host_taxon_id = host.get('taxon_id')
+    if host_taxon_id is not None and (type(host_taxon_id) is not int or host_taxon_id <= 0):
+        raise ValueError('CDS 结果中的宿主 Taxonomy ID 无效')
     extras = report.get("additional_forbidden_motifs")
     if extras is None:
         extras = [v for k, v in report.get("constraints", {}).get("forbidden_motifs", {}).items() if k not in LEGACY_FORBIDDEN_MOTIFS]
@@ -175,7 +183,7 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
     if len(source_sequence) != len(raw) or source_sequence[:3] != raw[:3] or source_sequence[-3:] != raw[-3:]:
         raise ValueError("已有优化序列的长度或起止密码子与 raw 不一致")
     return CdsEditInput(item, previous, report, raw_meta, raw_path, raw, protein,
-                        organism_id, extras, source_path, source_sequence)
+                        organism_id, extras, source_path, source_sequence, host_taxon_id)
 
 
 def _adjust_gc(

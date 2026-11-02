@@ -394,9 +394,47 @@ GBFF 缺少身份注释、多记录身份冲突、本次选型过程中变化，
 当前 Git 忽略规则包含整个 data 目录；通过 Git 或部署包交付时，需要显式携带
 `data/chassis_taxonomy.json`，不能只更新 Python 源码。
 
-组合、manifest 写入、信息查看和 CDS 校验只读登记表，不会自动补登记。自动识别
-不包含新宿主的密码子模型或表达元件适配；存在外源构建需求而宿主尚未支持时，
-CDS 阶段仍明确报错。已有 EC 全部命中时，仍可返回无需 CDS 构建。
+组合、manifest 写入、信息查看和 CDS 校验只读登记表，不会自动补登记。新宿主的
+CDS 生成类别需按下一节显式配置。自动识别不会新增宿主专用的密码子评价数据或
+表达元件预设。已有 EC 全部命中时，仍可返回无需 CDS 构建。
+
+### 3.7 用编号选择 CodonTransformer 生成类别
+
+在输入 JSON 顶层添加 `codon_transformer_organism`，仅接受 JSON 整数。例如，
+为 Nissle 1917 选择大肠杆菌通用生成类别：
+
+```json
+{
+  "target_name": "C00811",
+  "model_file": "inputs/model.json",
+  "genome_file": "tests/bactabolize_ecn/inputs/Nissle1917_CP022686.1.gbff",
+  "codon_transformer_organism": 51
+}
+```
+
+完成主酶组合选择并写入 manifest 后，沿用原命令：
+
+```powershell
+uv run python main.py protein-to-cds -i ecn.json
+```
+
+支持列表为 `data/codontransformer_organisms.csv`，两列分别是模型内部编号和官方
+类别名称。部署时应同时携带该 CSV；运行前会核对安装包的类别定义，不能通过
+自行添加 CSV 行来扩展模型支持范围。编号不是 NCBI Taxonomy ID。
+
+- `51` 是 `Escherichia coli general`，`52` 是 MG1655 类别。编号 `0` 也有效。
+- 不接受名称、数字字符串 `"51"`、空字符串、布尔值、小数或支持列表之外的编号。
+- 未填写或填写 `null` 时，MG1655 沿用默认 `52`；其他宿主需要明确填写编号。
+- 全部 EC 命中、无需 CDS 时，不要求配置或加载 CodonTransformer。
+
+该字段只选择生成类别，真实宿主继续沿用主酶选择结果及 `genome_file` 的身份。
+生成报告、运行汇总和 manifest 分别记录真实宿主和生成类别。MG1655 沿用已有
+密码子质量评价，其他宿主使用通用评价，不把 MG1655 的 CAI 当作新宿主的经验数据。
+表达设计继续按真实宿主检索，不因选择通用生成类别而改成通用宿主；数据库没有
+兼容元件时仍需补充实际宿主的元件数据。
+
+修改编号后重跑 `protein-to-cds`。生成类别变化会使旧的生成缓存及下游表达设计等
+选择失效，需要重新运行相应步骤。其他结果缓存和来源一致性校验保持现状。
 
 ## 4. 冒烟测试
 
