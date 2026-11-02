@@ -322,7 +322,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     if maximum is not None:
         baseline["homopolymer_audit"] = raw_audit["homopolymer_audit"]
         baseline["checks"] = {**baseline.get("checks", {}), "homopolymer_pass": raw_audit["checks"]["homopolymer_pass"]}
-        baseline["failed_checks"] = [name for name, passed in baseline["checks"].items() if not passed]
+        baseline["failed_checks"] = [name for name, passed in baseline["checks"].items() if passed is False]
         baseline["gate_status"] = "FAIL" if baseline["failed_checks"] else "PASS"
     report = {
         "schema_version": GC_REPORT_SCHEMA, "processing_mode": GC_MODE, "status": "PASS",

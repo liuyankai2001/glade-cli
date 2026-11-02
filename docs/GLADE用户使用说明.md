@@ -170,6 +170,8 @@ python main.py write -i demo01.json --main-enzyme-set 1
 
 这一步仅为已选主酶准备 DNA 编码序列。程序获取主酶氨基酸序列，并使用 CodonTransformer 生成面向当前宿主的密码子设计。
 
+生成时启用 `match_protein=True`，由模型约束密码子选择以保持蛋白序列一致。对于未修改的模型输出，生成、缓存复用和写入清单时不再独立翻译比对；仍检查碱基、长度、起止密码子、内部终止以及文件和哈希一致性。生成报告采用 `protein_to_cds.generation.v2`，记录模型约束依据；未执行的独立翻译检查及翻译蛋白哈希为 `null`，不代表检查失败。后续通过 `optimize` 调整 CDS 时，仍会独立翻译核对蛋白序列。
+
 ```powershell
 python main.py protein-to-cds -i demo01.json
 python main.py info -i demo01.json --cds

@@ -40,7 +40,7 @@ def with_homopolymer_audit(metrics: dict, sequence: str, maximum: int | None) ->
         return metrics
     audit = homopolymer_audit(sequence, maximum)
     metrics = {**metrics, "homopolymer_audit": audit, "checks": {**metrics["checks"], "homopolymer_pass": audit["passed"]}}
-    metrics["failed_checks"] = [name for name, passed in metrics["checks"].items() if not passed]
+    metrics["failed_checks"] = [name for name, passed in metrics["checks"].items() if passed is False]
     metrics["gate_status"] = "FAIL" if metrics["failed_checks"] else "PASS"
     return metrics
 

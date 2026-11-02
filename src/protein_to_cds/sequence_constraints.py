@@ -259,17 +259,34 @@ def _translate_cds(sequence: str) -> tuple[str, int]:
     return translated.rstrip("*"), internal_stops
 
 
+def cds_structure_checks(sequence: str) -> dict[str, bool]:
+    """Check CDS structure directly, without translating its codons."""
+    dna = normalize_dna(sequence)
+    return {
+        "valid_alphabet": bool(dna) and set(dna).issubset(DNA_ALPHABET),
+        "length_multiple_of_three": bool(dna) and len(dna) % 3 == 0,
+        "start_codon_valid": dna.startswith("ATG"),
+        "stop_codon_valid": dna[-3:] in VALID_STOP_CODONS if len(dna) >= 3 else False,
+        "no_internal_stop": not any(
+            dna[index:index + 3] in VALID_STOP_CODONS
+            for index in range(0, len(dna) - 3, 3)
+        ),
+    }
+
+
 def audit_cds(
     sequence: str,
     protein_sequence: str,
     profile: dict[str, Any],
     motifs: dict[str, str],
+    *,
+    verify_translation: bool = True,
 ) -> dict[str, Any]:
     dna = normalize_dna(sequence)
     protein = normalize_protein(protein_sequence)
-    translated, internal_stops = (
-        _translate_cds(dna) if dna and len(dna) % 3 == 0 else ("", 0)
-    )
+    translated = None
+    if verify_translation:
+        translated, _ = _translate_cds(dna) if dna and len(dna) % 3 == 0 else ("", 0)
     local_values = local_gc_values(dna)
     extreme_local_windows = sum(
         value < LOCAL_GC_MIN or value > LOCAL_GC_MAX for value in local_values
@@ -281,12 +298,8 @@ def audit_cds(
     )
     gc_value = gc_fraction(dna)
     checks = {
-        "valid_alphabet": bool(dna) and set(dna).issubset(DNA_ALPHABET),
-        "length_multiple_of_three": bool(dna) and len(dna) % 3 == 0,
-        "start_codon_valid": dna.startswith("ATG"),
-        "stop_codon_valid": dna[-3:] in VALID_STOP_CODONS if len(dna) >= 3 else False,
-        "no_internal_stop": internal_stops == 0,
-        "amino_acid_identity_exact": translated == protein,
+        **cds_structure_checks(dna),
+        "amino_acid_identity_exact": translated == protein if verify_translation else None,
         "global_gc_pass": profile["global_gc_min"]
         <= gc_value
         <= profile["global_gc_max"],
@@ -298,6 +311,7 @@ def audit_cds(
         or cai >= profile["cai_min"],
         "rare_cluster_pass": rare_clusters is None or rare_clusters == 0,
     }
+    failed_checks = [name for name, passed in checks.items() if passed is False]
     return {
         "sequence_sha256": sha256_text(dna),
         "length_nt": len(dna),
@@ -318,10 +332,10 @@ def audit_cds(
         "max_homopolymer": max_homopolymer_length(dna),
         "forbidden_site_count": sum(hits.values()),
         "forbidden_site_hits": hits,
-        "translated_protein_sha256": sha256_text(translated),
+        "translated_protein_sha256": sha256_text(translated) if translated is not None else None,
         "checks": checks,
-        "gate_status": "PASS" if all(checks.values()) else "FAIL",
-        "failed_checks": [name for name, passed in checks.items() if not passed],
+        "gate_status": "FAIL" if failed_checks else "PASS",
+        "failed_checks": failed_checks,
     }
 
 
@@ -348,8 +362,13 @@ def assess_generated_cds(
     additional_forbidden_motifs: Iterable[str] = (),
     *,
     host_taxon_id: int | None = None,
+    verify_translation: bool = True,
 ) -> dict[str, Any]:
-    """Measure the model output and require encoding identity only; never edit it."""
+    """Require CDS structure and, by default, independently verify encoding identity.
+
+    Only unchanged model output generated with match_protein=True may skip
+    translation. Edited sequences retain the default independent validation.
+    """
     motifs = dict(DEFAULT_FORBIDDEN_MOTIFS)
     user_motifs = _validate_additional_motifs(additional_forbidden_motifs)
     motifs.update(user_motifs)
@@ -358,15 +377,16 @@ def assess_generated_cds(
     else:
         profile = dict(MG1655_PROFILE if host_taxon_id == 511145 else GENERIC_PROFILE)
         profile['organism_id'] = int(organism_id)
-    audit = audit_cds(sequence, protein_sequence, profile, motifs)
+    audit = audit_cds(sequence, protein_sequence, profile, motifs,
+                      verify_translation=verify_translation)
     audit["user_forbidden_site_hits"] = _user_forbidden_site_hits(sequence, user_motifs.values())
-    failed = [
-        name for name in (
-            "valid_alphabet", "length_multiple_of_three", "start_codon_valid",
-            "stop_codon_valid", "no_internal_stop", "amino_acid_identity_exact",
-        )
-        if not audit["checks"][name]
+    required_checks = [
+        "valid_alphabet", "length_multiple_of_three", "start_codon_valid",
+        "stop_codon_valid", "no_internal_stop",
     ]
+    if verify_translation:
+        required_checks.append("amino_acid_identity_exact")
+    failed = [name for name in required_checks if not audit["checks"][name]]
     if failed:
         raise CdsConstraintError(
             "CodonTransformer output failed encoding identity checks: " + ", ".join(failed)

@@ -14,13 +14,16 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 from src.protein_to_cds.codon_optimization import CdsOptimizationResult
-from src.protein_to_cds.codon_generation import GENERATION_MODE, GENERATION_SCHEMA_VERSION
+from src.protein_to_cds.codon_generation import (
+    GENERATION_MODE, GENERATION_SCHEMA_VERSION, GENERATION_VALIDATION_METHOD,
+)
 from src.protein_to_cds.config import HostProfile
 from src.protein_to_cds.get_protein_selection_context import (
     ProteinToCdsContext,
     SelectedProteinForCds,
 )
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
+from src.protein_to_cds.sequence_constraints import cds_structure_checks
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS, cds_dependency_update
 
@@ -162,13 +165,6 @@ def _validated_success_payload(
         raise ValueError(f"raw CDS hash mismatch: {accession}")
     if _sha256_text(final_sequence) != optimization.final_sequence_sha256:
         raise ValueError(f"optimized CDS hash mismatch: {accession}")
-    if _translated_protein(raw_sequence) != protein_sequence:
-        raise ValueError(f"raw CDS does not encode the selected protein: {accession}")
-    if _translated_protein(final_sequence) != protein_sequence:
-        raise ValueError(
-            f"optimized CDS does not encode the selected protein: {accession}"
-        )
-
     try:
         report = json.loads(optimization.report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -178,19 +174,34 @@ def _validated_success_payload(
     if report != optimization.report:
         raise ValueError(f"optimization report changed after optimization: {accession}")
     generation_only = report.get("processing_mode") == GENERATION_MODE
+    model_constrained = generation_only and report.get("schema_version") == GENERATION_SCHEMA_VERSION
     if generation_only:
         if (
-            report.get("schema_version") != GENERATION_SCHEMA_VERSION
+            report.get("schema_version") not in {GENERATION_SCHEMA_VERSION, "protein_to_cds.generation.v1"}
             or report.get("status") != "PASS"
             or report.get("constraint_repair_applied") is not False
             or report.get("quality_checks_enforced") is not False
             or raw_sequence != final_sequence
             or report.get("changes", {}).get("codon_change_count") != 0
             or report.get("changes", {}).get("nucleotide_change_count") != 0
+            or (model_constrained and (
+                report.get("model", {}).get("match_protein") is not True
+                or report.get("encoding_validation") != GENERATION_VALIDATION_METHOD
+                or report.get("independent_translation_performed") is not False
+            ))
         ):
             raise ValueError(f"CodonTransformer-only result was modified or is invalid: {accession}")
     elif report.get("status") != "PASS" or report.get("final", {}).get("gate_status") != "PASS":
         raise ValueError(f"optimization constraint gate did not pass: {accession}")
+    if model_constrained:
+        failed = [name for name, passed in cds_structure_checks(raw_sequence).items() if not passed]
+        if failed:
+            raise ValueError(f"CDS structure check failed for {accession}: {', '.join(failed)}")
+    else:
+        if _translated_protein(raw_sequence) != protein_sequence:
+            raise ValueError(f"raw CDS does not encode the selected protein: {accession}")
+        if _translated_protein(final_sequence) != protein_sequence:
+            raise ValueError(f"optimized CDS does not encode the selected protein: {accession}")
     if report.get("protein", {}).get("sequence_sha256") != protein_hash:
         raise ValueError(f"optimization report protein hash mismatch: {accession}")
     if report.get("input_fingerprint") != optimization.input_fingerprint:

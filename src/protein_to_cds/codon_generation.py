@@ -25,8 +25,9 @@ from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
 from src.protein_to_cds.sequence_constraints import CdsConstraintError, assess_generated_cds, sha256_text
 from src.protein_to_cds.artifacts import ArtifactTransaction
 
-GENERATION_SCHEMA_VERSION = "protein_to_cds.generation.v1"
+GENERATION_SCHEMA_VERSION = "protein_to_cds.generation.v2"
 GENERATION_MODE = "codon_transformer_only"
+GENERATION_VALIDATION_METHOD = "codon_transformer_match_protein"
 
 
 def generate_protein_cds(
@@ -72,6 +73,7 @@ def generate_protein_cds(
             audit = assess_generated_cds(
                 sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
                 host_taxon_id=host.taxon_id,
+                verify_translation=False,
             )
             if (
                 isinstance(candidate, dict)
@@ -80,15 +82,16 @@ def generate_protein_cds(
                 and candidate.get("status") == "PASS"
                 and candidate.get("constraint_repair_applied") is False
                 and candidate.get("quality_checks_enforced") is False
+                and candidate.get("model", {}).get("match_protein") is True
+                and candidate.get("encoding_validation") == GENERATION_VALIDATION_METHOD
+                and candidate.get("independent_translation_performed") is False
                 and candidate.get("input_fingerprint") == fingerprint
                 and candidate.get("changes", {}).get("codon_change_count") == 0
                 and candidate.get("changes", {}).get("nucleotide_change_count") == 0
                 and candidate.get("protein", {}).get("sequence_sha256") == protein.sequence_sha256
                 and candidate.get("host") == host.to_dict()
-                and (
-                    not candidate.get("raw_cds", {}).get("file_sha256")
-                    or candidate["raw_cds"]["file_sha256"] == hashlib.sha256(raw_path.read_bytes()).hexdigest()
-                )
+                and candidate.get("raw_cds", {}).get("file_sha256")
+                == hashlib.sha256(raw_path.read_bytes()).hexdigest()
                 and all(
                     candidate.get(stage, {}).get(key) == value
                     for stage in ("raw", "final") for key, value in audit.items()
@@ -105,6 +108,7 @@ def generate_protein_cds(
             audit = assess_generated_cds(
                 sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
                 host_taxon_id=host.taxon_id,
+                verify_translation=False,
             )
         except Exception as exc:
             failure_path = report_path.with_name(f"{protein.primary_accession}.generation.failed.json") if report_path.exists() else report_path
@@ -124,6 +128,8 @@ def generate_protein_cds(
             "status": "PASS",
             "constraint_repair_applied": False,
             "quality_checks_enforced": False,
+            "encoding_validation": GENERATION_VALIDATION_METHOD,
+            "independent_translation_performed": False,
             "input_fingerprint": fingerprint,
             "protein": {
                 "accession": protein.primary_accession,
@@ -175,4 +181,4 @@ def generate_protein_cds(
     )
 
 
-__all__ = ["GENERATION_SCHEMA_VERSION", "GENERATION_MODE", "generate_protein_cds"]
+__all__ = ["GENERATION_SCHEMA_VERSION", "GENERATION_MODE", "GENERATION_VALIDATION_METHOD", "generate_protein_cds"]
