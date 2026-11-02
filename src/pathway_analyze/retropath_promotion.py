@@ -1,10 +1,6 @@
-"""Materialize strictly validated RetroPath combinations as formal solutions.
+"""Shared RetroPath solution projection helpers and legacy promotion checks.
 
-The raw RetroPath/P5/P8 artifacts remain the evidence source.  This module
-projects every ``PASS_STRICT_ROUTE_FLUX`` combination into the same four CSV
-tables consumed by the regular solution/info/manifest workflow.  Existing
-KEGG rows keep their identifiers; the RetroPath slice is replaced atomically
-enough to fail closed through a commit-marker manifest written last.
+Candidate materialization and validation overlays live in retropath_materialization.
 """
 
 from __future__ import annotations
@@ -17,29 +13,11 @@ import math
 import re
 import tempfile
 from collections import defaultdict
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from src.pathway_analyze.kegg_gap_analyze import (
-    KeggRestClient,
-    gap_depth_output_dir,
-)
-from src.pathway_analyze.retropath_analyze import (
-    CANDIDATE_ROUTES_FILE_NAME,
-    CANDIDATE_STEPS_FILE_NAME,
-)
-from src.pathway_analyze.retropath_gem_validation import (
-    HYPOTHESIS_COLUMNS,
-    STOICHIOMETRY_HYPOTHESES_FILE_NAME,
-    STOICHIOMETRY_TERMS_FILE_NAME,
-    SUMMARY_COLUMNS,
-    TERM_COLUMNS,
-    VALIDATION_MANIFEST_FILE_NAME,
-    VALIDATION_SUMMARY_FILE_NAME,
-)
+from src.pathway_analyze.kegg_gap_analyze import KeggRestClient
 from src.pathway_analyze.retropath_mnxref import MnxrefIndex
-from src.pathway_analyze.target_id import validate_target_compound_id
 
 
 RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v5"
@@ -782,191 +760,6 @@ def _load_validation_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-def materialize_retropath_solutions(
-    config: Any,
-    *,
-    validation_manifest_path: str | Path,
-) -> dict[str, Any]:
-    """Replace the formal RetroPath slice with the current strict P8 passes."""
-
-    target = validate_target_compound_id(config.target_name)
-    depth = _as_int(getattr(config, "depth", 0), "depth")
-    gap_dir = gap_depth_output_dir(Path(config.gap_output_path), depth).resolve()
-    retropath_dir = gap_dir / "retropath"
-    p8_dir = retropath_dir / "gem_validation"
-    manifest_path = Path(validation_manifest_path).expanduser().resolve()
-    if manifest_path != (p8_dir / VALIDATION_MANIFEST_FILE_NAME).resolve():
-        raise ValueError("unexpected P8 validation manifest path")
-    p8_manifest = _load_validation_manifest(manifest_path)
-    if (
-        p8_manifest.get("target_compound") != target
-        or _as_int(p8_manifest.get("expansion_depth"), "expansion_depth") != depth
-    ):
-        raise ValueError("P8 validation manifest identity mismatch")
-
-    p8_summary_path = _verified_artifact(
-        p8_dir, p8_manifest, VALIDATION_SUMMARY_FILE_NAME
-    )
-    hypothesis_path = _verified_artifact(
-        p8_dir, p8_manifest, STOICHIOMETRY_HYPOTHESES_FILE_NAME
-    )
-    term_path = _verified_artifact(
-        p8_dir, p8_manifest, STOICHIOMETRY_TERMS_FILE_NAME
-    )
-    passing = [
-        row for row in _read_csv(p8_summary_path, SUMMARY_COLUMNS)
-        if row.get("validation_status") == "PASS_STRICT_ROUTE_FLUX"
-        and str(row.get("combination_id") or "").strip()
-    ]
-    passing.sort(key=lambda row: (
-        _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1),
-        str(row.get("combination_id") or ""),
-    ))
-    routes = _read_csv(retropath_dir / CANDIDATE_ROUTES_FILE_NAME, ("candidate_id",))
-    route_by_id = {
-        str(row.get("candidate_id") or "").strip(): row for row in routes
-    }
-    candidate_steps = _candidate_steps_by_id(
-        _read_csv(retropath_dir / CANDIDATE_STEPS_FILE_NAME, ("candidate_id", "step_id"))
-    )
-    hypotheses = {
-        str(row.get("hypothesis_id") or "").strip(): row
-        for row in _read_csv(hypothesis_path, HYPOTHESIS_COLUMNS)
-    }
-    terms_by_hypothesis: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in _read_csv(term_path, TERM_COLUMNS):
-        terms_by_hypothesis[str(row.get("hypothesis_id") or "").strip()].append(row)
-
-    solution_path = gap_dir / "solutions.csv"
-    step_path = gap_dir / "all_solution_steps.csv"
-    existing_summaries = _read_csv(solution_path)
-    existing_steps = _read_csv(step_path)
-    kegg_summaries = [
-        row for row in existing_summaries
-        if str(row.get("solution_source") or "kegg").strip().lower() != "retropath"
-    ]
-    kegg_ids = [
-        _as_int(row.get("solution_id"), "solution_id", minimum=1)
-        for row in kegg_summaries
-    ]
-    next_solution_id = max(kegg_ids, default=0) + 1
-    valid_kegg_ids = set(kegg_ids)
-    kegg_steps = [
-        row for row in existing_steps
-        if _as_int(row.get("solution_id"), "solution_id", minimum=1) in valid_kegg_ids
-    ]
-
-    promotion_seed = {
-        "schema_version": RETROPATH_PROMOTION_SCHEMA,
-        "target_compound": target,
-        "expansion_depth": depth,
-        "p8_validation_sha256": _sha256_file(manifest_path),
-        "passing_combinations": [
-            {
-                "candidate_rank": _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1),
-                "candidate_id": row.get("candidate_id"),
-                "combination_id": row.get("combination_id"),
-                "hypothesis_ids": list(_split(row.get("stoichiometry_hypothesis_ids"))),
-            }
-            for row in passing
-        ],
-    }
-    promotion_id = f"RP2PROMOTE:{_canonical_hash(promotion_seed)}"
-    rules_path = Path(config.retropath_rules_path).expanduser().resolve()
-    rules = _load_rules(rules_path)
-    kegg = KeggRestClient(Path(config.cache_dir).resolve() / "kegg")
-    mnxref_dir = Path(config.data_dir) / "retropath" / "mnxref" / "3.0"
-    rp_summaries: list[dict[str, Any]] = []
-    rp_steps: list[dict[str, Any]] = []
-    mappings: list[dict[str, Any]] = []
-    with MnxrefIndex(mnxref_dir, rules_path) as mnxref:
-        for offset, row in enumerate(passing):
-            candidate_id = str(row.get("candidate_id") or "").strip()
-            route = route_by_id.get(candidate_id)
-            steps = candidate_steps.get(candidate_id)
-            if route is None or not steps:
-                raise ValueError(f"P5 candidate inputs missing for {candidate_id}")
-            solution_id = next_solution_id + offset
-            summary, step_rows = _build_solution_rows(
-                solution_id=solution_id,
-                passing=row,
-                route=route,
-                steps=steps,
-                hypotheses=hypotheses,
-                terms_by_hypothesis=terms_by_hypothesis,
-                rules=rules,
-                mnxref=mnxref,
-                kegg=kegg,
-                target_compound=target,
-                promotion_id=promotion_id,
-            )
-            rp_summaries.append(summary)
-            rp_steps.extend(step_rows)
-            mappings.append({
-                "solution_id": solution_id,
-                "candidate_rank": _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1),
-                "candidate_id": candidate_id,
-                "combination_id": str(row.get("combination_id") or ""),
-                "stoichiometry_hypothesis_ids": list(
-                    _split(row.get("stoichiometry_hypothesis_ids"))
-                ),
-            })
-
-    for row in kegg_summaries:
-        row.setdefault("solution_source", "kegg")
-    summary_rows = [*kegg_summaries, *rp_summaries]
-    step_rows = [*kegg_steps, *rp_steps]
-    texts = {
-        "solutions.csv": _render_csv(
-            _field_order(summary_rows, _SUMMARY_BASE_COLUMNS, _SUMMARY_RETROPATH_COLUMNS),
-            summary_rows,
-        ),
-        "all_solution_steps.csv": _render_csv(
-            _field_order(step_rows, _STEP_BASE_COLUMNS, _STEP_RETROPATH_COLUMNS),
-            step_rows,
-        ),
-    }
-    output_hashes: dict[str, str] = {}
-    for name, text in texts.items():
-        output_hashes[name] = _atomic_write_text(gap_dir / name, text)
-
-    promotion_manifest_path = retropath_dir / PROMOTION_MANIFEST_FILE_NAME
-    promotion_manifest = {
-        **promotion_seed,
-        "promotion_id": promotion_id,
-        "created_at": datetime.now(UTC).isoformat(),
-        "formal_promotion_allowed": bool(mappings),
-        "formal_solution_count": len(mappings),
-        "solution_mappings": mappings,
-        "inputs": {
-            "p8_validation_manifest": str(manifest_path),
-            "p8_validation_sha256": _sha256_file(manifest_path),
-            "rr02_path": str(rules_path),
-            "rr02_sha256": _sha256_file(rules_path),
-            "p8_inputs": p8_manifest.get("inputs", {}),
-        },
-        "artifacts": {
-            name: {"path": str((gap_dir / name).resolve()), "sha256": digest}
-            for name, digest in output_hashes.items()
-        },
-    }
-    promotion_manifest_sha256 = _atomic_write_json(
-        promotion_manifest_path,
-        promotion_manifest,
-    )
-    return {
-        "ok": True,
-        "schema_version": RETROPATH_PROMOTION_SCHEMA,
-        "promotion_id": promotion_id,
-        "promotion_manifest": str(promotion_manifest_path.resolve()),
-        "promotion_manifest_sha256": promotion_manifest_sha256,
-        "formal_solution_count": len(mappings),
-        "formal_solution_ids": [item["solution_id"] for item in mappings],
-        "solution_mappings": mappings,
-        "output_hashes": output_hashes,
-    }
-
-
 def verify_retropath_solution_promotion(
     *,
     gap_dir: str | Path,
@@ -1037,6 +830,5 @@ def verify_retropath_solution_promotion(
 __all__ = [
     "PROMOTION_MANIFEST_FILE_NAME",
     "RETROPATH_PROMOTION_SCHEMA",
-    "materialize_retropath_solutions",
     "verify_retropath_solution_promotion",
 ]

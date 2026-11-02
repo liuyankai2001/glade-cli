@@ -18,9 +18,7 @@ from src.main_protein_selection.genome_ec_filter import (
     UNSPECIFIED_GENOME, read_current_genome_selection, validate_genome_ec_filter,
 )
 from src.main_protein_selection.models import (
-    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
-    MainEnzymeSelectionResult,
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
@@ -93,22 +91,6 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
         return MainEnzymeSetsResult.model_validate(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
-
-
-def _read_candidate_selection(path: Path) -> MainEnzymeSelectionResult:
-    if not path.is_file():
-        raise FileNotFoundError(
-            "未找到主酶候选，请重新运行：main-enzyme -i <输入文件>"
-        )
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
-        raise ValueError(
-            "主酶候选使用旧版结果格式，请重新运行 main-enzyme"
-        )
-    try:
-        return MainEnzymeSelectionResult.model_validate(payload)
-    except ValueError as exc:
-        raise ValueError(f"主酶候选结果格式无效：{path}") from exc
 
 
 def _positive_set_id(config: Any) -> int:
