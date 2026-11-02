@@ -20,7 +20,7 @@ from src.pathway_analyze.kegg_gap_analyze import KeggRestClient
 from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 
 
-RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v5"
+RETROPATH_PROMOTION_SCHEMA = "retropath_solution_promotion.v6"
 PROMOTION_MANIFEST_FILE_NAME = "formal_solution_promotion.json"
 
 _KEGG_REACTION = re.compile(r"^R\d{5}$", re.IGNORECASE)
@@ -122,18 +122,6 @@ _STEP_RETROPATH_COLUMNS = (
     "stereo_resolution_source",
     "depends_on_step_ids",
 )
-
-
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _canonical_hash(value: Any) -> str:
@@ -241,7 +229,7 @@ def _render_csv(columns: Sequence[str], rows: Iterable[Mapping[str, Any]]) -> st
     return buffer.getvalue()
 
 
-def _atomic_write_text(path: Path, text: str) -> str:
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -261,10 +249,9 @@ def _atomic_write_text(path: Path, text: str) -> str:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return _sha256_bytes(text.encode("utf-8"))
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> str:
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     text = json.dumps(
         payload,
         ensure_ascii=False,
@@ -272,7 +259,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> str:
         indent=2,
         allow_nan=False,
     ) + "\n"
-    return _atomic_write_text(path, text)
+    _atomic_write_text(path, text)
 
 
 def _parse_stoichiometry(value: Any) -> tuple[tuple[str, float], ...]:
@@ -745,8 +732,8 @@ def _verified_artifact(
         raise ValueError(f"P8 artifact missing: {name}")
     if Path(str(record.get("path") or "")).expanduser().resolve() != path:
         raise ValueError(f"P8 artifact path stale: {name}")
-    if not path.is_file() or record.get("sha256") != _sha256_file(path):
-        raise ValueError(f"P8 artifact checksum mismatch: {name}")
+    if not path.is_file():
+        raise ValueError(f"P8 artifact file missing: {name}")
     return path
 
 
@@ -795,13 +782,11 @@ def verify_retropath_solution_promotion(
             not isinstance(record, Mapping)
             or Path(str(record.get("path") or "")).expanduser().resolve() != expected
             or not expected.is_file()
-            or record.get("sha256") != _sha256_file(expected)
         ):
             raise ValueError(f"RetroPath promotion artifact mismatch: {name}")
     p8_record = payload.get("inputs", {}).get("p8_validation_manifest")
-    p8_sha = payload.get("inputs", {}).get("p8_validation_sha256")
     p8_path = Path(str(p8_record or "")).expanduser().resolve()
-    if not p8_path.is_file() or p8_sha != _sha256_file(p8_path):
+    if not p8_path.is_file():
         raise ValueError("RetroPath P8 validation binding is stale")
     p8_manifest = _load_validation_manifest(p8_path)
     p8_artifacts = p8_manifest.get("artifacts")
@@ -813,7 +798,6 @@ def verify_retropath_solution_promotion(
         artifact_path = Path(str(record.get("path") or "")).expanduser().resolve()
         if (
             not artifact_path.is_file()
-            or record.get("sha256") != _sha256_file(artifact_path)
         ):
             raise ValueError(f"RetroPath P8 artifact mismatch: {name}")
     if solution_id is not None:

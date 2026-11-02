@@ -9,7 +9,6 @@ report generator, and offline tests.
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 import re
@@ -19,37 +18,17 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 BENCHMARK_DATASET_SCHEMA = "retropath_benchmark_cases.v1"
-BENCHMARK_RUN_SCHEMA = "retropath_benchmark_run.v1"
-BENCHMARK_TASK_SCHEMA = "retropath_benchmark_task.v1"
+BENCHMARK_RUN_SCHEMA = "retropath_benchmark_run.v2"
+BENCHMARK_TASK_SCHEMA = "retropath_benchmark_task.v2"
 
 KEGG_COMPOUND_RE = re.compile(r"^C\d{5}$")
 KEGG_REACTION_RE = re.compile(r"^R\d{5}$")
 MNXR_RE = re.compile(r"^MNXR\d+$")
 EC_RE = re.compile(r"^\d+\.(?:\d+|-)\.(?:\d+|-|[A-Za-z]+)\.(?:\d+|-|[A-Za-z]+)$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def canonical_sha256(value: Any) -> str:
-    text = json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -105,8 +84,6 @@ def _positive_int(value: Any, field: str) -> int:
 class BenchmarkResource:
     name: str
     path: Path
-    sha256: str
-    compatible_sha256: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(
@@ -119,38 +96,18 @@ class BenchmarkResource:
         payload = _mapping(value, f"resources.{name}")
         raw_path = Path(_text(payload.get("path"), f"resources.{name}.path"))
         path = raw_path if raw_path.is_absolute() else root / raw_path
-        digest = _text(payload.get("sha256"), f"resources.{name}.sha256").lower()
-        if SHA256_RE.fullmatch(digest) is None:
-            raise ValueError(f"resources.{name}.sha256 must be a SHA-256 hex digest")
-        compatible = _unique_strings(
-            payload.get("compatible_sha256", []),
-            f"resources.{name}.compatible_sha256",
-            pattern=SHA256_RE,
-            allow_empty=True,
-        )
         return cls(
             name=name,
             path=path.resolve(),
-            sha256=digest,
-            compatible_sha256=compatible,
         )
 
     def verify(self) -> None:
         if not self.path.is_file():
             raise FileNotFoundError(f"benchmark resource is missing: {self.path}")
-        observed = sha256_file(self.path)
-        if observed != self.sha256:
-            raise ValueError(
-                f"benchmark resource checksum mismatch for {self.name}: "
-                f"expected {self.sha256}, observed {observed}"
-            )
-
     def to_dict(self) -> dict[str, str]:
         return {
             "name": self.name,
             "path": str(self.path),
-            "sha256": self.sha256,
-            "compatible_sha256": list(self.compatible_sha256),
         }
 
 
@@ -378,7 +335,6 @@ class BenchmarkDataset:
     resources: Mapping[str, BenchmarkResource]
     defaults: BenchmarkDefaults
     cases: tuple[BenchmarkCase, ...]
-    dataset_sha256: str
 
     def case_by_id(self, case_id: str) -> BenchmarkCase:
         for case in self.cases:
@@ -435,7 +391,6 @@ class BenchmarkDataset:
             },
             "defaults": self.defaults.to_dict(),
             "cases": [case.to_dict() for case in self.cases],
-            "dataset_sha256": self.dataset_sha256,
         }
 
 
@@ -492,7 +447,6 @@ def load_benchmark_dataset(
         resources=resources,
         defaults=BenchmarkDefaults.from_mapping(document.get("defaults")),
         cases=cases,
-        dataset_sha256=sha256_file(resolved_path),
     )
     if require_pilot_shape:
         dataset.validate_pilot_shape()
@@ -529,10 +483,8 @@ __all__ = [
     "BenchmarkDefaults",
     "BenchmarkGoldStep",
     "BenchmarkResource",
-    "canonical_sha256",
     "finite_float",
     "load_benchmark_dataset",
     "repository_root",
-    "sha256_file",
     "split_ids",
 ]

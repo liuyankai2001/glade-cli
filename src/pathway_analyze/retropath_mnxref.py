@@ -112,14 +112,6 @@ def default_install_dir() -> Path:
     return default_project_root() / DEFAULT_INSTALL_RELATIVE_PATH
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _md5_file(path: Path) -> str:
     digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as handle:
@@ -510,7 +502,6 @@ def build_mnxref_subset(
                     ("schema_version", MNXREF_INDEX_SCHEMA),
                     ("mnxref_version", MNXREF_VERSION),
                     ("mnxref_release", MNXREF_RELEASE),
-                    ("rr02_sha256", _sha256_file(resolved_rules)),
                 ),
             )
             connection.commit()
@@ -526,7 +517,6 @@ def build_mnxref_subset(
             sources[name] = {
                 **metadata,
                 "size_bytes": path.stat().st_size,
-                "sha256": _sha256_file(path),
                 "md5": _md5_file(path),
             }
         manifest = {
@@ -535,9 +525,7 @@ def build_mnxref_subset(
             "mnxref_release": MNXREF_RELEASE,
             "installed_at": datetime.now(UTC).isoformat(),
             "rr02_path": str(resolved_rules),
-            "rr02_sha256": _sha256_file(resolved_rules),
             "index_path": str(index_path),
-            "index_sha256": _sha256_file(index_path),
             "sources": sources,
             "counts": {
                 "rule_template_links": len(rule_rows),
@@ -641,10 +629,6 @@ def validate_mnxref_index(
         raise MnxrefIndexError(f"unsupported MNXref manifest: {manifest_path}")
     if not resolved_rules.is_file():
         raise MnxrefIndexError(f"RR02 rules file not found: {resolved_rules}")
-    if manifest.get("rr02_sha256") != _sha256_file(resolved_rules):
-        raise MnxrefIndexError("MNXref subset was built for a different RR02 file")
-    if manifest.get("index_sha256") != _sha256_file(index_path):
-        raise MnxrefIndexError("MNXref SQLite index checksum mismatch")
     connection = sqlite3.connect(f"file:{index_path.as_posix()}?mode=ro", uri=True)
     try:
         metadata = dict(connection.execute("SELECT key, value FROM metadata"))
@@ -653,7 +637,6 @@ def validate_mnxref_index(
     if (
         metadata.get("schema_version") != MNXREF_INDEX_SCHEMA
         or metadata.get("mnxref_version") != MNXREF_VERSION
-        or metadata.get("rr02_sha256") != manifest.get("rr02_sha256")
     ):
         raise MnxrefIndexError("MNXref SQLite metadata does not match its manifest")
     return manifest

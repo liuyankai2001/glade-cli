@@ -302,25 +302,8 @@ def select_main_enzymes(
         ]
         if retropath_requirements:
             rules_path = Path(retropath_rules_path or "").expanduser().resolve()
-            prediction = (
-                manifest.get("solution", {}).get("prediction")
-                if isinstance(manifest.get("solution"), dict)
-                else None
-            )
-            expected_rules_sha = (
-                str(prediction.get("rr02_sha256") or "")
-                if isinstance(prediction, dict)
-                else ""
-            )
-            if (
-                not rules_path.is_file()
-                or not expected_rules_sha
-                or file_sha256(rules_path) != expected_rules_sha
-            ):
-                raise ValueError(
-                    "RetroPath manifest RR02 binding is stale; rerun gap "
-                    "--retropath and write --solution N"
-                )
+            if not rules_path.is_file():
+                raise ValueError("RetroPath RR02 rules file is missing")
         genome_path = resolve_genome_path(genome_path)
         genome_identity = read_genome_identity(genome_path) if genome_path is not None else None
         if genome_identity is not None:

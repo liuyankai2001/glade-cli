@@ -9,7 +9,6 @@ solutions or design manifests.
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import tempfile
 from collections.abc import Mapping
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from src.pathway_analyze.expand_chassis_metabolites import load_expansion_bundle
+from src.pathway_analyze.result_lifecycle import ENZYME_RESULT_PATTERN, invalidate_result_references
 from src.pathway_analyze.reaction_direction_policy import (
     DEFAULT_UNPRE_RE_REACTION,
     validate_reaction_direction_mode,
@@ -46,7 +46,7 @@ from src.pathway_analyze.retropath_structure import KeggMolStructureProvider
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v3"
+RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v4"
 PIPELINE_RESULT_FILE_NAME = "pipeline_result.json"
 
 
@@ -67,14 +67,6 @@ class RetroPathPipelineError(RuntimeError):
         self.result_path = result_path
         suffix = f"; result: {result_path}" if result_path is not None else ""
         super().__init__(f"{self.status}: {self.detail}{suffix}")
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -383,6 +375,14 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             stage="configuration",
         ) from exc
 
+    # Invalidate current references; keep downloaded data and old artifact files.
+    invalidate_result_references(
+        output_dir,
+        "run_manifest.json", "solution_materialization.json",
+        "formal_solution_promotion.json", "compound_annotations.json",
+        "gem_validation/validation_manifest.json", ENZYME_RESULT_PATTERN,
+    )
+
     if not rules_path.is_file():
         raise _write_failure(
             output_dir=output_dir,
@@ -490,27 +490,21 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             "artifacts": {
                 "expansion_source": {
                     "path": str(expansion_bundle.expanded_file.resolve()),
-                    "sha256": _sha256_file(expansion_bundle.expanded_file),
                 },
                 "retropath_rules": {
                     "path": str(rules_path),
-                    "sha256": _sha256_file(rules_path),
                 },
                 "target_source": {
                     "path": str(input_bundle.target_source_path.resolve()),
-                    "sha256": input_bundle.target_source_sha256,
                 },
                 "chassis_sink": {
                     "path": str(input_bundle.chassis_sink_path.resolve()),
-                    "sha256": input_bundle.chassis_sink_sha256,
                 },
                 "compound_mapping": {
                     "path": str(input_bundle.compound_mapping_path.resolve()),
-                    "sha256": _sha256_file(input_bundle.compound_mapping_path),
                 },
                 "rejected_compounds": {
                     "path": str(input_bundle.rejected_compounds_path.resolve()),
-                    "sha256": _sha256_file(input_bundle.rejected_compounds_path),
                 },
             },
         }
@@ -823,27 +817,21 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "artifacts": {
             "expansion_source": {
                 "path": str(expansion_bundle.expanded_file.resolve()),
-                "sha256": _sha256_file(expansion_bundle.expanded_file),
             },
             "retropath_rules": {
                 "path": str(rules_path),
-                "sha256": None if provenance is None else provenance.rules_sha256,
             },
             "target_source": {
                 "path": str(input_bundle.target_source_path.resolve()),
-                "sha256": input_bundle.target_source_sha256,
             },
             "chassis_sink": {
                 "path": str(input_bundle.chassis_sink_path.resolve()),
-                "sha256": input_bundle.chassis_sink_sha256,
             },
             "compound_mapping": {
                 "path": str(input_bundle.compound_mapping_path.resolve()),
-                "sha256": _sha256_file(input_bundle.compound_mapping_path),
             },
             "rejected_compounds": {
                 "path": str(input_bundle.rejected_compounds_path.resolve()),
-                "sha256": _sha256_file(input_bundle.rejected_compounds_path),
             },
             "client_run_manifest": str(client_run.run_manifest_path.resolve()),
             "client_state": str(client_run.client_state_path.resolve()),
@@ -851,21 +839,15 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
             "scope_artifacts": scope_artifacts,
             "candidate_routes": {
                 "path": str(candidate_artifacts.candidate_routes_path.resolve()),
-                "sha256": candidate_artifacts.candidate_routes_sha256,
             },
             "candidate_steps": {
                 "path": str(candidate_artifacts.candidate_steps_path.resolve()),
-                "sha256": candidate_artifacts.candidate_steps_sha256,
             },
             "rejected_routes": {
                 "path": str(candidate_artifacts.rejected_routes_path.resolve()),
-                "sha256": candidate_artifacts.rejected_routes_sha256,
             },
             "solution_materialization": {
                 "path": materialization["materialization_manifest"],
-                "sha256": materialization[
-                    "materialization_manifest_sha256"
-                ],
             },
         },
     }

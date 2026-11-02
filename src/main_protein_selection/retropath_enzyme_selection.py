@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.pathway_analyze.result_lifecycle import invalidate_result_references
+
 import csv
 import hashlib
 import io
@@ -60,7 +62,7 @@ from src.pathway_analyze.retropath_mnxref import (
     MnxrefReactionTemplate,
 )
 
-RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v2"
+RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v3"
 RETROPATH_ENZYME_REQUIREMENTS_SCHEMA = "retropath_enzyme_requirements.v2"
 RETROPATH_SELENZYME_EVIDENCE_SCHEMA = "retropath_selenzyme_evidence.v1"
 
@@ -199,14 +201,6 @@ class _SearchOutcome:
     source_unavailable: bool = False
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(
@@ -219,7 +213,7 @@ def _canonical_sha256(value: Any) -> str:
     ).hexdigest()
 
 
-def _atomic_write_text(path: Path, text: str) -> str:
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -238,11 +232,10 @@ def _atomic_write_text(path: Path, text: str) -> str:
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
-    return _sha256_file(path)
 
 
-def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> str:
-    return _atomic_write_text(
+def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+    _atomic_write_text(
         path,
         json.dumps(
             value,
@@ -336,8 +329,8 @@ def _verified_p8_artifact(
     expected = (p8_dir / name).resolve()
     if Path(str(record.get("path") or "")).expanduser().resolve() != expected:
         raise ValueError(f"P8 artifact path is stale: {name}")
-    if not expected.is_file() or record.get("sha256") != _sha256_file(expected):
-        raise ValueError(f"P8 artifact checksum mismatch: {name}")
+    if not expected.is_file():
+        raise ValueError(f"P8 artifact file is missing: {name}")
     return expected
 
 
@@ -395,29 +388,25 @@ def _load_p9_inputs(config: Any) -> _ValidatedP9Inputs:
         or _as_int(manifest.get("expansion_depth"), "P8 expansion_depth")
         != candidate_inputs.depth
     ):
-        raise ValueError("P8 validation manifest identity mismatch")
+        raise ValueError("P8 validation manifest identity/format mismatch; regenerate the pathway validation")
     p8_inputs = manifest.get("inputs")
     if not isinstance(p8_inputs, Mapping):
         raise ValueError("P8 validation inputs are missing")
     pipeline_record = p8_inputs.get("pipeline_result")
-    if (
-        not isinstance(pipeline_record, Mapping)
-        or pipeline_record.get("sha256")
-        != _sha256_file(candidate_inputs.pipeline_path)
-    ):
-        raise ValueError("P8 pipeline input is stale")
+    if (not isinstance(pipeline_record, Mapping)
+            or Path(str(pipeline_record.get("path") or "")).resolve() != candidate_inputs.pipeline_path.resolve()
+            or not candidate_inputs.pipeline_path.is_file()):
+        raise ValueError("P8 pipeline input path is missing or inconsistent")
     pipeline_artifacts = candidate_inputs.pipeline.get("artifacts")
     if not isinstance(pipeline_artifacts, Mapping):
         raise ValueError("RetroPath pipeline artifacts are missing")
     route_record = pipeline_artifacts.get("candidate_routes")
     step_record = pipeline_artifacts.get("candidate_steps")
-    if (
-        not isinstance(route_record, Mapping)
-        or not isinstance(step_record, Mapping)
-        or p8_inputs.get("candidate_routes_sha256") != route_record.get("sha256")
-        or p8_inputs.get("candidate_steps_sha256") != step_record.get("sha256")
-    ):
-        raise ValueError("P8 candidate inputs are stale")
+    for key, record in (("candidate_routes", route_record), ("candidate_steps", step_record)):
+        source = p8_inputs.get(key)
+        if (not isinstance(record, Mapping) or not isinstance(source, Mapping)
+                or Path(str(source.get("path") or "")).resolve() != Path(str(record.get("path") or "")).resolve()):
+            raise ValueError(f"P8 candidate input path is inconsistent: {key}")
     statuses = manifest.get("candidate_statuses")
     if (
         not isinstance(statuses, Mapping)
@@ -1884,10 +1873,13 @@ def select_retropath_enzymes(
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     inputs = _load_p9_inputs(config)
+    invalidate_result_references(
+        inputs.candidate_inputs.retropath_dir,
+        f"{ENZYME_SELECTION_DIR_NAME}/candidate_{inputs.candidate_rank}/{ENZYME_SELECTION_FILE_NAME}",
+    )
     rules_path = Path(config.retropath_rules_path).expanduser().resolve()
-    p8_rules_sha = str(inputs.p8_manifest.get("inputs", {}).get("rr02_sha256") or "")
-    if not rules_path.is_file() or _sha256_file(rules_path) != p8_rules_sha:
-        raise ValueError("RR02 rules differ from the P8-validated rules")
+    if not rules_path.is_file():
+        raise ValueError("RR02 rules file is missing")
     rules = _load_rules(rules_path)
     mnxref_dir = Path(config.data_dir) / "retropath" / "mnxref" / "3.0"
     with MnxrefIndex(mnxref_dir, rules_path) as mnxref:
@@ -2031,7 +2023,7 @@ def select_retropath_enzymes(
         },
         "queries": query_evidence,
     }
-    artifact_hashes = {
+    written_artifacts = {
         ENZYME_REQUIREMENTS_FILE_NAME: _atomic_write_json(
             requirements_path,
             requirements_payload,
@@ -2077,34 +2069,23 @@ def select_retropath_enzymes(
         "inputs": {
             "pipeline_result": {
                 "path": str(inputs.candidate_inputs.pipeline_path),
-                "sha256": _sha256_file(inputs.candidate_inputs.pipeline_path),
             },
             "p8_validation_manifest": {
                 "path": str(inputs.p8_manifest_path),
-                "sha256": _sha256_file(inputs.p8_manifest_path),
             },
-            "candidate_routes_sha256": inputs.candidate_inputs.pipeline["artifacts"][
-                "candidate_routes"
-            ]["sha256"],
-            "candidate_steps_sha256": inputs.candidate_inputs.pipeline["artifacts"][
-                "candidate_steps"
-            ]["sha256"],
             "rr02_path": str(rules_path),
-            "rr02_sha256": _sha256_file(rules_path),
             "mnxref_index_path": mnxref_manifest["index_path"],
-            "mnxref_index_sha256": mnxref_manifest["index_sha256"],
         },
         "artifacts": {
             name: {
                 "path": str(artifact_paths[name].resolve()),
-                "sha256": sha256,
             }
-            for name, sha256 in artifact_hashes.items()
+            for name in written_artifacts
         },
         "review_required": True,
         "formal_promotion_allowed": False,
     }
-    selection_sha256 = _atomic_write_json(selection_path, selection)
+    _atomic_write_json(selection_path, selection)
     return {
         "ok": overall_status == "ready_for_review",
         "status": overall_status,
@@ -2118,7 +2099,6 @@ def select_retropath_enzymes(
         "step_candidate_count": len(selected_rows),
         "output_dir": str(output_dir.resolve()),
         "selection_manifest": str(selection_path.resolve()),
-        "selection_manifest_sha256": selection_sha256,
         "review_required": True,
         "formal_promotion_allowed": False,
     }

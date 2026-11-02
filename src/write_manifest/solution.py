@@ -820,17 +820,6 @@ def write_solution(config: Any) -> dict[str, Any]:
                     )
                 ).resolve()
             ),
-            "p8_validation_sha256": (
-                state.get("manifest_sha256")
-                or (commit.get("validation_overlay") or {}).get("sha256")
-                if materialization is not None
-                else commit.get("inputs", {}).get("p8_validation_sha256")
-            ),
-            "rr02_sha256": (
-                commit.get("rr02_sha256")
-                or commit.get("inputs", {}).get("rr02_sha256")
-                or (commit.get("inputs", {}).get("rr02") or {}).get("sha256")
-            ),
         }
 
     manifest = update_design_manifest(

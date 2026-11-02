@@ -16,13 +16,12 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Tuple, TypeAlias
 
 
-RETROPATH_MODEL_SCHEMA_VERSION = 2
+RETROPATH_MODEL_SCHEMA_VERSION = 3
 RETROPATH_IDENTITY_SCHEMA_VERSION = 1
 
 KEGG_COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 KEGG_REACTION_ID_PATTERN = re.compile(r"^R\d{5}$")
 INCHIKEY_PATTERN = re.compile(r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$")
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 RP2_COMPOUND_ID_PATTERN = re.compile(
     r"^RP2CPD:(?:[A-Z]{14}-[A-Z]{10}-[A-Z]|[0-9a-f]{64})$"
 )
@@ -968,14 +967,13 @@ class CandidateRoute:
 
 @dataclass(frozen=True)
 class RetroPathRuntimeProvenance:
-    """Pinned versions and rule checksum used by one RetroPath execution."""
+    """Pinned runtime versions used by one RetroPath execution."""
 
     wrapper_version: str
     workflow_version: str
     knime_version: str
     rdkit_plugin_version: str
     rules_version: str
-    rules_sha256: str
     wrapper_reported_version: Optional[str] = None
 
     def __post_init__(self) -> None:
@@ -991,13 +989,6 @@ class RetroPathRuntimeProvenance:
                 field_name,
                 _normalize_nonempty_string(getattr(self, field_name), field_name),
             )
-        rules_sha256 = _normalize_nonempty_string(
-            self.rules_sha256,
-            "rules_sha256",
-        ).lower()
-        if not SHA256_PATTERN.fullmatch(rules_sha256):
-            raise ValueError("rules_sha256 must be a full lowercase SHA-256 digest")
-        object.__setattr__(self, "rules_sha256", rules_sha256)
         object.__setattr__(
             self,
             "wrapper_reported_version",
@@ -1015,7 +1006,6 @@ class RetroPathRuntimeProvenance:
             "knime_version": self.knime_version,
             "rdkit_plugin_version": self.rdkit_plugin_version,
             "rules_version": self.rules_version,
-            "rules_sha256": self.rules_sha256,
         }
 
     @classmethod
@@ -1029,7 +1019,6 @@ class RetroPathRuntimeProvenance:
             knime_version=_required(payload, "knime_version"),
             rdkit_plugin_version=_required(payload, "rdkit_plugin_version"),
             rules_version=_required(payload, "rules_version"),
-            rules_sha256=_required(payload, "rules_sha256"),
         )
 
 
@@ -1085,7 +1074,7 @@ class RetroPathRunResult:
         ):
             raise ValueError(
                 "unsupported RetroPath model schema_version: "
-                f"{self.schema_version!r}"
+                f"{self.schema_version!r}; regenerate the pathway results"
             )
         job_id = _normalize_nonempty_string(self.job_id, "job_id")
         status = _normalize_choice(

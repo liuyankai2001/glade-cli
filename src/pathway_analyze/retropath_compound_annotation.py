@@ -9,7 +9,6 @@ import argparse
 import base64
 import copy
 import csv
-import hashlib
 import io
 import json
 import re
@@ -26,7 +25,8 @@ import httpx
 from rdkit import Chem
 from rdkit.Chem import inchi as rd_inchi
 
-SCHEMA = "retropath_compound_annotations.v1"
+SCHEMA = "retropath_compound_annotations.v2"
+CACHE_SCHEMAS = {"retropath_compound_annotations.v1", SCHEMA}
 ANNOTATIONS_FILE = "compound_annotations.json"
 ANNOTATIONS_CSV = "compound_annotations.csv"
 _KEY = re.compile(r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$")
@@ -46,19 +46,6 @@ class StructureMismatch(ValueError):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                     separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-
-
-def _file_sha(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _atomic_text(path: Path, text: str) -> None:
@@ -163,11 +150,10 @@ class CompoundAnnotator:
 
     def _capture(self, record: Mapping[str, Any]) -> None:
         row = copy.deepcopy(dict(record))
+        row.pop("body_sha256", None)  # Legacy network-cache metadata is ignored.
         row["record_id"] = len(self.responses) + 1
         if "body_base64" in row:
             body = base64.b64decode(row["body_base64"], validate=True)
-            if hashlib.sha256(body).hexdigest() != row["body_sha256"]:
-                raise ValueError("Response evidence checksum mismatch")
             if self.evidence_dir is not None:
                 self.evidence_dir.mkdir(parents=True, exist_ok=True)
                 row["body_file"] = f"{row['record_id']:06d}.body"
@@ -188,8 +174,7 @@ class CompoundAnnotator:
                 response = self.client.request(method, url, timeout=self.timeout, **kwargs)
                 row.update(http_status=response.status_code, response_url=str(response.url),
                            headers=dict(response.headers),
-                           body_base64=base64.b64encode(response.content).decode("ascii"),
-                           body_sha256=hashlib.sha256(response.content).hexdigest())
+                           body_base64=base64.b64encode(response.content).decode("ascii"))
                 self._capture(row)
                 if response.status_code in {429, 500, 502, 503, 504} and attempt < self.attempts:
                     self.sleep(2 ** (attempt - 1))
@@ -314,16 +299,12 @@ class CompoundAnnotator:
         try:
             wrapper = json.loads((self.cache_dir / f"{key}.json").read_text(encoding="utf-8"))
             data = wrapper["data"]
-            if wrapper["sha256"] != _digest(data) or data["schema_version"] != SCHEMA:
+            if data["schema_version"] not in CACHE_SCHEMAS:
                 return None
             result = data["annotation"]
             if result["inchikey"] != key or result["status"] != "resolved":
                 return None
             _validate_resolved(result)
-            for row in data["responses"]:
-                if ("body_base64" in row and
-                        hashlib.sha256(base64.b64decode(row["body_base64"], validate=True)).hexdigest() != row["body_sha256"]):
-                    return None
             _verify_name_provenance(result, data["responses"],
                                     lambda row: base64.b64decode(row["body_base64"], validate=True))
             for row in data["responses"]:
@@ -374,7 +355,7 @@ class CompoundAnnotator:
         complete = all(r["status"] in {"exact", "not_found", "no_name"} for r in (pubchem, chebi))
         if self.cache_dir is not None and chosen and complete:
             data = {"schema_version": SCHEMA, "annotation": result, "responses": self.responses[start:]}
-            _write_json(self.cache_dir / f"{key}.json", {"data": data, "sha256": _digest(data)})
+            _write_json(self.cache_dir / f"{key}.json", {"data": data})
         return result
 
 
@@ -429,8 +410,12 @@ def candidate_compound_ids(rows: Iterable[Mapping[str, Any]]) -> list[str]:
     return sorted(ids)
 
 
-def _input_hashes(directory: Path) -> dict[str, str]:
-    return {name: _file_sha(directory / name) for name in _INPUT_FILES}
+def _input_paths(directory: Path) -> dict[str, str]:
+    paths = {name: directory / name for name in _INPUT_FILES}
+    for path in paths.values():
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    return {name: str(path.resolve()) for name, path in paths.items()}
 
 
 def annotate_retropath_results(retropath_dir: str | Path, *, compounds: Iterable[Any] = (),
@@ -440,7 +425,7 @@ def annotate_retropath_results(retropath_dir: str | Path, *, compounds: Iterable
     """Annotate final candidates; write an independent, input-bound sidecar only."""
     directory = Path(retropath_dir).resolve()
     destination = Path(output_dir).resolve() if output_dir is not None else directory
-    inputs = _input_hashes(directory)
+    inputs = _input_paths(directory)
     with (directory / "candidate_steps.csv").open(encoding="utf-8-sig", newline="") as stream:
         ids = candidate_compound_ids(csv.DictReader(stream))
     structures = {}
@@ -456,13 +441,10 @@ def annotate_retropath_results(retropath_dir: str | Path, *, compounds: Iterable
                            client=client, **request_options) as annotator:
         annotations = [annotator.resolve(identifier, inchi=structures.get(identifier, {}).get("inchi"),
                                          smiles=structures.get(identifier, {}).get("isomeric_smiles")) for identifier in ids]
-    if _input_hashes(directory) != inputs:
-        raise ValueError("Candidate inputs changed during annotation")
     counts = dict(Counter(row["status"] for row in annotations))
     payload = {"schema_version": SCHEMA, "generated_at": _now(), "inputs": inputs,
-               "annotations": annotations, "annotations_sha256": _digest(annotations),
+               "annotations": annotations,
                "evidence_directory": evidence_dir.relative_to(destination).as_posix(),
-               "requests_sha256": _file_sha(evidence_dir / "requests.json"),
                "summary": {"total": len(ids), "resolved": counts.get("resolved", 0), "statuses": counts}}
     buffer = io.StringIO(newline="")
     fields = ["compound_id", "inchikey", "status", "display_name", "iupac_name", "name_kind",
@@ -475,10 +457,9 @@ def annotate_retropath_results(retropath_dir: str | Path, *, compounds: Iterable
                          "source_database": source.get("database"), "source_id": source.get("database_id"),
                          "source_url": source.get("url")})
     _atomic_text(destination / ANNOTATIONS_CSV, buffer.getvalue())
-    payload["csv_sha256"] = _file_sha(destination / ANNOTATIONS_CSV)
     _write_json(destination / ANNOTATIONS_FILE, payload)
     return {**payload["summary"], "state": "completed", "json_path": str(destination / ANNOTATIONS_FILE),
-            "csv_path": str(destination / ANNOTATIONS_CSV), "sha256": _file_sha(destination / ANNOTATIONS_FILE)}
+            "csv_path": str(destination / ANNOTATIONS_CSV)}
 
 
 def load_compound_annotations(retropath_dir: str | Path, *, annotation_dir: str | Path | None = None) -> dict[str, Any]:
@@ -491,25 +472,19 @@ def load_compound_annotations(retropath_dir: str | Path, *, annotation_dir: str 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload["schema_version"] != SCHEMA:
-            raise ValueError("Unsupported annotation schema")
-        if payload["inputs"] != _input_hashes(input_directory):
+            raise ValueError("Unsupported annotation schema; regenerate the annotations")
+        if payload["inputs"] != _input_paths(input_directory):
             return {"state": "stale", "annotations": {}, "summary": {}}
-        if payload["annotations_sha256"] != _digest(payload["annotations"]):
-            raise ValueError("Annotation table checksum mismatch")
-        if "csv_sha256" in payload and _file_sha(directory / ANNOTATIONS_CSV) != payload["csv_sha256"]:
-            raise ValueError("Annotation CSV checksum mismatch")
         evidence = (directory / payload["evidence_directory"]).resolve()
         if not evidence.is_relative_to(directory / "compound_annotation_evidence"):
             raise ValueError("Evidence directory escapes annotation output")
-        if _file_sha(evidence / "requests.json") != payload["requests_sha256"]:
-            raise ValueError("Request index checksum mismatch")
         records = json.loads((evidence / "requests.json").read_text(encoding="utf-8"))
         indexed = {row["record_id"]: row for row in records}
         for record in records:
             if "body_file" in record:
                 body = (evidence / record["body_file"]).resolve()
-                if body.parent != evidence or _file_sha(body) != record["body_sha256"]:
-                    raise ValueError("Original response checksum mismatch")
+                if body.parent != evidence or not body.is_file():
+                    raise ValueError("Original response file is missing or unsafe")
         annotations = {}
         for row in payload["annotations"]:
             if row["compound_id"] in annotations:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -26,7 +25,6 @@ from src.pathway_analyze.retropath_models import PredictedCompound
 
 KEGG_REST_BASE_URL = "https://rest.kegg.jp"
 KEGG_COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 STRUCTURE_CACHE_SCHEMA_VERSION = 1
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_HTTP_RETRIES = 3
@@ -63,7 +61,6 @@ class KeggMolCacheRecord:
 
     compound_id: str
     mol_block: str
-    mol_sha256: str
     source_url: str
 
 
@@ -113,10 +110,6 @@ def _canonicalize_mol_block(value: str, compound_id: str) -> str:
     return normalized + "\n"
 
 
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Optional[Path] = None
@@ -157,29 +150,12 @@ def compound_from_kegg_mol(
     *,
     minimum_depth: Optional[int] = None,
     source_url: Optional[str] = None,
-    mol_sha256: Optional[str] = None,
 ) -> PredictedCompound:
     """Convert one KEGG MOL block into a fully populated P1 compound model."""
 
     normalized_id = _normalize_kegg_compound_id(compound_id)
     normalized_depth = _normalize_minimum_depth(minimum_depth, normalized_id)
     normalized_mol = _canonicalize_mol_block(mol_block, normalized_id)
-    observed_sha256 = _sha256_text(normalized_mol)
-    if mol_sha256 is not None:
-        expected_sha256 = str(mol_sha256).strip().lower()
-        if not SHA256_PATTERN.fullmatch(expected_sha256):
-            raise StructureResolutionError(
-                "invalid_mol_sha256",
-                normalized_id,
-                "mol_sha256 must be a full SHA-256 digest",
-            )
-        if expected_sha256 != observed_sha256:
-            raise StructureResolutionError(
-                "mol_checksum_mismatch",
-                normalized_id,
-                "the supplied MOL checksum does not match the normalized MOL block",
-            )
-
     try:
         molecule = Chem.MolFromMolBlock(
             normalized_mol,
@@ -274,7 +250,6 @@ def compound_from_kegg_mol(
     )
     provenance = (
         "inchi:standard-v1",
-        f"kegg_mol_sha256:{observed_sha256}",
         f"kegg_rest:{resolved_url}",
         f"rdkit:{rdkit.__version__}",
     )
@@ -303,7 +278,7 @@ def compound_from_kegg_mol(
 
 
 class KeggMolStructureProvider:
-    """Resolve KEGG structures through a checksummed disk cache and REST fallback."""
+    """Resolve KEGG structures through a local disk cache and REST fallback."""
 
     def __init__(
         self,
@@ -355,18 +330,15 @@ class KeggMolStructureProvider:
             return None
         if not isinstance(metadata, dict):
             return None
-        observed_sha256 = _sha256_text(mol_block)
         if (
             metadata.get("schema_version") != STRUCTURE_CACHE_SCHEMA_VERSION
             or metadata.get("kegg_id") != compound_id
             or metadata.get("source_url") != source_url
-            or metadata.get("mol_sha256") != observed_sha256
         ):
             return None
         return KeggMolCacheRecord(
             compound_id=compound_id,
             mol_block=mol_block,
-            mol_sha256=observed_sha256,
             source_url=source_url,
         )
 
@@ -411,13 +383,11 @@ class KeggMolStructureProvider:
         mol_block: str,
     ) -> KeggMolCacheRecord:
         mol_path, metadata_path = self._paths(compound_id)
-        mol_sha256 = _sha256_text(mol_block)
         metadata = {
             "schema_version": STRUCTURE_CACHE_SCHEMA_VERSION,
             "kegg_id": compound_id,
             "source_url": source_url,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "mol_sha256": mol_sha256,
         }
         _atomic_write_text(mol_path, mol_block)
         _atomic_write_text(
@@ -433,7 +403,6 @@ class KeggMolStructureProvider:
         return KeggMolCacheRecord(
             compound_id=compound_id,
             mol_block=mol_block,
-            mol_sha256=mol_sha256,
             source_url=source_url,
         )
 
@@ -454,21 +423,18 @@ class KeggMolStructureProvider:
                     record.mol_block,
                     minimum_depth=normalized_depth,
                     source_url=record.source_url,
-                    mol_sha256=record.mol_sha256,
                 )
             except StructureResolutionError:
-                # A checksum-valid cache may still be chemically invalid after
+                # A cached structure may become chemically invalid after
                 # an RDKit upgrade. Fetch it once more before reporting failure.
                 pass
 
         mol_block = self._fetch_with_retries(normalized_id, source_url)
-        mol_sha256 = _sha256_text(mol_block)
         compound = compound_from_kegg_mol(
             normalized_id,
             mol_block,
             minimum_depth=normalized_depth,
             source_url=source_url,
-            mol_sha256=mol_sha256,
         )
         self._write_cache(normalized_id, source_url, mol_block)
         return compound

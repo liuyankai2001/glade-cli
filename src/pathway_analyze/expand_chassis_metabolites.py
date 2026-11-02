@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import time
@@ -41,7 +40,7 @@ from src.pathway_analyze.kegg_gap_analyze import (
 
 
 EXPANSION_RULE_VERSION = (
-    "chassis_forward_expansion.v7"
+    "chassis_forward_expansion.v8"
 )
 COMPOUND_ID_PATTERN = re.compile(r"^C\d{5}$")
 FRONTIER_FILE_TEMPLATE = "chassis_frontier_depth_{depth}.csv"
@@ -146,14 +145,6 @@ class ExpansionBundle:
     witnesses_by_product: Mapping[str, Tuple[ForwardExpansionWitness, ...]]
     expanded_file: Path
     manifest: Mapping[str, Any]
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _frontier_path(output_dir: Path, depth: int) -> Path:
@@ -321,13 +312,11 @@ def _read_manifest(path: Path) -> Dict[str, Any] | None:
 def _manifest_matches(
     manifest: Mapping[str, Any] | None,
     *,
-    a0_sha256: str,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> bool:
     return bool(
         manifest
         and manifest.get("algorithm_version") == EXPANSION_RULE_VERSION
-        and manifest.get("a0_sha256") == a0_sha256
         and manifest.get("direction_policy") == REACTION_DIRECTION_POLICY_VERSION
         and type(manifest.get("unpre_re_reaction")) is int
         and manifest.get("unpre_re_reaction") == unpre_re_reaction
@@ -388,7 +377,6 @@ def load_expansion_bundle(
         raise ValueError("depth must be greater than or equal to 0")
     base_df, base_compounds = _load_base_dataframe(base_path)
     del base_df
-    a0_sha256 = _sha256_file(base_path)
     if depth == 0:
         return ExpansionBundle(
             depth=0,
@@ -403,10 +391,10 @@ def load_expansion_bundle(
     manifest_path = _manifest_path(output_dir)
     manifest = _read_manifest(manifest_path)
     if not _manifest_matches(
-        manifest, a0_sha256=a0_sha256, unpre_re_reaction=unpre_re_reaction
+        manifest, unpre_re_reaction=unpre_re_reaction
     ):
         raise ValueError(
-            "Requested chassis expansion is missing, stale or uses a different "
+            "Requested chassis expansion is missing, uses an old format or a different "
             f"unpre_re_reaction policy (requested {unpre_re_reaction}). "
             f"Run the expand command for depth {depth} first."
         )
@@ -593,7 +581,7 @@ def ensure_expansion_depth(
     progress_interval: int = DEFAULT_EXPANSION_PROGRESS_INTERVAL,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
 ) -> ExpansionBundle:
-    """生成或复用直到 ``requested_depth`` 的同步 KEGG 扩展。"""
+    """从当前 A0 重新生成直到 ``requested_depth`` 的同步 KEGG 扩展。"""
 
     unpre_re_reaction = validate_reaction_direction_mode(unpre_re_reaction)
     expansion_started = time.perf_counter()
@@ -613,51 +601,9 @@ def ensure_expansion_depth(
         f"duplicate_rows={max(0, valid_a0_rows - len(base_compounds))}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    a0_sha256 = _sha256_file(base_path)
     manifest_path = _manifest_path(output_dir)
-    manifest = _read_manifest(manifest_path)
-
-    manifest_matches = _manifest_matches(
-        manifest, a0_sha256=a0_sha256, unpre_re_reaction=unpre_re_reaction
-    )
-    if not manifest_matches:
-        if manifest is None:
-            print("[INFO] no reusable expansion manifest found; starting from A0")
-        else:
-            print(
-                "[WARNING] expansion manifest is stale or incompatible; "
-                "rebuilding generated expansion files"
-            )
-        _clean_generated_outputs(output_dir)
-        manifest = None
-
-    existing_depth = _as_int((manifest or {}).get("max_depth"))
-    if existing_depth >= requested_depth:
-        try:
-            cached_bundle = load_expansion_bundle(
-                base_path=base_path,
-                output_dir=output_dir,
-                depth=requested_depth,
-                unpre_re_reaction=unpre_re_reaction,
-            )
-            print(
-                "[INFO] reusing cached chassis expansion: "
-                f"requested_depth={requested_depth}, cached_max_depth={existing_depth}, "
-                f"reachable_compounds={len(cached_bundle.reachable_compounds)}, "
-                f"elapsed={time.perf_counter() - expansion_started:.1f}s"
-            )
-            return cached_bundle
-        except (FileNotFoundError, ValueError):
-            # manifest 存在但派生 CSV 缺失或损坏时，expand 命令负责自愈重建；
-            # gap 读取端仍会直接报错，避免搜索阶段隐式联网。
-            _clean_generated_outputs(output_dir)
-            manifest = None
-            existing_depth = 0
-            print(
-                "[WARNING] cached expansion files are missing or invalid; "
-                "rebuilding from A0"
-            )
-
+    _clean_generated_outputs(output_dir)
+    existing_depth = 0
     if client is None:
         client = KeggRestClient(cache_dir)
     print("[INFO] loading endogenous GEM reaction directions")
@@ -685,46 +631,10 @@ def ensure_expansion_depth(
         f"compound_reaction_links={compound_reaction_links}"
     )
 
-    if existing_depth > 0:
-        try:
-            existing_bundle = load_expansion_bundle(
-                base_path=base_path,
-                output_dir=output_dir,
-                depth=existing_depth,
-                unpre_re_reaction=unpre_re_reaction,
-            )
-        except (FileNotFoundError, ValueError):
-            _clean_generated_outputs(output_dir)
-            existing_depth = 0
-            manifest = None
-            existing_bundle = None
-    else:
-        existing_bundle = None
-
-    if existing_bundle is not None:
-        available = set(existing_bundle.reachable_compounds)
-        previous_frontier = {
-            compound_id
-            for compound_id, compound_depth in existing_bundle.depth_by_compound.items()
-            if compound_depth == existing_depth
-        }
-        all_witnesses = [
-            witness
-            for witnesses in existing_bundle.witnesses_by_product.values()
-            for witness in witnesses
-        ]
-        layers_meta: Dict[str, Any] = dict((manifest or {}).get("layers", {}))
-        print(
-            "[INFO] resuming chassis expansion: "
-            f"existing_depth={existing_depth}, "
-            f"reachable_compounds={len(available)}, "
-            f"previous_frontier={len(previous_frontier)}"
-        )
-    else:
-        available = set(base_compounds)
-        previous_frontier = set(base_compounds)
-        all_witnesses = []
-        layers_meta = {}
+    available = set(base_compounds)
+    previous_frontier = set(base_compounds)
+    all_witnesses = []
+    layers_meta: Dict[str, Any] = {}
 
     for depth in range(existing_depth + 1, requested_depth + 1):
         layer_started = time.perf_counter()
@@ -874,7 +784,6 @@ def ensure_expansion_depth(
 
     manifest_payload = {
         "algorithm_version": EXPANSION_RULE_VERSION,
-        "a0_sha256": a0_sha256,
         "a0_file": str(base_path.resolve()),
         "max_depth": requested_depth,
         "direction_policy": REACTION_DIRECTION_POLICY_VERSION,

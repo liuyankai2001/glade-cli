@@ -168,4 +168,4 @@ docker compose -f compose.retropath.yml exec -T retropath cat /opt/knime/knime_4
 宿主机余量。例如硬上限已有 11 GiB，而 Docker 总内存约 11.68 GiB 时，
 继续提高软上限的空间很小，应优先评估搜索规模及并发。
 
-默认容器为 8 GiB、内存加交换空间为 13 GiB、工作集保护为 7.5 GiB（8053063680 字节）、1 CPU。插件版本应为 `4.9.1-glade-memoryfix2`，会进入客户端缓存指纹；此前旧版本的结果缓存不会匹配。
+默认容器为 8 GiB、内存加交换空间为 13 GiB、工作集保护为 7.5 GiB（8053063680 字节）、1 CPU。插件版本应为 `4.9.1-glade-memoryfix2`，客户端保留版本记录。路径分析每次提交新任务，不复用旧计算结果；网上数据缓存继续保留。

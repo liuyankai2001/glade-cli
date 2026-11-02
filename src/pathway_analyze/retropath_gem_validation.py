@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.pathway_analyze.result_lifecycle import ENZYME_RESULT_PATTERN, invalidate_result_references
+
 import csv
 import hashlib
 import json
@@ -64,7 +66,7 @@ from src.pathway_analyze.retropath_stoichiometry import (
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v3"
+RETROPATH_GEM_VALIDATION_SCHEMA = "retropath_gem_validation.v4"
 VALIDATION_MANIFEST_FILE_NAME = "validation_manifest.json"
 STOICHIOMETRY_HYPOTHESES_FILE_NAME = "stoichiometry_hypotheses.csv"
 STOICHIOMETRY_TERMS_FILE_NAME = "stoichiometry_terms.csv"
@@ -203,14 +205,6 @@ class _ModelValidation:
     flux_rows: tuple[Mapping[str, Any], ...]
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _canonical_sha256(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -222,7 +216,7 @@ def _canonical_sha256(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _atomic_write_text(path: Path, text: str) -> str:
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -242,10 +236,9 @@ def _atomic_write_text(path: Path, text: str) -> str:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> str:
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     text = json.dumps(
         payload,
         ensure_ascii=False,
@@ -305,8 +298,8 @@ def _verified_artifact(
     path = (retropath_dir / file_name).resolve()
     if Path(str(record.get("path") or "")).expanduser().resolve() != path:
         raise ValueError(f"pipeline artifacts.{key}.path is stale")
-    if not path.is_file() or _sha256_file(path) != record.get("sha256"):
-        raise ValueError(f"pipeline artifacts.{key} checksum mismatch")
+    if not path.is_file():
+        raise ValueError(f"pipeline artifacts.{key} file is missing")
     return path
 
 
@@ -368,10 +361,8 @@ def _load_candidate_inputs(config: Any) -> _CandidateInputs:
     expected_mapping = (retropath_dir / "input" / "compound_mapping.csv").resolve()
     if mapping_path != expected_mapping:
         raise ValueError("pipeline compound_mapping path is stale")
-    if not mapping_path.is_file() or _sha256_file(mapping_path) != mapping_record.get(
-        "sha256"
-    ):
-        raise ValueError("pipeline compound_mapping checksum mismatch")
+    if not mapping_path.is_file():
+        raise ValueError("pipeline compound_mapping file is missing")
     routes = _read_csv(route_path, CANDIDATE_ROUTE_COLUMNS)
     steps = _read_csv(step_path, CANDIDATE_STEP_COLUMNS)
     rejected = _read_csv(rejected_path, REJECTED_ROUTE_COLUMNS)
@@ -1007,6 +998,7 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             "RetroPath validation cofactor mode must be strict or relaxed"
         )
     inputs = _load_candidate_inputs(config)
+    invalidate_result_references(inputs.retropath_dir, "gem_validation/validation_manifest.json", ENZYME_RESULT_PATTERN)
     available_ranks = [
         _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1)
         for row in inputs.routes
@@ -1238,9 +1230,9 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
     artifact_records: dict[str, dict[str, Any]] = {}
     for name, text in artifact_texts.items():
         path = output_dir / name
+        _atomic_write_text(path, text)
         artifact_records[name] = {
             "path": str(path.resolve()),
-            "sha256": _atomic_write_text(path, text),
         }
     manifest_path = output_dir / VALIDATION_MANIFEST_FILE_NAME
     manifest: dict[str, Any] = {
@@ -1263,24 +1255,15 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             "fva_run": run_fva,
         },
         "inputs": {
+            "candidate_routes": {"path": str(inputs.retropath_dir / CANDIDATE_ROUTES_FILE_NAME)},
+            "candidate_steps": {"path": str(inputs.retropath_dir / CANDIDATE_STEPS_FILE_NAME)},
             "pipeline_result": {
                 "path": str(inputs.pipeline_path),
-                "sha256": _sha256_file(inputs.pipeline_path),
             },
-            "candidate_routes_sha256": inputs.pipeline["artifacts"][
-                "candidate_routes"
-            ]["sha256"],
-            "candidate_steps_sha256": inputs.pipeline["artifacts"][
-                "candidate_steps"
-            ]["sha256"],
             "model_path": str(model_path),
-            "model_sha256": _sha256_file(model_path),
             "medium_path": str(medium_path),
-            "medium_sha256": _sha256_file(medium_path),
             "rr02_path": str(rules_path),
-            "rr02_sha256": _sha256_file(rules_path),
             "mnxref_index_path": index_manifest["index_path"],
-            "mnxref_index_sha256": index_manifest["index_sha256"],
         },
         "artifacts": artifact_records,
         "formal_promotion_allowed": any(
@@ -1296,7 +1279,7 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
             "affected routes remain eligible only with manual-review metadata"
         ),
     }
-    manifest_sha256 = _atomic_write_json(manifest_path, manifest)
+    _atomic_write_json(manifest_path, manifest)
     from src.pathway_analyze.retropath_materialization import (
         apply_retropath_validation_overlay,
     )
@@ -1316,22 +1299,15 @@ def validate_retropath_candidates(config: Any) -> dict[str, Any]:
         "cofactor_relaxed": cofactor_mode == "relaxed",
         "validation_dir": str(output_dir.resolve()),
         "validation_manifest": str(manifest_path.resolve()),
-        "validation_manifest_sha256": manifest_sha256,
         "summary_row_count": len(summary_rows),
         "flux_row_count": len(flux_rows),
         "formal_promotion_allowed": manifest["formal_promotion_allowed"],
         "formal_solution_ids": promotion["formal_solution_ids"],
         "solution_mappings": promotion["solution_mappings"],
         "materialization_manifest": promotion["materialization_manifest"],
-        "materialization_manifest_sha256": promotion[
-            "materialization_manifest_sha256"
-        ],
         # Compatibility aliases for callers written before validation became
         # an overlay on already materialized solutions.
         "promotion_manifest": promotion["materialization_manifest"],
-        "promotion_manifest_sha256": promotion[
-            "materialization_manifest_sha256"
-        ],
     }
 
 

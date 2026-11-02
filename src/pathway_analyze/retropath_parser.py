@@ -9,7 +9,6 @@ does not reverse reactions or merge KEGG witnesses; those are later stages.
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 import re
@@ -347,14 +346,6 @@ class _ArtifactCompoundResolution:
     observed_identity: Optional[StructureIdentity] = None
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _stable_unique(values: Iterable[str]) -> Tuple[str, ...]:
     return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
 
@@ -608,7 +599,6 @@ def _extract_source_reactions(values: Iterable[str]) -> Tuple[str, ...]:
 
 def _read_rule_evidence(
     rules_path: Path,
-    expected_sha256: str,
     requested_rule_ids: Iterable[str],
 ) -> tuple[dict[str, RuleEvidence], Tuple[str, ...], str]:
     if not rules_path.is_file():
@@ -616,13 +606,6 @@ def _read_rule_evidence(
             "rules_file_missing",
             f"RetroRules file does not exist: {rules_path}",
         )
-    observed_sha256 = _sha256_file(rules_path)
-    if observed_sha256 != expected_sha256.lower():
-        raise RetroPathParseError(
-            "rules_checksum_mismatch",
-            f"expected {expected_sha256.lower()}, observed {observed_sha256}",
-        )
-
     requested = set(requested_rule_ids)
     raw_matches: dict[str, list[dict[str, str]]] = {
         rule_id: [] for rule_id in requested
@@ -1224,7 +1207,6 @@ def parse_retropath_network(
     )
     evidence_by_id, missing_rule_ids, score_semantics = _read_rule_evidence(
         Path(rules_path).expanduser().resolve(),
-        client_run.result.provenance.rules_sha256,
         requested_rule_ids,
     )
     missing_rule_set = set(missing_rule_ids)

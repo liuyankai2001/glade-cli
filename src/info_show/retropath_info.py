@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -174,14 +173,6 @@ def _read_json(path: Path, depth: int) -> dict[str, Any]:
     return value
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _required_mapping(value: Any, field_name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"RetroPath 结果字段 {field_name} 必须是对象")
@@ -276,20 +267,9 @@ def _verify_artifact(
         raise ValueError(
             f"RetroPath 结果记录的 {artifact_key} 路径与当前 depth 不一致"
         )
-    recorded_hash = str(record.get("sha256") or "").strip().lower()
-    if len(recorded_hash) != 64 or any(
-        character not in "0123456789abcdef" for character in recorded_hash
-    ):
-        raise ValueError(f"RetroPath 结果缺少有效的 {artifact_key} SHA-256")
     if not expected_path.is_file():
         raise FileNotFoundError(
             f"缺少 RetroPath 候选文件：{expected_path}；{_rerun_hint(depth)}"
-        )
-    observed_hash = _sha256_file(expected_path)
-    if observed_hash != recorded_hash:
-        raise ValueError(
-            f"RetroPath 候选文件校验失败，文件可能已变化：{expected_path}；"
-            f"{_rerun_hint(depth)}"
         )
     return expected_path
 
@@ -738,22 +718,8 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
             inputs.get("pipeline_result"),
             "P8 inputs.pipeline_result",
         )
-        if pipeline_record.get("sha256") != _sha256_file(
-            context.output_dir / PIPELINE_RESULT_FILE_NAME
-        ):
-            raise ValueError("P8 input pipeline hash is stale")
-        pipeline_artifacts = _required_mapping(
-            context.pipeline.get("artifacts"),
-            "artifacts",
-        )
-        if inputs.get("candidate_routes_sha256") != _required_mapping(
-            pipeline_artifacts.get("candidate_routes"),
-            "artifacts.candidate_routes",
-        ).get("sha256") or inputs.get("candidate_steps_sha256") != _required_mapping(
-            pipeline_artifacts.get("candidate_steps"),
-            "artifacts.candidate_steps",
-        ).get("sha256"):
-            raise ValueError("P8 candidate input hashes are stale")
+        if Path(str(pipeline_record.get("path") or "")).resolve() != (context.output_dir / PIPELINE_RESULT_FILE_NAME).resolve():
+            raise ValueError("P8 pipeline input path is inconsistent")
         artifacts = _required_mapping(manifest.get("artifacts"), "P8 artifacts")
 
         def artifact_path(name: str) -> Path:
@@ -761,8 +727,8 @@ def _p8_overlay(context: _RetroPathViewContext) -> _P8Overlay:
             expected = (validation_dir / name).resolve()
             if Path(str(record.get("path") or "")).expanduser().resolve() != expected:
                 raise ValueError(f"P8 artifact path is stale: {name}")
-            if not expected.is_file() or record.get("sha256") != _sha256_file(expected):
-                raise ValueError(f"P8 artifact checksum mismatch: {name}")
+            if not expected.is_file():
+                raise ValueError(f"P8 artifact file missing: {name}")
             return expected
 
         summary_path = artifact_path(VALIDATION_SUMMARY_FILE_NAME)
@@ -880,36 +846,12 @@ def _p9_overlay(
             inputs.get("pipeline_result"),
             "P9 inputs.pipeline_result",
         )
-        if pipeline_record.get("sha256") != _sha256_file(
-            context.output_dir / PIPELINE_RESULT_FILE_NAME
-        ):
-            raise ValueError("P9 pipeline input hash is stale")
-        p8_record = _required_mapping(
-            inputs.get("p8_validation_manifest"),
-            "P9 inputs.p8_validation_manifest",
-        )
-        expected_p8 = (
-            context.output_dir / "gem_validation" / VALIDATION_MANIFEST_FILE_NAME
-        ).resolve()
-        if (
-            Path(str(p8_record.get("path") or "")).expanduser().resolve()
-            != expected_p8
-            or not expected_p8.is_file()
-            or p8_record.get("sha256") != _sha256_file(expected_p8)
-        ):
-            raise ValueError("P9 P8-validation input hash is stale")
-        pipeline_artifacts = _required_mapping(
-            context.pipeline.get("artifacts"),
-            "pipeline artifacts",
-        )
-        if inputs.get("candidate_routes_sha256") != _required_mapping(
-            pipeline_artifacts.get("candidate_routes"),
-            "pipeline artifacts.candidate_routes",
-        ).get("sha256") or inputs.get("candidate_steps_sha256") != _required_mapping(
-            pipeline_artifacts.get("candidate_steps"),
-            "pipeline artifacts.candidate_steps",
-        ).get("sha256"):
-            raise ValueError("P9 candidate input hashes are stale")
+        if Path(str(pipeline_record.get("path") or "")).resolve() != (context.output_dir / PIPELINE_RESULT_FILE_NAME).resolve():
+            raise ValueError("P9 pipeline input path is inconsistent")
+        p8_record = _required_mapping(inputs.get("p8_validation_manifest"), "P9 inputs.p8_validation_manifest")
+        expected_p8 = (context.output_dir / "gem_validation" / VALIDATION_MANIFEST_FILE_NAME).resolve()
+        if Path(str(p8_record.get("path") or "")).resolve() != expected_p8 or not expected_p8.is_file():
+            raise ValueError("P9 P8-validation input is missing or inconsistent")
         artifacts = _required_mapping(selection.get("artifacts"), "P9 artifacts")
         verified_paths: dict[str, Path] = {}
         for name in (
@@ -927,9 +869,8 @@ def _p9_overlay(
                 Path(str(record.get("path") or "")).expanduser().resolve()
                 != expected
                 or not expected.is_file()
-                or record.get("sha256") != _sha256_file(expected)
-            ):
-                raise ValueError(f"P9 artifact checksum mismatch: {name}")
+                ):
+                raise ValueError(f"P9 artifact file missing: {name}")
             verified_paths[name] = expected
         candidate_path = verified_paths[STEP_ENZYME_CANDIDATES_FILE_NAME]
         with candidate_path.open("r", encoding="utf-8-sig", newline="") as handle:

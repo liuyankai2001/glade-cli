@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import re
@@ -124,7 +123,7 @@ class CompoundMapping:
 
 @dataclass(frozen=True)
 class RetroPathInputBundle:
-    """Paths, hashes, structures, and audit records for one P2 build."""
+    """Paths, structures, and audit records for one P2 build."""
 
     expansion_depth: int
     reachable_compound_count: int
@@ -136,8 +135,6 @@ class RetroPathInputBundle:
     chassis_sink_path: Path
     compound_mapping_path: Path
     rejected_compounds_path: Path
-    target_source_sha256: str
-    chassis_sink_sha256: str
     target_already_reachable: bool = False
     target_reachable_aliases: Tuple[str, ...] = tuple()
 
@@ -453,7 +450,7 @@ def _write_artifacts(
     sink_compounds: Sequence[PredictedCompound],
     mappings: Sequence[CompoundMapping],
     rejections: Sequence[StructureRejection],
-) -> tuple[Path, Path, Path, Path, str, str]:
+) -> tuple[Path, Path, Path, Path]:
     target_source_path = output_dir / TARGET_SOURCE_FILE_NAME
     chassis_sink_path = output_dir / CHASSIS_SINK_FILE_NAME
     compound_mapping_path = output_dir / COMPOUND_MAPPING_FILE_NAME
@@ -501,8 +498,6 @@ def _write_artifacts(
         chassis_sink_path,
         compound_mapping_path,
         rejected_compounds_path,
-        hashlib.sha256(target_text.encode("utf-8")).hexdigest(),
-        hashlib.sha256(sink_text.encode("utf-8")).hexdigest(),
     )
 
 
@@ -642,8 +637,6 @@ def build_retropath_inputs(
         chassis_sink_path=artifacts[1],
         compound_mapping_path=artifacts[2],
         rejected_compounds_path=artifacts[3],
-        target_source_sha256=artifacts[4],
-        chassis_sink_sha256=artifacts[5],
         target_already_reachable=bool(target_reachable_aliases),
         target_reachable_aliases=tuple(sorted(target_reachable_aliases)),
     )

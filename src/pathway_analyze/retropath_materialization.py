@@ -34,7 +34,6 @@ from src.pathway_analyze.retropath_promotion import (
     _read_csv,
     _render_csv,
     _safe_compound_name,
-    _sha256_file,
     _split,
 )
 from src.pathway_analyze.retropath_gem_validation import (
@@ -52,7 +51,7 @@ from src.pathway_analyze.retropath_mnxref import MnxrefIndex
 from src.pathway_analyze.target_id import validate_target_compound_id
 
 
-RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v4"
+RETROPATH_MATERIALIZATION_SCHEMA = "retropath_solution_materialization.v5"
 MATERIALIZATION_MANIFEST_FILE_NAME = "solution_materialization.json"
 
 _SUMMARY_STATE_COLUMNS = (
@@ -357,6 +356,16 @@ def _raw_solution_rows(
     return summary, rows
 
 
+def _materialization_id(seed: Mapping[str, Any], routes: Sequence[Mapping[str, Any]], steps: Mapping[str, Sequence[Mapping[str, Any]]]) -> str:
+    """Identify parsed business content, independent of file bytes and locations."""
+    content = {
+        **seed,
+        "routes": sorted((dict(row) for row in routes), key=lambda row: (_as_int(row.get("candidate_rank"), "candidate_rank", minimum=1), str(row.get("candidate_id")))),
+        "steps": sorted((dict(row) for rows in steps.values() for row in rows), key=lambda row: (str(row.get("candidate_id")), _as_int(row.get("step_index"), "step_index", minimum=1), str(row.get("step_id")))),
+    }
+    return "RP2MATERIALIZE:" + _canonical_hash(content)
+
+
 def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
     """Replace the RetroPath solution slice with every current P5 Top-K candidate."""
 
@@ -378,9 +387,6 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
         "schema_version": RETROPATH_MATERIALIZATION_SCHEMA,
         "target_compound": target,
         "expansion_depth": depth,
-        "candidate_routes_sha256": _sha256_file(routes_path),
-        "candidate_steps_sha256": _sha256_file(steps_path),
-        "rr02_sha256": _sha256_file(rules_path),
         "candidates": [
             {
                 "candidate_rank": _as_int(row.get("candidate_rank"), "candidate_rank", minimum=1),
@@ -389,7 +395,7 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
             for row in routes
         ],
     }
-    materialization_id = "RP2MATERIALIZE:" + _canonical_hash(seed)
+    materialization_id = _materialization_id(seed, routes, steps_by_candidate)
 
     solution_path = gap_dir / "solutions.csv"
     step_path = gap_dir / "all_solution_steps.csv"
@@ -470,9 +476,9 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
             step_rows,
         ),
     }
-    output_hashes = {
-        name: _atomic_write_text(gap_dir / name, text) for name, text in texts.items()
-    }
+    for name, text in texts.items():
+        _atomic_write_text(gap_dir / name, text)
+    output_files = {name: str((gap_dir / name).resolve()) for name in texts}
     manifest_path = retropath_dir / MATERIALIZATION_MANIFEST_FILE_NAME
     manifest = {
         **seed,
@@ -482,26 +488,25 @@ def materialize_retropath_candidate_solutions(config: Any) -> dict[str, Any]:
         "solution_mappings": mappings,
         "validation_overlay": None,
         "inputs": {
-            "candidate_routes": {"path": str(routes_path.resolve()), "sha256": seed["candidate_routes_sha256"]},
-            "candidate_steps": {"path": str(steps_path.resolve()), "sha256": seed["candidate_steps_sha256"]},
-            "rr02": {"path": str(rules_path), "sha256": seed["rr02_sha256"]},
+            "candidate_routes": {"path": str(routes_path.resolve())},
+            "candidate_steps": {"path": str(steps_path.resolve())},
+            "rr02": {"path": str(rules_path)},
         },
         "artifacts": {
-            name: {"path": str((gap_dir / name).resolve()), "sha256": digest}
-            for name, digest in output_hashes.items()
+            name: {"path": str((gap_dir / name).resolve())}
+            for name in output_files
         },
     }
-    manifest_sha256 = _atomic_write_json(manifest_path, manifest)
+    _atomic_write_json(manifest_path, manifest)
     return {
         "ok": True,
         "schema_version": RETROPATH_MATERIALIZATION_SCHEMA,
         "materialization_id": materialization_id,
         "materialization_manifest": str(manifest_path.resolve()),
-        "materialization_manifest_sha256": manifest_sha256,
         "solution_count": len(mappings),
         "solution_ids": [item["solution_id"] for item in mappings],
         "solution_mappings": mappings,
-        "output_hashes": output_hashes,
+        "output_files": output_files,
     }
 
 
@@ -531,17 +536,18 @@ def verify_retropath_solution_materialization(
         or payload.get("target_compound") != target_compound
         or _as_int(payload.get("expansion_depth"), "expansion_depth") != expansion_depth
     ):
-        raise ValueError("RetroPath solution materialization identity mismatch")
+        raise ValueError("RetroPath solution materialization identity/format mismatch; rerun gap --retropath")
     seed = {
         "schema_version": payload.get("schema_version"),
         "target_compound": payload.get("target_compound"),
         "expansion_depth": payload.get("expansion_depth"),
-        "candidate_routes_sha256": payload.get("candidate_routes_sha256"),
-        "candidate_steps_sha256": payload.get("candidate_steps_sha256"),
-        "rr02_sha256": payload.get("rr02_sha256"),
         "candidates": payload.get("candidates"),
     }
-    expected_id = "RP2MATERIALIZE:" + _canonical_hash(seed)
+    expected_id = _materialization_id(
+        seed,
+        _read_csv(path.parent / CANDIDATE_ROUTES_FILE_NAME, CANDIDATE_ROUTE_COLUMNS),
+        _candidate_steps_by_id(_read_csv(path.parent / CANDIDATE_STEPS_FILE_NAME, CANDIDATE_STEP_COLUMNS)),
+    )
     if payload.get("materialization_id") != expected_id:
         raise ValueError("RetroPath solution materialization ID mismatch")
     for input_key, display_name in (
@@ -553,10 +559,8 @@ def verify_retropath_solution_materialization(
         if not isinstance(record, Mapping):
             raise ValueError(f"RetroPath materialization input missing: {display_name}")
         candidate = Path(str(record.get("path") or "")).expanduser().resolve()
-        if not candidate.is_file() or record.get("sha256") != _sha256_file(candidate):
+        if not candidate.is_file():
             raise ValueError(f"RetroPath materialization input stale: {display_name}")
-        if record.get("sha256") != payload.get(f"{input_key}_sha256"):
-            raise ValueError(f"RetroPath materialization input binding mismatch: {display_name}")
     for name in (
         "solutions.csv",
         "all_solution_steps.csv",
@@ -567,7 +571,6 @@ def verify_retropath_solution_materialization(
             not isinstance(record, Mapping)
             or Path(str(record.get("path") or "")).expanduser().resolve() != expected
             or not expected.is_file()
-            or record.get("sha256") != _sha256_file(expected)
         ):
             raise ValueError(f"RetroPath materialization artifact mismatch: {name}")
     overlay = payload.get("validation_overlay")
@@ -584,7 +587,6 @@ def verify_retropath_solution_materialization(
             validation_path != replacement_path
             and (
                 not validation_path.is_file()
-                or overlay.get("sha256") != _sha256_file(validation_path)
             )
         ):
             raise ValueError("RetroPath validation overlay is stale")
@@ -629,7 +631,6 @@ def verify_retropath_solution_materialization(
         ).expanduser().resolve()
         if validation_path != replacement_path and (
             not validation_path.is_file()
-            or state.get("manifest_sha256") != _sha256_file(validation_path)
         ):
             raise ValueError("RetroPath stored validation binding is stale")
     summary_rows = _read_csv(resolved_gap / "solutions.csv")
@@ -695,19 +696,14 @@ def apply_retropath_validation_overlay(
         if not isinstance(record, Mapping):
             raise ValueError(f"P8 artifact record invalid: {name}")
         artifact = Path(str(record.get("path") or "")).expanduser().resolve()
-        if not artifact.is_file() or record.get("sha256") != _sha256_file(artifact):
+        if not artifact.is_file():
             raise ValueError(f"P8 artifact mismatch: {name}")
     p8_inputs = p8_manifest.get("inputs", {})
-    if (
-        p8_inputs.get("candidate_routes_sha256")
-        != materialization["candidate_routes_sha256"]
-        or p8_inputs.get("candidate_steps_sha256")
-        != materialization["candidate_steps_sha256"]
-        or p8_inputs.get("rr02_sha256") != materialization["rr02_sha256"]
-    ):
-        raise ValueError(
-            "P8 validation does not bind the materialized P5 candidates/RR02 rules"
-        )
+    for key in ("candidate_routes", "candidate_steps"):
+        record = p8_inputs.get(key)
+        expected = materialization["inputs"][key]["path"]
+        if not isinstance(record, Mapping) or Path(str(record.get("path") or "")).resolve() != Path(expected).resolve():
+            raise ValueError(f"P8 validation input path mismatch: {key}")
 
     p8_dir = p8_path.parent
     summary_rows = _read_csv(p8_dir / VALIDATION_SUMMARY_FILE_NAME, SUMMARY_COLUMNS)
@@ -885,7 +881,6 @@ def apply_retropath_validation_overlay(
                 "stoichiometry_hypothesis_ids": hypothesis_ids,
                 "issues": list(issues),
                 "manifest_path": str(p8_path),
-                "manifest_sha256": _sha256_file(p8_path),
             }
             mapping_updates.append(mapping)
 
@@ -972,21 +967,20 @@ def apply_retropath_validation_overlay(
             step_rows,
         ),
     }
-    output_hashes = {
-        name: _atomic_write_text(gap_dir / name, text) for name, text in texts.items()
-    }
+    for name, text in texts.items():
+        _atomic_write_text(gap_dir / name, text)
+    output_files = {name: str((gap_dir / name).resolve()) for name in texts}
     materialization["updated_at"] = datetime.now(UTC).isoformat()
     materialization["solution_mappings"] = mapping_updates
     materialization["validation_overlay"] = {
         "path": str(p8_path),
-        "sha256": _sha256_file(p8_path),
         "schema_version": RETROPATH_GEM_VALIDATION_SCHEMA,
     }
     materialization["artifacts"] = {
-        name: {"path": str((gap_dir / name).resolve()), "sha256": digest}
-        for name, digest in output_hashes.items()
+        name: {"path": str((gap_dir / name).resolve())}
+        for name in output_files
     }
-    manifest_sha256 = _atomic_write_json(materialization_path, materialization)
+    _atomic_write_json(materialization_path, materialization)
     passed_ids = [
         item["solution_id"] for item in mapping_updates
         if item["validation"]["status"] == "passed"
@@ -994,14 +988,12 @@ def apply_retropath_validation_overlay(
     return {
         "ok": True,
         "materialization_manifest": str(materialization_path),
-        "materialization_manifest_sha256": manifest_sha256,
         "promotion_manifest": str(materialization_path),
-        "promotion_manifest_sha256": manifest_sha256,
         "solution_ids": [item["solution_id"] for item in mapping_updates],
         "validated_solution_ids": passed_ids,
         "formal_solution_ids": passed_ids,
         "solution_mappings": mapping_updates,
-        "output_hashes": output_hashes,
+        "output_files": output_files,
     }
 
 

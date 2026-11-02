@@ -208,8 +208,9 @@ uv run python -m src.pathway_analyze.retropath_mnxref install
 uv run python -m src.pathway_analyze.retropath_mnxref status
 ```
 
-状态应显示 MNXref `3.0`，并且 `rr02_sha256` 与规则文件一致。规则文件变化后需要重新
-构建索引。
+状态应显示 MNXref `3.0`，索引文件及其版本和表结构应可读取。客户端不再计算或核对
+规则库、索引的 SHA-256；规则文件变化后仍需手动重新构建索引。服务容器自身的规则
+文件启动校验保持原样。
 
 ### 3.4 Milvus
 

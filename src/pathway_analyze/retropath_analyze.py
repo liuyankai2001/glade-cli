@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import tempfile
@@ -101,16 +100,13 @@ REJECTED_ROUTE_COLUMNS = (
 
 @dataclass(frozen=True)
 class RetroPathCandidateArtifacts:
-    """Written P5 files, checksums, and the in-memory merge result."""
+    """Written P5 files and the in-memory merge result."""
 
     merge_result: RetroPathMergeResult
     output_dir: Path
     candidate_routes_path: Path
     candidate_steps_path: Path
     rejected_routes_path: Path
-    candidate_routes_sha256: str
-    candidate_steps_sha256: str
-    rejected_routes_sha256: str
 
     @property
     def candidate_count(self) -> int:
@@ -147,7 +143,7 @@ def _render_csv(
     return buffer.getvalue()
 
 
-def _atomic_write_text(path: Path, text: str) -> str:
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
@@ -167,7 +163,6 @@ def _atomic_write_text(path: Path, text: str) -> str:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _join(values: Iterable[str]) -> str:
@@ -318,24 +313,16 @@ def write_retropath_candidate_artifacts(
         REJECTED_ROUTE_COLUMNS,
         (_rejected_route_row(item) for item in merge_result.rejections),
     )
+    _atomic_write_text(candidate_routes_path, route_text)
+    _atomic_write_text(candidate_steps_path, step_text)
+    _atomic_write_text(rejected_routes_path, rejected_text)
     return RetroPathCandidateArtifacts(
         merge_result=merge_result,
         output_dir=resolved_output_dir,
         candidate_routes_path=candidate_routes_path,
         candidate_steps_path=candidate_steps_path,
         rejected_routes_path=rejected_routes_path,
-        candidate_routes_sha256=_atomic_write_text(
-            candidate_routes_path,
-            route_text,
-        ),
-        candidate_steps_sha256=_atomic_write_text(
-            candidate_steps_path,
-            step_text,
-        ),
-        rejected_routes_sha256=_atomic_write_text(
-            rejected_routes_path,
-            rejected_text,
-        ),
+
     )
 
 

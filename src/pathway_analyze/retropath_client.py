@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import json
 import math
@@ -36,8 +35,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_WAIT_TIMEOUT_SECONDS = 3900.0
 
 RETROPATH_CLIENT_CONTRACT_VERSION = "retropath_http.v1"
-RETROPATH_CLIENT_MANIFEST_SCHEMA = "retropath_client_run.v1"
-RETROPATH_CLIENT_STATE_SCHEMA = "retropath_client_state.v1"
+RETROPATH_CLIENT_MANIFEST_SCHEMA = "retropath_client_run.v2"
+RETROPATH_CLIENT_STATE_SCHEMA = "retropath_client_state.v2"
 CLIENT_MANIFEST_FILE_NAME = "run_manifest.json"
 CLIENT_STATE_FILE_NAME = "client_state.json"
 RAW_DIRECTORY_NAME = "raw"
@@ -47,9 +46,8 @@ SERVICE_MANIFEST_FILE_NAME = "service_run_manifest.json"
 TERMINAL_STATUSES = frozenset(
     {"succeeded", "no_solution", "source_in_sink", "failed", "timed_out"}
 )
-CACHEABLE_STATUSES = frozenset({"succeeded", "no_solution", "source_in_sink"})
+MANIFEST_REQUIRED_STATUSES = frozenset({"succeeded", "no_solution", "source_in_sink"})
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 JOB_ID_PATTERN = re.compile(r"^rp2-[0-9a-f]{32}$")
 
 
@@ -197,12 +195,6 @@ class RetroPathServiceHealth:
     queue_active: int
     worker_concurrency: int
 
-    def fingerprint_dict(self) -> dict[str, Any]:
-        return {
-            "service_version": self.service_version,
-            **self.provenance.to_dict(),
-            "worker_concurrency": self.worker_concurrency,
-        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,7 +235,6 @@ class RetroPathServiceHealth:
             knime_version=_required_text(payload, "knime_version"),
             rdkit_plugin_version=_required_text(payload, "rdkit_plugin_version"),
             rules_version=_required_text(payload, "rules_version"),
-            rules_sha256=_required_text(payload, "rules_sha256"),
         )
         return cls(
             service_version=_required_text(payload, "service_version"),
@@ -317,7 +308,6 @@ class RetroPathClientRun:
     """Final client result and the local audit files that produced it."""
 
     result: RetroPathRunResult
-    request_fingerprint: str
     output_dir: Path
     raw_dir: Path
     run_manifest_path: Path
@@ -362,25 +352,6 @@ def _nonnegative_finite(value: Any, field_name: str) -> float:
     if not math.isfinite(normalized) or normalized < 0:
         raise ValueError(f"{field_name} must be a non-negative finite number")
     return normalized
-
-
-def _canonical_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -850,7 +821,7 @@ class RetroPathHttpClient:
         job_id: str,
         remote_path: str,
         local_path: Path,
-    ) -> str:
+    ) -> None:
         encoded_path = quote(remote_path, safe="/")
         url = self._url(
             f"/v1/jobs/{quote(job_id, safe='')}/artifacts/{encoded_path}"
@@ -883,7 +854,6 @@ class RetroPathHttpClient:
                             job_id=job_id,
                         )
                     local_path.parent.mkdir(parents=True, exist_ok=True)
-                    digest = hashlib.sha256()
                     with tempfile.NamedTemporaryFile(
                         mode="wb",
                         dir=local_path.parent,
@@ -893,18 +863,10 @@ class RetroPathHttpClient:
                     ) as handle:
                         temporary_path = Path(handle.name)
                         for chunk in response.iter_bytes(1024 * 1024):
-                            digest.update(chunk)
                             handle.write(chunk)
                     temporary_path.replace(local_path)
                     temporary_path = None
-                    expected_hash = digest.hexdigest()
-                    if _sha256_file(local_path) != expected_hash:
-                        raise RetroPathClientError(
-                            "artifact_checksum_mismatch",
-                            f"downloaded artifact failed local SHA-256 verification: {remote_path}",
-                            job_id=job_id,
-                        )
-                    return expected_hash
+                    return
             except RetroPathClientError:
                 raise
             except (httpx.HTTPError, OSError) as exc:
@@ -925,10 +887,9 @@ class RetroPathHttpClient:
         job_id: str,
         artifact_paths: Sequence[str],
         output_dir: str | Path,
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> dict[str, str]:
         root = Path(output_dir).expanduser().resolve()
         mapping: dict[str, str] = {}
-        hashes: dict[str, str] = {}
         reserved = PurePosixPath(RAW_DIRECTORY_NAME, SERVICE_RESULTS_FILE_NAME)
         local_paths: set[str] = {reserved.as_posix()}
         for remote_path in sorted(set(artifact_paths)):
@@ -942,65 +903,17 @@ class RetroPathHttpClient:
                 )
             local_paths.add(local_key)
             local_path = _resolved_local_path(root, local_relative)
-            hashes[local_key] = self._download_one(
+            self._download_one(
                 job_id,
                 remote_path,
                 local_path,
             )
             mapping[remote_path] = local_key
-        return mapping, hashes
+        return mapping
 
-    def _validate_input_hashes(
-        self,
-        input_bundle: RetroPathInputBundle,
-    ) -> tuple[str, str]:
-        for path, field_name in (
-            (input_bundle.target_source_path, "target_source.csv"),
-            (input_bundle.chassis_sink_path, "chassis_sink.csv"),
-        ):
-            if not path.is_file():
-                raise RetroPathClientError(
-                    "input_modified",
-                    f"P2 input file is missing: {field_name}: {path}",
-                )
-        source_sha256 = _sha256_file(input_bundle.target_source_path)
-        sink_sha256 = _sha256_file(input_bundle.chassis_sink_path)
-        if source_sha256 != input_bundle.target_source_sha256:
-            raise RetroPathClientError(
-                "input_modified",
-                "target_source.csv no longer matches its P2 SHA-256",
-            )
-        if sink_sha256 != input_bundle.chassis_sink_sha256:
-            raise RetroPathClientError(
-                "input_modified",
-                "chassis_sink.csv no longer matches its P2 SHA-256",
-            )
-        return source_sha256, sink_sha256
-
-    def _request_fingerprint(
-        self,
-        input_bundle: RetroPathInputBundle,
-        parameters: RetroPathJobParameters,
-        health: RetroPathServiceHealth,
-        source_sha256: str,
-        sink_sha256: str,
-    ) -> str:
-        return _canonical_sha256(
-            {
-                "client_contract_version": RETROPATH_CLIENT_CONTRACT_VERSION,
-                "service_url": self.base_url,
-                "health": health.fingerprint_dict(),
-                "target_compound_id": input_bundle.target_compound.compound_id,
-                "expansion_depth": input_bundle.expansion_depth,
-                "source_sha256": source_sha256,
-                "sink_sha256": sink_sha256,
-                "parameters": parameters.to_dict(),
-            }
-        )
 
     def _state_payload(
         self,
-        fingerprint: str,
         phase: str,
         *,
         parameters: RetroPathJobParameters,
@@ -1010,7 +923,6 @@ class RetroPathHttpClient:
         return {
             "schema_version": RETROPATH_CLIENT_STATE_SCHEMA,
             "updated_at": self._now().isoformat(),
-            "request_fingerprint": fingerprint,
             "phase": phase,
             "parameters": parameters.to_dict(),
             "job": job.to_dict() if job is not None else None,
@@ -1029,7 +941,6 @@ class RetroPathHttpClient:
     def _write_state(
         self,
         path: Path,
-        fingerprint: str,
         phase: str,
         *,
         parameters: RetroPathJobParameters,
@@ -1039,7 +950,6 @@ class RetroPathHttpClient:
         _atomic_write_json(
             path,
             self._state_payload(
-                fingerprint,
                 phase,
                 parameters=parameters,
                 job=job,
@@ -1047,91 +957,6 @@ class RetroPathHttpClient:
             ),
         )
 
-    def _try_cached_run(
-        self,
-        output_dir: Path,
-        fingerprint: str,
-    ) -> Optional[RetroPathClientRun]:
-        manifest_path = output_dir / CLIENT_MANIFEST_FILE_NAME
-        state_path = output_dir / CLIENT_STATE_FILE_NAME
-        payload = _read_json_object(manifest_path)
-        if (
-            payload is None
-            or payload.get("schema_version") != RETROPATH_CLIENT_MANIFEST_SCHEMA
-            or payload.get("request_fingerprint") != fingerprint
-        ):
-            return None
-        try:
-            result = RetroPathRunResult.from_dict(payload.get("run_result", {}))
-        except ValueError:
-            return None
-        if result.status not in CACHEABLE_STATUSES:
-            return None
-        artifact_hashes = payload.get("artifact_sha256")
-        if not isinstance(artifact_hashes, Mapping):
-            return None
-        if set(result.artifacts) != set(artifact_hashes):
-            return None
-        for relative, expected_hash in artifact_hashes.items():
-            if (
-                not isinstance(relative, str)
-                or not isinstance(expected_hash, str)
-                or not SHA256_PATTERN.fullmatch(expected_hash)
-            ):
-                return None
-            try:
-                path = _resolved_local_path(output_dir, relative)
-            except RetroPathClientError:
-                return None
-            if not path.is_file() or _sha256_file(path) != expected_hash:
-                return None
-        return RetroPathClientRun(
-            result=result,
-            request_fingerprint=fingerprint,
-            output_dir=output_dir,
-            raw_dir=output_dir / RAW_DIRECTORY_NAME,
-            run_manifest_path=manifest_path,
-            client_state_path=state_path,
-            cache_hit=True,
-        )
-
-    def _resumable_job(
-        self,
-        state_path: Path,
-        fingerprint: str,
-        parameters: RetroPathJobParameters,
-    ) -> Optional[RetroPathJobState]:
-        payload = _read_json_object(state_path)
-        if (
-            payload is None
-            or payload.get("schema_version") != RETROPATH_CLIENT_STATE_SCHEMA
-            or payload.get("request_fingerprint") != fingerprint
-        ):
-            return None
-        phase = payload.get("phase")
-        if phase == "submission_uncertain":
-            raise RetroPathClientError(
-                "submission_uncertain",
-                "a previous submission may have reached the service; use "
-                "force=True only after checking the service",
-            )
-        job_payload = payload.get("job")
-        if not isinstance(job_payload, Mapping):
-            return None
-        try:
-            saved = RetroPathJobState.from_payload(job_payload)
-        except ValueError:
-            return None
-        if saved.parameters != parameters:
-            return None
-        if phase == "completed" and saved.status not in CACHEABLE_STATUSES:
-            return None
-        try:
-            return self.get_job(saved.job_id)
-        except RetroPathClientError as exc:
-            if exc.code == "job_not_found":
-                return None
-            raise
 
     def _validate_service_manifest(
         self,
@@ -1140,12 +965,10 @@ class RetroPathHttpClient:
         job: RetroPathJobState,
         health: RetroPathServiceHealth,
         parameters: RetroPathJobParameters,
-        source_sha256: str,
-        sink_sha256: str,
         result_artifacts: Sequence[str],
     ) -> None:
         if manifest is None:
-            if job.status in CACHEABLE_STATUSES:
+            if job.status in MANIFEST_REQUIRED_STATUSES:
                 raise RetroPathClientError(
                     "protocol_error",
                     f"terminal status {job.status} is missing the service run manifest",
@@ -1179,16 +1002,6 @@ class RetroPathHttpClient:
                 "service manifest parameters do not match submission",
                 job_id=job.job_id,
             )
-        input_hashes = manifest.get("input_sha256")
-        if not isinstance(input_hashes, Mapping) or input_hashes != {
-            "source.csv": source_sha256,
-            "sink.csv": sink_sha256,
-        }:
-            raise RetroPathClientError(
-                "protocol_error",
-                "service manifest input SHA-256 values do not match P2 inputs",
-                job_id=job.job_id,
-            )
         versions = manifest.get("versions")
         expected_versions = {
             "retropath2_wrapper": health.provenance.wrapper_version,
@@ -1204,12 +1017,6 @@ class RetroPathHttpClient:
             raise RetroPathClientError(
                 "protocol_error",
                 "service manifest versions do not match the health response",
-                job_id=job.job_id,
-            )
-        if manifest.get("rules_sha256") != health.provenance.rules_sha256:
-            raise RetroPathClientError(
-                "protocol_error",
-                "service manifest rules SHA-256 does not match health",
                 job_id=job.job_id,
             )
         if manifest_schema == 2 and not isinstance(
@@ -1244,9 +1051,6 @@ class RetroPathHttpClient:
         job: RetroPathJobState,
         health: RetroPathServiceHealth,
         parameters: RetroPathJobParameters,
-        fingerprint: str,
-        source_sha256: str,
-        sink_sha256: str,
         local_artifacts: Sequence[str],
     ) -> RetroPathRunResult:
         errors: tuple[str, ...] = tuple()
@@ -1257,9 +1061,6 @@ class RetroPathHttpClient:
         audit_parameters: dict[str, Any] = {
             **parameters.to_dict(),
             "service_url": self.base_url,
-            "request_fingerprint": fingerprint,
-            "source_sha256": source_sha256,
-            "sink_sha256": sink_sha256,
             "target_compound_id": input_bundle.target_compound.compound_id,
             "expansion_depth": input_bundle.expansion_depth,
         }
@@ -1297,64 +1098,28 @@ class RetroPathHttpClient:
         state_path = resolved_output_dir / CLIENT_STATE_FILE_NAME
         raw_dir = resolved_output_dir / RAW_DIRECTORY_NAME
 
-        source_sha256, sink_sha256 = self._validate_input_hashes(input_bundle)
+        # Invalidate the previous result before any new network operation.
+        manifest_path.unlink(missing_ok=True)
+        self._write_state(state_path, "checking_runtime", parameters=job_parameters)
         health = self.health()
-        fingerprint = self._request_fingerprint(
-            input_bundle,
-            job_parameters,
-            health,
-            source_sha256,
-            sink_sha256,
-        )
-        if not force:
-            cached = self._try_cached_run(resolved_output_dir, fingerprint)
-            if cached is not None:
-                return cached
-
-        job: Optional[RetroPathJobState] = None
-        if not force:
-            job = self._resumable_job(state_path, fingerprint, job_parameters)
-        if job is None:
-            self._write_state(
-                state_path,
-                fingerprint,
-                "submitting",
-                parameters=job_parameters,
-            )
-            try:
-                job = self.submit(input_bundle, job_parameters)
-            except RetroPathClientError as exc:
-                phase = (
-                    "submission_uncertain"
-                    if exc.code == "submission_uncertain"
-                    else "submission_failed"
-                )
-                self._write_state(
-                    state_path,
-                    fingerprint,
-                    phase,
-                    parameters=job_parameters,
-                    error=exc,
-                )
-                raise
-            self._write_state(
-                state_path,
-                fingerprint,
-                "submitted",
-                parameters=job_parameters,
-                job=job,
-            )
+        self._write_state(state_path, "submitting", parameters=job_parameters)
+        try:
+            job = self.submit(input_bundle, job_parameters)
+        except RetroPathClientError as exc:
+            phase = "submission_uncertain" if exc.code == "submission_uncertain" else "submission_failed"
+            self._write_state(state_path, phase, parameters=job_parameters, error=exc)
+            raise
+        self._write_state(state_path, "submitted", parameters=job_parameters, job=job)
 
         if job.parameters != job_parameters:
             raise RetroPathClientError(
                 "protocol_error",
-                "resumed job parameters do not match the current request",
+                "submitted job parameters do not match the current request",
                 job_id=job.job_id,
             )
         if not job.is_terminal:
             self._write_state(
                 state_path,
-                fingerprint,
                 "polling",
                 parameters=job_parameters,
                 job=job,
@@ -1366,7 +1131,6 @@ class RetroPathHttpClient:
                 latest_job = state
                 self._write_state(
                     state_path,
-                    fingerprint,
                     "polling",
                     parameters=job_parameters,
                     job=state,
@@ -1389,7 +1153,6 @@ class RetroPathHttpClient:
                 )
                 self._write_state(
                     state_path,
-                    fingerprint,
                     phase,
                     parameters=job_parameters,
                     job=job,
@@ -1398,7 +1161,6 @@ class RetroPathHttpClient:
                 raise
         self._write_state(
             state_path,
-            fingerprint,
             "terminal",
             parameters=job_parameters,
             job=job,
@@ -1423,8 +1185,6 @@ class RetroPathHttpClient:
                 job=job,
                 health=health,
                 parameters=job_parameters,
-                source_sha256=source_sha256,
-                sink_sha256=sink_sha256,
                 result_artifacts=service_results["artifacts"],
             )
             try:
@@ -1452,21 +1212,15 @@ class RetroPathHttpClient:
                 RAW_DIRECTORY_NAME,
                 SERVICE_RESULTS_FILE_NAME,
             ).as_posix()
-            artifact_hashes = {
-                service_results_relative: hashlib.sha256(
-                    service_results_text.encode("utf-8")
-                ).hexdigest()
-            }
-            artifact_mapping, downloaded_hashes = self.download_artifacts(
+            artifact_mapping = self.download_artifacts(
                 job.job_id,
                 tuple(service_results["artifacts"]),
                 resolved_output_dir,
             )
-            artifact_hashes.update(downloaded_hashes)
+            local_artifacts = (service_results_relative, *artifact_mapping.values())
         except RetroPathClientError as exc:
             self._write_state(
                 state_path,
-                fingerprint,
                 "result_failed",
                 parameters=job_parameters,
                 job=job,
@@ -1479,42 +1233,30 @@ class RetroPathHttpClient:
             job,
             health,
             job_parameters,
-            fingerprint,
-            source_sha256,
-            sink_sha256,
-            tuple(sorted(artifact_hashes)),
+            tuple(sorted(local_artifacts)),
         )
         manifest_payload = {
             "schema_version": RETROPATH_CLIENT_MANIFEST_SCHEMA,
             "client_contract_version": RETROPATH_CLIENT_CONTRACT_VERSION,
             "recorded_at": self._now().isoformat(),
-            "request_fingerprint": fingerprint,
-            "cacheable": job.status in CACHEABLE_STATUSES,
             "service_url": self.base_url,
             "target_compound_id": input_bundle.target_compound.compound_id,
             "expansion_depth": input_bundle.expansion_depth,
-            "input_sha256": {
-                "target_source.csv": source_sha256,
-                "chassis_sink.csv": sink_sha256,
-            },
             "parameters": job_parameters.to_dict(),
             "health": health.to_dict(),
             "job": job.to_dict(),
             "artifact_mapping": dict(sorted(artifact_mapping.items())),
-            "artifact_sha256": dict(sorted(artifact_hashes.items())),
             "run_result": run_result.to_dict(),
         }
         _atomic_write_json(manifest_path, manifest_payload)
         self._write_state(
             state_path,
-            fingerprint,
             "completed",
             parameters=job_parameters,
             job=job,
         )
         return RetroPathClientRun(
             result=run_result,
-            request_fingerprint=fingerprint,
             output_dir=resolved_output_dir,
             raw_dir=raw_dir,
             run_manifest_path=manifest_path,
@@ -1524,7 +1266,7 @@ class RetroPathHttpClient:
 
 
 __all__ = [
-    "CACHEABLE_STATUSES",
+    "MANIFEST_REQUIRED_STATUSES",
     "CLIENT_MANIFEST_FILE_NAME",
     "CLIENT_STATE_FILE_NAME",
     "DEFAULT_GET_ATTEMPTS",

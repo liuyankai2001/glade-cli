@@ -19,9 +19,8 @@ from src.pathway_analyze.retropath_benchmark_models import (
     BENCHMARK_TASK_SCHEMA,
     BenchmarkCase,
     BenchmarkDataset,
+    BenchmarkDefaults,
     finite_float,
-    load_benchmark_dataset,
-    sha256_file,
     split_ids,
 )
 
@@ -655,7 +654,7 @@ def render_markdown_report(
         f"- Benchmark：`{run.get('benchmark_id', '')}`",
         f"- Run ID：`{run.get('run_id', '')}`",
         f"- 创建时间：`{run.get('created_at', '')}`",
-        f"- 数据集 SHA-256：`{run.get('dataset_sha256', '')}`",
+        f"- 数据集：`{run.get('dataset_path', '')}`",
         f"- Git commit：`{run.get('git', {}).get('commit', '')}`",
         f"- 工作树状态：`{'dirty' if run.get('git', {}).get('dirty') else 'clean'}`",
         "",
@@ -828,14 +827,14 @@ def _verified_tasks(run_dir: Path, run: Mapping[str, Any]) -> list[dict[str, Any
             raise ValueError(f"run task record {index} is invalid")
         relative = Path(str(record.get("result_path") or ""))
         path = relative if relative.is_absolute() else run_dir / relative
+        path = path.resolve()
+        if not path.is_relative_to(run_dir.resolve()):
+            raise ValueError("benchmark task result path escapes its run directory")
         if not path.is_file():
             raise FileNotFoundError(f"benchmark task result is missing: {path}")
-        expected = str(record.get("sha256") or "")
-        if sha256_file(path) != expected:
-            raise ValueError(f"benchmark task result checksum mismatch: {path}")
         task = _read_json(path)
         if task.get("schema_version") != BENCHMARK_TASK_SCHEMA:
-            raise ValueError(f"unsupported benchmark task schema: {path}")
+            raise ValueError(f"unsupported benchmark task schema; regenerate the benchmark results: {path}")
         if task.get("case_id") != record.get("case_id") or task.get("profile") != record.get("profile"):
             raise ValueError(f"benchmark task identity mismatch: {path}")
         artifacts = task.get("artifacts")
@@ -850,13 +849,12 @@ def _verified_tasks(run_dir: Path, run: Mapping[str, Any]) -> list[dict[str, Any
                 if artifact_path.is_absolute()
                 else run_dir / artifact_path
             )
+            artifact_path = artifact_path.resolve()
+            if not artifact_path.is_relative_to(run_dir.resolve()):
+                raise ValueError("benchmark artifact path escapes its run directory")
             if not artifact_path.is_file():
                 raise FileNotFoundError(
                     f"benchmark task artifact is missing: {artifact_path}"
-                )
-            if sha256_file(artifact_path) != artifact.get("sha256"):
-                raise ValueError(
-                    f"benchmark task artifact checksum mismatch: {artifact_path}"
                 )
         tasks.append(task)
     return tasks
@@ -871,13 +869,10 @@ def generate_benchmark_report(
     manifest_path = resolved_run / "benchmark_run_manifest.json"
     run = _read_json(manifest_path)
     if run.get("schema_version") != BENCHMARK_RUN_SCHEMA:
-        raise ValueError("unsupported benchmark run schema")
-    dataset_path = Path(str(run.get("dataset_path") or "")).expanduser().resolve()
-    dataset = load_benchmark_dataset(dataset_path)
-    if dataset.dataset_sha256 != run.get("dataset_sha256"):
-        raise ValueError("benchmark dataset changed after the run")
+        raise ValueError("unsupported benchmark run schema; regenerate the benchmark results")
+    defaults = BenchmarkDefaults.from_mapping(run.get("defaults"))
     tasks = _verified_tasks(resolved_run, run)
-    aggregate = aggregate_results(tasks, top_k=dataset.defaults.top_k)
+    aggregate = aggregate_results(tasks, top_k=defaults.top_k)
 
     case_rows: list[dict[str, Any]] = []
     case_results_lines: list[str] = []
@@ -968,10 +963,9 @@ def generate_benchmark_report(
     )
     markdown = render_markdown_report(run, tasks, aggregate)
     summary = {
-        "schema_version": "retropath_benchmark_report.v1",
-        "benchmark_id": dataset.benchmark_id,
+        "schema_version": "retropath_benchmark_report.v2",
+        "benchmark_id": run.get("benchmark_id"),
         "run_id": run.get("run_id"),
-        "dataset_sha256": dataset.dataset_sha256,
         "task_count": len(tasks),
         **aggregate,
     }
@@ -1010,13 +1004,12 @@ def generate_benchmark_report(
     for name, text in artifact_texts.items():
         path = resolved_run / name
         _atomic_write(path, text)
-        artifacts[name] = {"path": str(path), "sha256": sha256_file(path)}
+        artifacts[name] = {"path": str(path), }
     if output_path is not None:
         resolved_output = Path(output_path).expanduser().resolve()
         _atomic_write(resolved_output, markdown)
         artifacts["external_report"] = {
             "path": str(resolved_output),
-            "sha256": sha256_file(resolved_output),
         }
     return {
         "ok": True,

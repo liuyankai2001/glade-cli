@@ -21,6 +21,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -37,10 +38,8 @@ from src.pathway_analyze.retropath_benchmark_models import (
     BENCHMARK_TASK_SCHEMA,
     BenchmarkCase,
     BenchmarkDataset,
-    canonical_sha256,
     load_benchmark_dataset,
     repository_root,
-    sha256_file,
 )
 from src.pathway_analyze.retropath_benchmark_report import (
     generate_benchmark_report,
@@ -91,7 +90,7 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _atomic_write_text(path: Path, text: str) -> str:
+def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -111,11 +110,10 @@ def _atomic_write_text(path: Path, text: str) -> str:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return sha256_file(path)
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> str:
-    return _atomic_write_text(
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    _atomic_write_text(
         path,
         json.dumps(
             payload,
@@ -157,7 +155,6 @@ def _git_provenance(root: Path) -> dict[str, Any]:
     return {
         "commit": command("rev-parse", "HEAD"),
         "dirty": bool(status),
-        "status_sha256": canonical_sha256(status.splitlines()),
     }
 
 
@@ -176,12 +173,11 @@ def _source_tree_record() -> dict[str, Any]:
             if not path.name.startswith("retropath_benchmark")
         )
     records = {
-        str(path.resolve().relative_to(root)): sha256_file(path)
+        str(path.resolve().relative_to(root)): str(path.resolve())
         for path in sorted(set(files))
         if path.is_file()
     }
     return {
-        "sha256": canonical_sha256(records),
         "files": records,
     }
 
@@ -191,11 +187,11 @@ def _runner_source_record() -> dict[str, Any]:
     root = repository_root()
     files = sorted(Path(__file__).parent.glob("retropath_benchmark*.py"))
     records = {
-        str(path.resolve().relative_to(root)): sha256_file(path)
+        str(path.resolve().relative_to(root)): str(path.resolve())
         for path in files
         if path.is_file()
     }
-    return {"sha256": canonical_sha256(records), "files": records}
+    return { "files": records}
 
 
 def validate_gold_against_mnxref(dataset: BenchmarkDataset) -> dict[str, Any]:
@@ -328,7 +324,6 @@ _RUNTIME_IDENTITY_FIELDS = (
     "knime_version",
     "rdkit_plugin_version",
     "rules_version",
-    "rules_sha256",
     "worker_concurrency",
 )
 
@@ -337,24 +332,6 @@ def _runtime_identity(health: Mapping[str, Any]) -> dict[str, Any]:
     """Exclude dynamic readiness/queue fields from the runtime version lock."""
 
     return {field: health.get(field) for field in _RUNTIME_IDENTITY_FIELDS}
-
-
-def _biological_defaults(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {field: value.get(field) for field in _BIOLOGICAL_DEFAULT_FIELDS}
-
-
-def _resources_compatible(
-    manifest_resources: Any,
-    dataset: BenchmarkDataset,
-) -> bool:
-    if not isinstance(manifest_resources, Mapping):
-        return False
-    return all(
-        isinstance(manifest_resources.get(name), Mapping)
-        and manifest_resources[name].get("sha256")
-        in {resource.sha256, *resource.compatible_sha256}
-        for name, resource in dataset.resources.items()
-    )
 
 
 def _render_controlled_a0(case: BenchmarkCase) -> str:
@@ -386,14 +363,14 @@ def _prepare_a0(
     case: BenchmarkCase,
     profile: str,
     path: Path,
-) -> str:
+) -> None:
     if profile == "controlled":
-        return _atomic_write_text(path, _render_controlled_a0(case))
+        _atomic_write_text(path, _render_controlled_a0(case))
+        return
     if profile != "full_a0":
         raise ValueError(f"unsupported benchmark profile: {profile}")
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(dataset.resources["a0_snapshot"].path, path)
-    return sha256_file(path)
 
 
 def _benchmark_config(
@@ -441,95 +418,10 @@ def _benchmark_config(
     return config
 
 
-def _task_fingerprint(
-    dataset: BenchmarkDataset,
-    case: BenchmarkCase,
-    profile: str,
-    *,
-    service_health: Mapping[str, Any],
-    with_enzymes: bool,
-) -> str:
-    return canonical_sha256(
-        {
-            "schema_version": BENCHMARK_TASK_SCHEMA,
-            "dataset_sha256": dataset.dataset_sha256,
-            "case": case.to_dict(),
-            "profile": profile,
-            "defaults": dataset.defaults.to_dict(),
-            "resources": {
-                name: resource.sha256
-                for name, resource in sorted(dataset.resources.items())
-            },
-            "service_identity": _runtime_identity(service_health),
-            "with_enzymes": with_enzymes and profile == "full_a0",
-            "source_tree_sha256": _source_tree_record()["sha256"],
-        }
-    )
-
-
 def _artifact_record(path: Path, *, root: Path) -> dict[str, str]:
     return {
         "path": str(path.resolve().relative_to(root.resolve())),
-        "sha256": sha256_file(path),
     }
-
-
-def _existing_task_valid(
-    record: Mapping[str, Any],
-    *,
-    run_dir: Path,
-    fingerprint: str,
-    retry_failed: bool = False,
-) -> bool:
-    relative = Path(str(record.get("result_path") or ""))
-    result_path = relative if relative.is_absolute() else run_dir / relative
-    if not result_path.is_file() or sha256_file(result_path) != record.get("sha256"):
-        return False
-    try:
-        result = _read_json(result_path)
-    except ValueError:
-        return False
-    status = str(result.get("status") or "")
-    if status not in TERMINAL_TASK_STATUSES:
-        return False
-    if retry_failed and status != "completed":
-        return False
-    if result.get("task_fingerprint") != fingerprint:
-        return False
-    artifacts = result.get("artifacts", {})
-    if not isinstance(artifacts, Mapping):
-        return False
-    for artifact in artifacts.values():
-        if not isinstance(artifact, Mapping):
-            return False
-        path = Path(str(artifact.get("path") or ""))
-        path = path if path.is_absolute() else run_dir / path
-        if not path.is_file() or sha256_file(path) != artifact.get("sha256"):
-            return False
-    return True
-
-
-def _task_from_record(
-    record: Mapping[str, Any],
-    *,
-    run_dir: Path,
-) -> dict[str, Any]:
-    relative = Path(str(record.get("result_path") or ""))
-    result_path = relative if relative.is_absolute() else run_dir / relative
-    return _read_json(result_path)
-
-
-def _is_infrastructure_failure(task: Mapping[str, Any] | None) -> bool:
-    if not isinstance(task, Mapping) or task.get("status") != "failed":
-        return False
-    error = task.get("error", {})
-    return bool(
-        task.get("outcome") == "infrastructure_error"
-        or (
-            isinstance(error, Mapping)
-            and error.get("stage") == "infrastructure_error"
-        )
-    )
 
 
 def _classify_pipeline_error(error: RetroPathPipelineError) -> tuple[str, str]:
@@ -585,18 +477,11 @@ def _run_task(
         service_url=service_url,
     )
     config.retropath_force = bool(force_retropath)
-    a0_sha = _prepare_a0(
+    _prepare_a0(
         dataset,
         case,
         profile,
         Path(config.chassis_producible_csv),
-    )
-    fingerprint = _task_fingerprint(
-        dataset,
-        case,
-        profile,
-        service_health=service_health,
-        with_enzymes=with_enzymes,
     )
     started_at = _utc_now()
     started = time.perf_counter()
@@ -606,13 +491,11 @@ def _run_task(
         "ec_class": case.ec_class,
         "profile": profile,
         "target_kegg_id": case.target_kegg_id,
-        "task_fingerprint": fingerprint,
         "started_at": started_at,
         "completed_at": None,
         "status": "failed",
         "outcome": "not_run",
         "runtime_seconds": 0.0,
-        "a0_sha256": a0_sha,
         "search_input": case.search_dict(),
         "gold_standard": {
             "reaction_ids": list(case.gold_reaction_ids),
@@ -761,81 +644,6 @@ def _run_task(
     return result
 
 
-def _skip_paired_profile_after_infrastructure_failure(
-    dataset: BenchmarkDataset,
-    case: BenchmarkCase,
-    profile: str,
-    *,
-    run_dir: Path,
-    service_health: Mapping[str, Any],
-    with_enzymes: bool,
-    controlled_task: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Record a terminal paired-profile skip without submitting another job.
-
-    RetroPath expands the same target under both P11.1 sink profiles.  When the
-    controlled run has already caused an infrastructure-level failure, an
-    immediate full-A0 submission can repeat the same resource incident before
-    the service has recovered.  The skip remains non-evaluable and is visible
-    in the failure funnel; ``--retry-failed`` can retry both profiles later.
-    """
-
-    if profile != "full_a0":
-        raise ValueError("paired infrastructure circuit breaker only applies to full_a0")
-    task_dir = run_dir / "cases" / case.case_id / profile
-    task_dir.mkdir(parents=True, exist_ok=True)
-    a0_path = task_dir / "chassis_result" / "producible_kegg_compounds.csv"
-    a0_sha = _prepare_a0(dataset, case, profile, a0_path)
-    fingerprint = _task_fingerprint(
-        dataset,
-        case,
-        profile,
-        service_health=service_health,
-        with_enzymes=with_enzymes,
-    )
-    controlled_error = controlled_task.get("error", {})
-    controlled_code = (
-        str(controlled_error.get("code") or "unknown")
-        if isinstance(controlled_error, Mapping)
-        else "unknown"
-    )
-    now = _utc_now()
-    result: dict[str, Any] = {
-        "schema_version": BENCHMARK_TASK_SCHEMA,
-        "case_id": case.case_id,
-        "ec_class": case.ec_class,
-        "profile": profile,
-        "target_kegg_id": case.target_kegg_id,
-        "task_fingerprint": fingerprint,
-        "started_at": now,
-        "completed_at": now,
-        "status": "skipped",
-        "outcome": "paired_infrastructure_circuit_breaker",
-        "runtime_seconds": 0.0,
-        "a0_sha256": a0_sha,
-        "search_input": case.search_dict(),
-        "gold_standard": {
-            "reaction_ids": list(case.gold_reaction_ids),
-            "mnxr_ids": list(case.gold_mnxr_ids),
-            "ec_numbers": list(case.gold_ec_numbers),
-            "uniprot_accessions": list(case.gold_uniprot_accessions),
-        },
-        "parameters": dataset.defaults.to_dict(),
-        "artifacts": {},
-        "metrics": {},
-        "error": {
-            "stage": "infrastructure_circuit_breaker",
-            "code": "controlled_profile_infrastructure_failure",
-            "detail": (
-                "full_a0 was not submitted because the paired controlled "
-                f"profile ended with infrastructure error {controlled_code}"
-            ),
-        },
-    }
-    _atomic_write_json(task_dir / TASK_RESULT_FILE_NAME, result)
-    return result
-
-
 def _task_record(task: Mapping[str, Any], *, run_dir: Path) -> dict[str, Any]:
     path = (
         run_dir
@@ -849,8 +657,6 @@ def _task_record(task: Mapping[str, Any], *, run_dir: Path) -> dict[str, Any]:
         "profile": task["profile"],
         "status": task["status"],
         "result_path": str(path.relative_to(run_dir)),
-        "sha256": sha256_file(path),
-        "task_fingerprint": task["task_fingerprint"],
     }
 
 
@@ -874,7 +680,6 @@ def _new_run_manifest(
         "completed_at": None,
         "state": "running",
         "dataset_path": str(dataset.path),
-        "dataset_sha256": dataset.dataset_sha256,
         "profiles": list(profiles),
         "with_enzymes": with_enzymes,
         "service_url": service_url,
@@ -886,9 +691,7 @@ def _new_run_manifest(
             for name, resource in sorted(dataset.resources.items())
         },
         "git": _git_provenance(root),
-        "source_tree_sha256": source_tree["sha256"],
         "source_files": source_tree["files"],
-        "runner_source_sha256": runner_source["sha256"],
         "runner_source_files": runner_source["files"],
         "tasks": [],
         "reports": {},
@@ -902,9 +705,7 @@ def run_benchmark(
     profiles: Sequence[str] = BENCHMARK_PROFILES,
     with_enzymes: bool = False,
     service_url: str = "http://127.0.0.1:8765",
-    resume: str | Path | None = None,
     run_id: str | None = None,
-    retry_failed: bool = False,
 ) -> dict[str, Any]:
     dataset = load_benchmark_dataset(cases_path)
     validate_gold_against_mnxref(dataset)
@@ -912,176 +713,43 @@ def run_benchmark(
     invalid_profiles = sorted(set(normalized_profiles) - set(BENCHMARK_PROFILES))
     if not normalized_profiles or invalid_profiles:
         raise ValueError(f"invalid benchmark profiles: {invalid_profiles}")
-    health = _service_health(
-        service_url,
+    health = _service_health(service_url,
         request_timeout_seconds=dataset.defaults.request_timeout_seconds,
-        get_attempts=dataset.defaults.get_attempts,
-    )
-    if resume is not None:
-        run_dir = Path(resume).expanduser().resolve()
-        manifest_path = run_dir / RUN_MANIFEST_FILE_NAME
-        manifest = _read_json(manifest_path)
-        if manifest.get("schema_version") != BENCHMARK_RUN_SCHEMA:
-            raise ValueError("unsupported benchmark run manifest schema")
-        if manifest.get("dataset_sha256") != dataset.dataset_sha256:
-            if (
-                manifest.get("benchmark_id") != dataset.benchmark_id
-                or not _resources_compatible(manifest.get("resources"), dataset)
-                or _biological_defaults(manifest.get("defaults", {}))
-                != _biological_defaults(dataset.defaults.to_dict())
-            ):
-                raise ValueError("cannot resume: benchmark dataset changed")
-            manifest.setdefault("dataset_migrations", []).append(
-                {
-                    "at": _utc_now(),
-                    "from_sha256": manifest.get("dataset_sha256"),
-                    "to_sha256": dataset.dataset_sha256,
-                    "reason": "transport_observation_policy_only",
-                }
-            )
-            manifest["dataset_sha256"] = dataset.dataset_sha256
-            manifest["dataset_path"] = str(dataset.path)
-            manifest["defaults"] = dataset.defaults.to_dict()
-        if tuple(manifest.get("profiles") or ()) != normalized_profiles:
-            raise ValueError("cannot resume with different profiles")
-        if bool(manifest.get("with_enzymes")) != bool(with_enzymes):
-            raise ValueError("cannot resume with a different enzyme mode")
-        previous_identity = manifest.get("service_identity")
-        if not isinstance(previous_identity, Mapping):
-            previous_identity = _runtime_identity(manifest.get("service_health", {}))
-        if dict(previous_identity) != _runtime_identity(health):
-            raise ValueError("cannot resume: RetroPath runtime identity changed")
-        records = {
-            (str(item.get("case_id")), str(item.get("profile"))): item
-            for item in manifest.get("tasks", [])
-            if isinstance(item, Mapping)
-        }
-        manifest["state"] = "running"
-        manifest["completed_at"] = None
-        manifest["reports"] = {}
-        manifest["service_health"] = dict(health)
-        manifest["service_identity"] = _runtime_identity(health)
-        source_tree = _source_tree_record()
-        runner_source = _runner_source_record()
-        manifest["git"] = _git_provenance(repository_root())
-        manifest["source_tree_sha256"] = source_tree["sha256"]
-        manifest["source_files"] = source_tree["files"]
-        manifest["runner_source_sha256"] = runner_source["sha256"]
-        manifest["runner_source_files"] = runner_source["files"]
-    else:
-        root = Path(output_root).expanduser().resolve()
-        identifier = run_id or (
-            datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-            + "_"
-            + dataset.dataset_sha256[:8]
-        )
-        if not identifier or any(char in identifier for char in "\\/:*?\"<>|"):
-            raise ValueError("run_id contains invalid path characters")
-        run_dir = root / identifier
-        if run_dir.exists():
-            raise FileExistsError(f"benchmark run directory already exists: {run_dir}")
-        run_dir.mkdir(parents=True)
-        manifest = _new_run_manifest(
-            dataset,
-            run_id=identifier,
-            profiles=normalized_profiles,
-            with_enzymes=with_enzymes,
-            service_url=service_url,
-            service_health=health,
-        )
-        records = {}
+        get_attempts=dataset.defaults.get_attempts)
+    root = Path(output_root).expanduser().resolve()
+    identifier = run_id or (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8])
+    if not identifier or identifier in {".", ".."} or any(char in identifier for char in "\\/:*?\"<>|"):
+        raise ValueError("run_id contains invalid path characters")
+    run_dir = root / identifier
+    if run_dir.exists():
+        raise FileExistsError(f"benchmark run directory already exists: {run_dir}")
+    run_dir.mkdir(parents=True)
+    manifest = _new_run_manifest(dataset, run_id=identifier, profiles=normalized_profiles,
+        with_enzymes=with_enzymes, service_url=service_url, service_health=health)
     manifest_path = run_dir / RUN_MANIFEST_FILE_NAME
-    manifest.setdefault("execution_attempts", []).append(
-        {
-            "started_at": _utc_now(),
-            "resume": resume is not None,
-            "retry_failed": retry_failed,
-        }
-    )
     _atomic_write_json(manifest_path, manifest)
-
-    completed_records: dict[tuple[str, str], Mapping[str, Any]] = dict(records)
-    terminal_tasks: dict[tuple[str, str], Mapping[str, Any]] = {}
+    tasks = []
+    records = []
     total = len(dataset.cases) * len(normalized_profiles)
-    position = 0
     for case in dataset.cases:
         for profile in normalized_profiles:
-            position += 1
-            fingerprint = _task_fingerprint(
-                dataset,
-                case,
-                profile,
-                service_health=health,
-                with_enzymes=with_enzymes,
-            )
-            key = (case.case_id, profile)
-            existing = completed_records.get(key)
-            if existing is not None and _existing_task_valid(
-                existing,
-                run_dir=run_dir,
-                fingerprint=fingerprint,
-                retry_failed=retry_failed,
-            ):
-                print(f"[{position}/{total}] resume {case.case_id}/{profile}")
-                terminal_tasks[key] = _task_from_record(existing, run_dir=run_dir)
-                continue
-            controlled_task = terminal_tasks.get((case.case_id, "controlled"))
-            if profile == "full_a0" and _is_infrastructure_failure(controlled_task):
-                print(
-                    f"[{position}/{total}] circuit-break "
-                    f"{case.case_id}/{profile}"
-                )
-                task = _skip_paired_profile_after_infrastructure_failure(
-                    dataset,
-                    case,
-                    profile,
-                    run_dir=run_dir,
-                    service_health=health,
-                    with_enzymes=with_enzymes,
-                    controlled_task=controlled_task,
-                )
-            else:
-                print(f"[{position}/{total}] run {case.case_id}/{profile}")
-                task = _run_task(
-                    dataset,
-                    case,
-                    profile,
-                    run_dir=run_dir,
-                    service_url=service_url,
-                    service_health=health,
-                    with_enzymes=with_enzymes,
-                    force_retropath=retry_failed,
-                )
-            terminal_tasks[key] = task
-            completed_records[key] = _task_record(task, run_dir=run_dir)
-            manifest["tasks"] = [
-                completed_records[item]
-                for item in sorted(completed_records)
-            ]
+            print(f"[{len(tasks) + 1}/{total}] run {case.case_id}/{profile}")
+            task = _run_task(dataset, case, profile, run_dir=run_dir,
+                service_url=service_url, service_health=health, with_enzymes=with_enzymes)
+            tasks.append(task)
+            records.append(_task_record(task, run_dir=run_dir))
+            manifest["tasks"] = records
             _atomic_write_json(manifest_path, manifest)
-
-    task_payloads = [
-        _read_json(run_dir / str(record["result_path"]))
-        for record in completed_records.values()
-    ]
-    failed = sum(task.get("status") != "completed" for task in task_payloads)
+    failed = sum(task.get("status") != "completed" for task in tasks)
     manifest["state"] = "core_complete" if failed == 0 else "core_complete_with_failures"
     manifest["completed_at"] = _utc_now()
-    manifest["tasks"] = [completed_records[item] for item in sorted(completed_records)]
     _atomic_write_json(manifest_path, manifest)
     report = generate_benchmark_report(run_dir)
     manifest["reports"] = report["artifacts"]
     manifest["state"] = "completed" if failed == 0 else "completed_with_failures"
     _atomic_write_json(manifest_path, manifest)
-    return {
-        "ok": failed == 0,
-        "run_id": manifest["run_id"],
-        "run_dir": str(run_dir),
-        "task_count": len(task_payloads),
-        "failed_task_count": failed,
-        "state": manifest["state"],
-        "report": report,
-    }
+    return {"ok": failed == 0, "run_id": identifier, "run_dir": str(run_dir),
+        "task_count": len(tasks), "failed_task_count": failed, "state": manifest["state"], "report": report}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1101,14 +769,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--with-enzymes", action="store_true")
     run.add_argument("--service-url", default="http://127.0.0.1:8765")
-    run.add_argument("--resume", type=Path)
     run.add_argument("--run-id")
-    run.add_argument(
-        "--retry-failed",
-        action="store_true",
-        help="retry terminal failed/skipped tasks instead of resuming them",
-    )
-
     report = commands.add_parser("report", help="regenerate deterministic reports")
     report.add_argument("--run", type=Path, required=True)
     report.add_argument("--output", type=Path)
@@ -1127,9 +788,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             profiles=args.profiles,
             with_enzymes=args.with_enzymes,
             service_url=args.service_url,
-            resume=args.resume,
             run_id=args.run_id,
-            retry_failed=args.retry_failed,
         )
     else:
         result = generate_benchmark_report(args.run, output_path=args.output)

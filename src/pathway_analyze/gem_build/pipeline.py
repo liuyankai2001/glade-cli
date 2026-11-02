@@ -17,7 +17,6 @@ from .config import validate_managed_paths
 from .validation import validate_model
 
 REQUIRED = {'raw/draft_model.json', 'service_validation.json'}
-SHA = re.compile(r'^[0-9a-f]{64}$')
 
 
 def sha(data):
@@ -52,13 +51,13 @@ def safe_artifact(name):
     return name
 
 
-def _verified_manifest(results, job_id, config, inputs, health):
+def _verified_manifest(results, job_id, config, health):
     manifest = results.get('manifest')
     if not isinstance(manifest, dict):
         raise GemBuildError('protocol_error: missing run manifest')
     for key, value in [('schema_version', 'bactabolize_run.v1'), ('job_id', job_id),
                        ('status', 'succeeded'), ('parameters', config.parameters),
-                       ('input_sha256', inputs), ('versions', health['versions'])]:
+                       ('versions', health['versions'])]:
         if manifest.get(key) != value:
             raise GemBuildError(f'provenance_mismatch: manifest {key}')
     resolved = manifest.get('resolved_parameters')
@@ -70,16 +69,14 @@ def _verified_manifest(results, job_id, config, inputs, health):
     if (config.parameters['biomass_reaction_id'] is not None
             and resolved['biomass_reaction_id'] != config.parameters['biomass_reaction_id']):
         raise GemBuildError('provenance_mismatch: resolved biomass reaction')
-    artifacts, hashes = manifest.get('artifacts'), manifest.get('artifact_sha256')
-    if not isinstance(artifacts, list) or not isinstance(hashes, dict):
+    artifacts = manifest.get('artifacts')
+    if not isinstance(artifacts, list):
         raise GemBuildError('protocol_error: invalid artifact manifest')
     for name in artifacts:
         safe_artifact(name)
     if (len(artifacts) != len({name.casefold() for name in artifacts})
-            or 'run_manifest.json' in artifacts or not REQUIRED.issubset(artifacts)
-            or set(hashes) != set(artifacts)
-            or any(not isinstance(value, str) or not SHA.fullmatch(value) for value in hashes.values())):
-        raise GemBuildError('protocol_error: missing/duplicate/unhashed artifacts')
+            or 'run_manifest.json' in artifacts or not REQUIRED.issubset(artifacts)):
+        raise GemBuildError('protocol_error: missing/duplicate artifacts')
     offered = results.get('artifacts')
     if (not isinstance(offered, list) or any(not isinstance(name, str) for name in offered)
             or len(offered) != len(set(offered)) or set(offered) != {'run_manifest.json', *artifacts}):
@@ -107,17 +104,12 @@ def _validate_sources(config, lock):
 
 def _download(transport, job_id, name, manifest):
     data = transport.request('GET', f'/v1/jobs/{job_id}/artifacts/' + quote(name, safe='/')).content
-    if sha(data) != manifest['artifact_sha256'][name]:
-        raise GemBuildError(f'artifact_hash_mismatch: {name}')
     return data
 
 
 def _build(config, client):
     transport = BactabolizeClient(config, client)
     health = transport.health()
-    inputs = {name: sha(path.read_bytes()) for name, path in [
-        ('reference_model.json', config.reference_model_file),
-        ('reference.gbff', config.reference_genome_file), ('target.gbff', config.target_genome_file)]}
     job_id, terminal = None, False
     try:
         job = transport.submit()
@@ -130,7 +122,7 @@ def _build(config, client):
         results = transport.job(transport.json('GET', f'/v1/jobs/{job_id}/results'), job_id)
         if results.get('status') != 'succeeded':
             raise GemBuildError('protocol_error: results do not match successful terminal state')
-        manifest = _verified_manifest(results, job_id, config, inputs, health)
+        manifest = _verified_manifest(results, job_id, config, health)
         # Temporary validation data never live beside the public JSON. Cleanup
         # finishes before publication, so a cleanup error cannot replace an old model.
         with tempfile.TemporaryDirectory(prefix='glade-bactabolize-run-') as temporary:
