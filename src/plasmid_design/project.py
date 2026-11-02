@@ -58,14 +58,6 @@ def read_project(config: Any) -> ProjectSnapshot:
         raise DesignError(
             f"当前表达构建或组件库需更新：{exc}", code="project_not_ready"
         ) from exc
-    if not (
-        source.host_key.lower().startswith("ecoli")
-        or source.host_key.lower() == "escherichia_coli"
-    ):
-        raise DesignError(
-            "当前组件库首版支持大肠杆菌；该项目宿主尚无适用的复制模块。",
-            code="unsupported_host",
-        )
     if source.manifest_revision != int(manifest.get("revision", 0)):
         raise DesignError("读取期间项目状态已变化，请刷新后重试。", code="stale_source")
     try:

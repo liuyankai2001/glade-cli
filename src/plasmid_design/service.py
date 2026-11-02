@@ -61,11 +61,13 @@ class DesignService:
         cds = manifest.get("cds_selection", {})
         host = cds.get("host", {}) if isinstance(cds, dict) else {}
         host = host if isinstance(host, dict) else {}
+        host_name = host.get("name")
+        host_name = host_name.strip() if isinstance(host_name, str) else ""
         response = {
             "project": {
                 "target": self.config.target_name,
                 "name": self.config.target_name,
-                "host": host.get("name", "Escherichia coli MG1655"),
+                "host": host_name or "未记录宿主",
                 "manifest_revision": manifest.get("revision", 0),
                 "source_fingerprint": "",
             },
@@ -91,7 +93,6 @@ class DesignService:
             {
                 "manifest_revision": snapshot.source.manifest_revision,
                 "source_fingerprint": snapshot.fingerprint,
-                "host": snapshot.source.host_name,
             }
         )
         construct = snapshot.source.constructs[0]

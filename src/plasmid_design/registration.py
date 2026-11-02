@@ -23,7 +23,7 @@ from src.final_assemble_plan.get_final_assembly_context import (
 )
 from src.plasmid_selection.get_plasmid_context import stable_json_hash
 
-DESIGN_VERSION = "component_plasmid_design.v6"
+DESIGN_VERSION = "component_plasmid_design.v7"
 DESIGN_WARNING = "这些文件是计算拼接设计，实际质粒需制备并验证。"
 PROTECTIVE_WARNING = (
     "制备片段两端已加入 6 bp 保护碱基，实验前请核对所选酶的末端切割条件。"
@@ -164,7 +164,7 @@ def export_design(
                 "assembly_policy": "insert_into_mcs",
                 "cargo_type": "temporary_landing_pad",
                 "requires_cargo_replacement": True,
-                "host_compatibility": [source.host_key],
+                "host_compatibility": [],
                 "origins": [
                     {
                         "module_id": replication.id,
