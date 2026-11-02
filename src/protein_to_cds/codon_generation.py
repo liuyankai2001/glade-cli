@@ -1,4 +1,4 @@
-"""CodonTransformer-only generation, separate from the retained repair workflow."""
+"""CodonTransformer generation with read-only CDS quality assessment."""
 
 from __future__ import annotations
 

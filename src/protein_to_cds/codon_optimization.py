@@ -1,4 +1,4 @@
-"""CodonTransformer inference plus deterministic CDS constraint repair."""
+"""CodonTransformer inference and shared CDS artifact helpers."""
 
 from __future__ import annotations
 
@@ -12,28 +12,20 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from src.protein_to_cds.artifacts import ArtifactTransaction
 
 from src.protein_to_cds.config import (
-    CDS_CONSTRAINT_CONFIG,
     CODON_TRANSFORMER_MODEL_DIR,
     HostProfile,
 )
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
-from src.protein_to_cds.sequence_constraints import (
-    CdsConstraintError,
-    normalize_dna,
-    repair_cds,
-    sha256_text,
-)
+from src.protein_to_cds.sequence_constraints import normalize_dna
 
-OPTIMIZATION_SCHEMA_VERSION = "protein_to_cds.optimization.v1"
 _MODEL_LOCK = threading.RLock()
 _MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
 class CdsOptimizationError(RuntimeError):
-    """Raised when model inference or constraint repair cannot produce a CDS."""
+    """Raised when CDS generation cannot produce a valid sequence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,54 +207,6 @@ def _read_dna_fasta(path: Path) -> str:
     return sequence
 
 
-def _load_cached_result(
-    *,
-    protein: ProteinSequenceRecord,
-    host: HostProfile,
-    input_fingerprint: str,
-    raw_path: Path,
-    final_path: Path,
-    report_path: Path,
-) -> CdsOptimizationResult | None:
-    if not report_path.is_file() or not raw_path.is_file() or not final_path.is_file():
-        return None
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        raw_sequence = _read_dna_fasta(raw_path)
-        final_sequence = _read_dna_fasta(final_path)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    if (
-        not isinstance(report, dict)
-        or report.get("schema_version") != OPTIMIZATION_SCHEMA_VERSION
-        or report.get("status") != "PASS"
-        or report.get("input_fingerprint") != input_fingerprint
-        or report.get("protein", {}).get("sequence_sha256") != protein.sequence_sha256
-        or report.get("host", {}).get("codon_transformer_organism_id")
-        != host.codon_transformer_organism_id
-        or report.get("raw", {}).get("sequence_sha256") != sha256_text(raw_sequence)
-        or report.get("final", {}).get("sequence_sha256") != sha256_text(final_sequence)
-        or report.get("final", {}).get("gate_status") != "PASS"
-    ):
-        return None
-    return CdsOptimizationResult(
-        accession=protein.primary_accession,
-        protein_sequence_sha256=protein.sequence_sha256,
-        input_fingerprint=input_fingerprint,
-        host_name=host.host_name,
-        codon_transformer_organism_id=host.codon_transformer_organism_id,
-        raw_sequence=raw_sequence,
-        final_sequence=final_sequence,
-        raw_sequence_sha256=sha256_text(raw_sequence),
-        final_sequence_sha256=sha256_text(final_sequence),
-        raw_fasta_path=raw_path,
-        optimized_fasta_path=final_path,
-        report_path=report_path,
-        report=report,
-        reused_existing=True,
-    )
-
-
 def predict_cds_sequence(
     protein: ProteinSequenceRecord,
     host: HostProfile,
@@ -288,187 +232,6 @@ def predict_cds_sequence(
     return normalize_dna(output.predicted_dna), device_name
 
 
-def _optimize_protein_cds(
-    protein: ProteinSequenceRecord,
-    host: HostProfile,
-    output_dir: str | Path,
-    *,
-    device: str = "auto",
-    additional_forbidden_motifs: Iterable[str] = (),
-) -> CdsOptimizationResult:
-    """Optimize one validated protein and reuse a matching PASS artifact."""
-
-    if protein.primary_accession != protein.requested_accession:
-        raise CdsOptimizationError(
-            "UniProt redirected the manifest accession "
-            f"{protein.requested_accession} to {protein.primary_accession}"
-        )
-    if len(protein.sequence) > 2046:
-        raise CdsOptimizationError(
-            f"protein {protein.primary_accession} exceeds the model limit of 2046 aa"
-        )
-
-    motifs = normalize_forbidden_motifs(additional_forbidden_motifs)
-    model_identity = _model_identity()
-    input_fingerprint = _stable_fingerprint(
-        {
-            "optimization_schema_version": OPTIMIZATION_SCHEMA_VERSION,
-            "protein_sequence_sha256": protein.sequence_sha256,
-            "host_organism_id": host.codon_transformer_organism_id,
-            "constraint_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
-            "additional_forbidden_motifs": motifs,
-            "model": model_identity,
-            "dnachisel_version": _package_version("dnachisel"),
-        }
-    )
-    root = Path(output_dir).expanduser().resolve()
-    raw_path = root / "raw_cds" / f"{protein.primary_accession}.raw.fasta"
-    final_path = root / "optimized_cds" / f"{protein.primary_accession}.fasta"
-    report_path = root / "reports" / f"{protein.primary_accession}.optimization.json"
-    cached = _load_cached_result(
-        protein=protein,
-        host=host,
-        input_fingerprint=input_fingerprint,
-        raw_path=raw_path,
-        final_path=final_path,
-        report_path=report_path,
-    )
-    if cached is not None:
-        return cached
-
-    try:
-        raw_sequence, device_name = predict_cds_sequence(protein, host, device)
-        _write_atomic(
-            raw_path,
-            _dna_fasta(
-                protein.primary_accession, "codon_transformer_raw", raw_sequence
-            ),
-        )
-        _write_atomic(final_path, _dna_fasta(protein.primary_accession, "optimized_cds", raw_sequence))
-        repair = repair_cds(
-            initial_sequence=_read_dna_fasta(final_path),
-            protein_sequence=protein.sequence,
-            organism_id=host.codon_transformer_organism_id,
-            accession=protein.primary_accession,
-            additional_forbidden_motifs=motifs,
-        )
-        final_sequence = normalize_dna(repair.pop("final_sequence"))
-    except Exception as exc:
-        failure_report = {
-            "schema_version": OPTIMIZATION_SCHEMA_VERSION,
-            "status": "FAIL",
-            "input_fingerprint": input_fingerprint,
-            "protein": {
-                "accession": protein.primary_accession,
-                "sequence_sha256": protein.sequence_sha256,
-                "length_aa": protein.length_aa,
-            },
-            "host": {
-                "name": host.host_name,
-                "codon_transformer_organism_id": host.codon_transformer_organism_id,
-            },
-            "model": model_identity,
-            "device_request": device,
-            "constraint_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-        _write_json_atomic(report_path, failure_report)
-        if isinstance(exc, CdsOptimizationError):
-            raise
-        if isinstance(exc, CdsConstraintError):
-            raise CdsOptimizationError(str(exc)) from exc
-        raise CdsOptimizationError(
-            f"CDS optimization failed for {protein.primary_accession}: {exc}"
-        ) from exc
-
-    _write_atomic(
-        final_path,
-        _dna_fasta(protein.primary_accession, "optimized_cds", final_sequence),
-    )
-    report = {
-        "schema_version": OPTIMIZATION_SCHEMA_VERSION,
-        "status": "PASS",
-        "input_fingerprint": input_fingerprint,
-        "protein": {
-            "accession": protein.primary_accession,
-            "sequence_sha256": protein.sequence_sha256,
-            "length_aa": protein.length_aa,
-        },
-        "host": {
-            "name": host.host_name,
-            "chassis_key": host.chassis_key,
-            "codon_transformer_organism_id": host.codon_transformer_organism_id,
-        },
-        "model": {
-            **model_identity,
-            "deterministic": True,
-            "match_protein": True,
-            "device": device_name,
-        },
-        "constraint_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
-        "raw_cds": {
-            "path": f"protein_to_cds/raw_cds/{protein.primary_accession}.raw.fasta",
-            "file_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
-            "sequence_sha256": sha256_text(raw_sequence),
-            "length_nt": len(raw_sequence),
-        },
-        "raw": {
-            **repair["initial"],
-            "sequence_path": raw_path.relative_to(root).as_posix(),
-            "sequence_sha256": sha256_text(raw_sequence),
-        },
-        "final": {
-            **repair["final"],
-            "sequence_path": final_path.relative_to(root).as_posix(),
-            "sequence_sha256": sha256_text(final_sequence),
-        },
-        "changes": repair["changes"],
-        "constraints": repair["constraints"],
-        "optimizer": {
-            **repair["optimizer"],
-            "version": _package_version("dnachisel"),
-        },
-    }
-    _write_json_atomic(report_path, report)
-    return CdsOptimizationResult(
-        accession=protein.primary_accession,
-        protein_sequence_sha256=protein.sequence_sha256,
-        input_fingerprint=input_fingerprint,
-        host_name=host.host_name,
-        codon_transformer_organism_id=host.codon_transformer_organism_id,
-        raw_sequence=raw_sequence,
-        final_sequence=final_sequence,
-        raw_sequence_sha256=sha256_text(raw_sequence),
-        final_sequence_sha256=sha256_text(final_sequence),
-        raw_fasta_path=raw_path,
-        optimized_fasta_path=final_path,
-        report_path=report_path,
-        report=report,
-        reused_existing=False,
-    )
-
-
-def optimize_protein_cds(
-    protein: ProteinSequenceRecord, host: HostProfile, output_dir: str | Path,
-    *, device: str = "auto", additional_forbidden_motifs: Iterable[str] = (),
-) -> CdsOptimizationResult:
-    """Generate a baseline and repair its working copy, restoring on failure."""
-    root = Path(output_dir).expanduser().resolve()
-    accession = protein.primary_accession
-    paths = (
-        root / "raw_cds" / f"{accession}.raw.fasta",
-        root / "optimized_cds" / f"{accession}.fasta",
-        root / "reports" / f"{accession}.optimization.json",
-    )
-    with ArtifactTransaction(paths) as transaction:
-        result = _optimize_protein_cds(
-            protein, host, root, device=device,
-            additional_forbidden_motifs=additional_forbidden_motifs,
-        )
-        transaction.commit()
-        return result
-
-
 def clear_model_cache() -> None:
     """Clear the in-process model cache, primarily for tests."""
 
@@ -477,11 +240,9 @@ def clear_model_cache() -> None:
 
 
 __all__ = [
-    "OPTIMIZATION_SCHEMA_VERSION",
     "CdsOptimizationError",
     "CdsOptimizationResult",
     "clear_model_cache",
     "normalize_forbidden_motifs",
     "predict_cds_sequence",
-    "optimize_protein_cds",
 ]
