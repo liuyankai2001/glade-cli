@@ -140,7 +140,6 @@ def build_report_payload(
             "enzyme_summary": item.get("enzyme_summary"),
             "target": dict(_mapping(item.get("target"))),
             "length_bp": item.get("length_bp"),
-            "sequence_sha256": item.get("sequence_sha256"),
             "files": dict(_mapping(item.get("files"))),
             "validation": dict(_mapping(item.get("validation"))),
             "warnings": [str(value) for value in _items(item.get("warnings"))],

@@ -270,6 +270,8 @@ class SelenzymeClient:
                 isinstance(cached, dict)
                 and cached.get("cache_schema") == cache_schema
             ):
+                cached.pop("response_sha256", None)
+                cached.pop("query_sha256", None)
                 cached["cache_hit"] = True
                 return cached
 
@@ -312,9 +314,6 @@ class SelenzymeClient:
                     "app": str(envelope.get("app") or ""),
                     "version": str(envelope.get("version") or ""),
                     "rows": rows,
-                    "response_sha256": hashlib.sha256(
-                        raw_text.encode("utf-8")
-                    ).hexdigest(),
                     "cache_hit": False,
                     **(extra_result or {}),
                 }
@@ -441,7 +440,6 @@ class SelenzymeClient:
             query_token=query_sha256[:20],
             extra_result={
                 "query_kind": query_kind,
-                "query_sha256": query_sha256,
             },
         )
 

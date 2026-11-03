@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from src.final_assemble_plan.common import stable_json_hash
 from src.final_assemble_plan.config import (
     ASSEMBLY_PLAN_ALGORITHM_VERSION,
     ASSEMBLY_PLAN_RECOMMENDATIONS_FILENAME,
@@ -136,17 +135,8 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("最终组装计划缺少 source")
-    expected_source = {
-        "context_input_fingerprint": context.input_fingerprint,
-        "parts_selection_fingerprint": context.parts_selection_fingerprint,
-        "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
-        "plasmid_selection_fingerprint": context.plasmid_selection_fingerprint,
-    }
-    for key, value in expected_source.items():
-        if source.get(key) != value:
-            raise ValueError(
-                "最终组装计划与当前表达构建或质粒选择不一致，请重新运行 assembly --plan"
-            )
+    if source.get("manifest_revision") != context.manifest_revision:
+        raise ValueError("最终组装计划与当前项目版本不一致，请重新运行 assembly --plan")
     raw_plans = artifact.get("plans")
     if not isinstance(raw_plans, list) or not raw_plans:
         raise ValueError("最终组装计划 plans 为空")
@@ -170,21 +160,11 @@ def _validate_artifact(
         if not isinstance(insert, Mapping) or not isinstance(backbone, Mapping):
             raise ValueError("最终组装计划缺少 insert 或 backbone")
         if (
-            insert.get("file_sha256") != construct.file_sha256
-            or insert.get("sequence_sha256") != construct.sequence_sha256
-            or backbone.get("file_sha256") != context.backbone.file_sha256
-            or backbone.get("sequence_content_sha256")
-            != context.backbone.sequence_content_sha256
+            insert.get("length_bp") != construct.length_bp
+            or backbone.get("length_bp") != context.backbone.length_bp
         ):
-            raise ValueError("最终组装计划文件指纹与当前输入不一致")
+            raise ValueError("最终组装计划长度与当前输入不一致")
         _validate_method_payload(plan)
-        recorded = str(plan.get("plan_fingerprint") or "")
-        unsigned = dict(plan)
-        unsigned.pop("plan_fingerprint", None)
-        if recorded != stable_json_hash(unsigned):
-            raise ValueError(f"design {design_id} 的 plan_fingerprint 无效")
-    if artifact.get("plan_set_fingerprint") != stable_json_hash(plans):
-        raise ValueError("最终组装计划集合指纹无效")
     requested_method = artifact.get("requested_method")
     if requested_method is not None and any(
         item.get("assembly_method") != requested_method for item in plans
@@ -213,18 +193,9 @@ def _selection_payload(
             ),
             "artifact_schema_version": artifact.get("schema_version"),
             "algorithm_version": artifact.get("algorithm_version"),
-            "plan_set_fingerprint": artifact.get("plan_set_fingerprint"),
-            "request_fingerprint": artifact.get("source", {}).get(
-                "request_fingerprint"
-            ),
-            "context_input_fingerprint": context.input_fingerprint,
-            "parts_selection_fingerprint": context.parts_selection_fingerprint,
-            "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
-            "plasmid_selection_fingerprint": context.plasmid_selection_fingerprint,
         },
         "warnings": list(artifact.get("warnings") or []),
     }
-    base["selection_fingerprint"] = stable_json_hash(base)
     return base
 
 
@@ -236,24 +207,13 @@ def write_final_assembly_plan(config: Any) -> dict[str, Any]:
     artifact = _read_artifact(artifact_path)
     plans = _validate_artifact(artifact, context=context)
     payload = _selection_payload(artifact, plans, context=context)
-    manifest = read_design_manifest(context.manifest_path)
-    current = manifest.get("final_assembly_plan")
-    unchanged = (
-        isinstance(current, Mapping)
-        and current.get("schema_version") == FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION
-        and current.get("selection_fingerprint")
-        == payload["selection_fingerprint"]
+    updated = update_design_manifest(
+        context.manifest_path,
+        target_compound_id=context.target_compound_id,
+        sections={"final_assembly_plan": payload},
+        discard_sections=FINAL_ASSEMBLY_PLAN_DOWNSTREAM_SECTIONS,
+        expected_revision=context.manifest_revision,
     )
-    if unchanged:
-        updated = manifest
-    else:
-        updated = update_design_manifest(
-            context.manifest_path,
-            target_compound_id=context.target_compound_id,
-            sections={"final_assembly_plan": payload},
-            discard_sections=FINAL_ASSEMBLY_PLAN_DOWNSTREAM_SECTIONS,
-            expected_revision=context.manifest_revision,
-        )
     return {
         "ok": True,
         "status": "selected",
@@ -274,7 +234,7 @@ def write_final_assembly_plan(config: Any) -> dict[str, Any]:
         ),
         "manifest_path": str(context.manifest_path.resolve()),
         "manifest_revision": updated["revision"],
-        "manifest_modified": not unchanged,
+        "manifest_modified": True,
     }
 
 

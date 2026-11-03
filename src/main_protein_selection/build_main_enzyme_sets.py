@@ -13,7 +13,6 @@ before it is selected.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import defaultdict
@@ -21,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .lifecycle import serialized_main_enzyme_run, require_revision
 from .common import (
     get_solution_steps,
     heterologous_requirements,
@@ -37,7 +37,6 @@ from .models import (
     MainEnzymeSelectionResult,
     MainEnzymeSetsResult,
 )
-from .provenance import file_sha256, solution_fingerprint, stable_json_hash
 from .genome_ec_filter import GenomeEcFilter, UNSPECIFIED_GENOME, validate_genome_ec_filter
 from .sequence_quality import analyze_protein_sequence
 
@@ -46,7 +45,6 @@ MAIN_ENZYME_SETS_FILENAME = "main_enzyme_sets.json"
 MAIN_ENZYME_SETS_SUMMARY_FILENAME = "main_enzyme_sets.csv"
 MAIN_ENZYME_SET_MEMBERS_FILENAME = "main_enzyme_set_members.csv"
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _FORMING_RE = re.compile(r"\(([^()]*(?:forming|producing)[^()]*)\)", re.I)
 _ACCEPTED_FIT = {"verified", "verified_with_risk", "manual_review"}
 _DIRECTION_CONTRADICTED = {"contradicted", "unsupported", "rejected"}
@@ -79,7 +77,6 @@ _SUMMARY_COLUMNS = [
     "low_direction_confidence_count",
     "specificity_risk_count",
     "exact_specificity_count",
-    "set_fingerprint",
     "warnings",
 ]
 
@@ -90,7 +87,6 @@ _MEMBER_COLUMNS = [
     "protein_name",
     "organism_name",
     "reviewed",
-    "sequence_sha256",
     "cofactors",
     "capable_step_indexes",
     "assigned_step_indexes",
@@ -151,10 +147,6 @@ def _score_breakdown(value: Any) -> dict[str, float]:
 def _normalise_words(value: Any) -> str:
     text = _text(value).lower().replace("α", "alpha").replace("β", "beta")
     return " ".join(re.findall(r"[a-z0-9]+", text))
-
-
-def _sequence_digest(sequence: str) -> str:
-    return hashlib.sha256(sequence.encode("ascii")).hexdigest()
 
 
 def main_enzyme_set_paths(output_dir: str | Path) -> dict[str, Path]:
@@ -384,7 +376,6 @@ class _Protein:
     protein_name: str
     organism_name: str
     reviewed: bool
-    sequence_sha256: str
     sequence: str
     cofactors: set[str] = field(default_factory=set)
     edges: dict[int, _Edge] = field(default_factory=dict)
@@ -532,29 +523,8 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "cofactors": _split_values(row.get("cofactors")),
         "warnings": _split_values(row.get("warnings")),
         "reasons": _split_values(row.get("reasons")),
-        "sequence_sha256": _text(row.get("sequence_sha256")).lower(),
         "sequence": _text(row.get("sequence")),
     }
-
-
-def shortlist_decision_fingerprint(
-    candidate_rows: Sequence[Mapping[str, Any]],
-) -> str:
-    """Fingerprint all shortlisted fields that can affect combinations."""
-
-    projected = sorted(
-        (
-            _canonical_candidate_projection(row)
-            for row in candidate_rows
-            if _text(row.get("selection_status")).lower() == "selected"
-        ),
-        key=lambda item: (
-            item["step_index"],
-            item["candidate_rank"],
-            item["accession"],
-        ),
-    )
-    return stable_json_hash(projected)
 
 
 def _build_protein_pool(
@@ -611,7 +581,6 @@ def _build_protein_pool(
         fit_status = row["reaction_fit_status"]
         direction = row["direction_verdict"]
         sequence = row["sequence"]
-        sequence_sha256 = row["sequence_sha256"]
 
         invalid: list[str] = []
         if not accession:
@@ -628,16 +597,6 @@ def _build_protein_pool(
             sequence_quality = analyze_protein_sequence(sequence)
             if sequence_quality.unsupported_positions:
                 invalid.append(sequence_quality.rejection_reason())
-        if not _SHA256_RE.fullmatch(sequence_sha256):
-            invalid.append("invalid sequence SHA256")
-        elif sequence:
-            try:
-                actual_digest = _sequence_digest(sequence)
-            except UnicodeEncodeError:
-                invalid.append("sequence is not ASCII")
-            else:
-                if actual_digest != sequence_sha256:
-                    invalid.append("sequence SHA256 mismatch")
         if row["reaction_id"] != requirements[step_index]["reaction_id"]:
             invalid.append("reaction ID mismatch")
         if invalid:
@@ -680,11 +639,10 @@ def _build_protein_pool(
                 protein_name=row["protein_name"],
                 organism_name=row["organism_name"],
                 reviewed=row["reviewed"],
-                sequence_sha256=sequence_sha256,
                 sequence=sequence,
             )
         protein = proteins[accession]
-        if protein.sequence_sha256 != sequence_sha256 or protein.sequence != sequence:
+        if protein.sequence != sequence:
             raise ValueError(
                 f"accession {accession} has inconsistent sequences across steps"
             )
@@ -887,7 +845,6 @@ def _build_set_payload(
     primary_assignment: tuple[tuple[int, str], ...],
     protein_by_accession: Mapping[str, _Protein],
     requirements: Mapping[int, Mapping[str, Any]],
-    candidate_pool_fingerprint: str,
 ) -> dict[str, Any]:
     accessions = tuple(sorted({item[1] for item in primary_assignment}))
     selected = [protein_by_accession[accession] for accession in accessions]
@@ -936,7 +893,6 @@ def _build_set_payload(
                 "protein_name": protein.protein_name,
                 "organism_name": protein.organism_name,
                 "reviewed": protein.reviewed,
-                "sequence_sha256": protein.sequence_sha256,
                 "cofactors": sorted(protein.cofactors),
                 "capable_step_indexes": list(protein.capable_steps),
                 "assigned_step_indexes": sorted(
@@ -992,20 +948,6 @@ def _build_set_payload(
         ),
         "warning_count": len(warnings),
     }
-    set_fingerprint = stable_json_hash(
-        {
-            "candidate_pool_fingerprint": candidate_pool_fingerprint,
-            "accessions": sorted(accessions),
-            "assignments": [
-                {
-                    "step_index": item["step_index"],
-                    "accession": item["accession"],
-                    "candidate_rank": item["candidate_rank"],
-                }
-                for item in assignments
-            ],
-        }
-    )
     reasons = [
         "covers every required heterologous step",
         f"uses {len(proteins_payload)} distinct protein(s)",
@@ -1017,7 +959,6 @@ def _build_set_payload(
     )
     return {
         "set_id": 1,  # Reassigned after deterministic ranking.
-        "set_fingerprint": set_fingerprint,
         "status": status,
         "protein_count": len(proteins_payload),
         "coverage_complete": True,
@@ -1056,78 +997,10 @@ def _set_ranking_key(payload: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _candidate_pool_fingerprint(
-    *,
-    solution_fingerprint_value: str,
-    chassis_key: str,
-    required_steps: list[dict[str, Any]],
-    candidate_rows: Sequence[Mapping[str, Any]],
-    genome_ec_filter: GenomeEcFilter | None = None,
-) -> str:
-    candidates = sorted(
-        (
-            _canonical_candidate_projection(row)
-            for row in candidate_rows
-            if _text(row.get("selection_status")).lower() == "selected"
-        ),
-        key=lambda item: (
-            item["step_index"],
-            item["candidate_rank"],
-            item["accession"],
-        ),
-    )
-    return stable_json_hash(
-        {
-            "algorithm_version": MAIN_ENZYME_SETS_ALGORITHM_VERSION,
-            "solution_fingerprint": solution_fingerprint_value,
-            "chassis_key": chassis_key,
-            "required_steps": required_steps,
-            "candidate_scope": "top_n_shortlist",
-            "candidates": candidates,
-            **({"genome_ec_filter_fingerprint": genome_ec_filter.fingerprint} if genome_ec_filter else {}),
-        }
-    )
-
-
-def candidate_pool_fingerprint_from_rows(
-    *,
-    solution_fingerprint_value: str,
-    chassis_key: str,
-    required_steps: Sequence[Mapping[str, Any]],
-    candidate_rows: Sequence[Mapping[str, Any]],
-) -> str:
-    """Return the path-independent semantic fingerprint used by set results."""
-
-    return _candidate_pool_fingerprint(
-        solution_fingerprint_value=solution_fingerprint_value,
-        chassis_key=chassis_key,
-        required_steps=_canonical_required_steps(required_steps),
-        candidate_rows=candidate_rows,
-    )
-
-
-def _input_fingerprint(
-    candidate_pool_fingerprint: str,
-    *,
-    max_sets: int,
-    max_search_nodes: int,
-) -> str:
-    return stable_json_hash(
-        {
-            "candidate_pool_fingerprint": candidate_pool_fingerprint,
-            "parameters": {
-                "max_sets": max_sets,
-                "max_search_nodes": max_search_nodes,
-            },
-        }
-    )
-
-
 def build_main_enzyme_sets_from_rows(
     *,
     solution_id: int,
     expansion_depth: int,
-    solution_fingerprint_value: str,
     chassis_key: str,
     required_steps: Sequence[Mapping[str, Any]],
     candidate_rows: Sequence[Mapping[str, Any]],
@@ -1142,8 +1015,6 @@ def build_main_enzyme_sets_from_rows(
         raise ValueError("solution_id must be positive")
     if expansion_depth < 0:
         raise ValueError("expansion_depth must not be negative")
-    if not _SHA256_RE.fullmatch(_text(solution_fingerprint_value)):
-        raise ValueError("solution_fingerprint_value must be a SHA256 digest")
     if max_sets < 1:
         raise ValueError("max_sets must be positive")
     if max_search_nodes < 1:
@@ -1160,18 +1031,6 @@ def build_main_enzyme_sets_from_rows(
         item["step_index"]: item for item in requirements_list
     }
     required_indexes = sorted(requirement_map)
-    candidate_pool_fingerprint = _candidate_pool_fingerprint(
-        solution_fingerprint_value=solution_fingerprint_value,
-        chassis_key=chassis_key,
-        required_steps=requirements_list,
-        candidate_rows=candidate_rows,
-        genome_ec_filter=genome_ec_filter,
-    )
-    input_fingerprint = _input_fingerprint(
-        candidate_pool_fingerprint,
-        max_sets=max_sets,
-        max_search_nodes=max_search_nodes,
-    )
     parameters = {
         "max_sets": max_sets,
         "max_search_nodes": max_search_nodes,
@@ -1187,11 +1046,8 @@ def build_main_enzyme_sets_from_rows(
             status="complete",
             selected_solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint=solution_fingerprint_value,
             chassis_key=chassis_key,
             parameters=parameters,
-            candidate_pool_fingerprint=candidate_pool_fingerprint,
-            input_fingerprint=input_fingerprint,
             required_step_indexes=[],
             minimum_protein_count=None,
             search_complete=True,
@@ -1227,11 +1083,8 @@ def build_main_enzyme_sets_from_rows(
             status="infeasible",
             selected_solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint=solution_fingerprint_value,
             chassis_key=chassis_key,
             parameters=parameters,
-            candidate_pool_fingerprint=candidate_pool_fingerprint,
-            input_fingerprint=input_fingerprint,
             required_step_indexes=required_indexes,
             minimum_protein_count=None,
             search_complete=True,
@@ -1256,7 +1109,6 @@ def build_main_enzyme_sets_from_rows(
             assignment,
             protein_by_accession,
             requirement_map,
-            candidate_pool_fingerprint,
         )
         if len(set_payloads) < max_sets:
             set_payloads.append(payload)
@@ -1307,11 +1159,8 @@ def build_main_enzyme_sets_from_rows(
         status=status,
         selected_solution_id=solution_id,
         expansion_depth=expansion_depth,
-        solution_fingerprint=solution_fingerprint_value,
         chassis_key=chassis_key,
         parameters=parameters,
-        candidate_pool_fingerprint=candidate_pool_fingerprint,
-        input_fingerprint=input_fingerprint,
         required_step_indexes=required_indexes,
         minimum_protein_count=search.minimum_count if set_payloads else None,
         search_complete=search.complete,
@@ -1325,55 +1174,11 @@ def build_main_enzyme_sets_from_rows(
     return result.model_dump(mode="json")
 
 
-def _selection_projection(selection: MainEnzymeSelectionResult) -> dict[str, Any]:
-    return {
-        **({"genome_ec_filter_fingerprint": selection.genome_ec_filter.fingerprint} if selection.genome_ec_filter else {}),
-        "schema_version": selection.schema_version,
-        "selected_solution_id": selection.selected_solution_id,
-        "expansion_depth": selection.expansion_depth,
-        "solution_fingerprint": selection.solution_fingerprint,
-        "chassis_key": selection.chassis_key,
-        "host_taxon_id": selection.host_taxon_id,
-        "taxonomy_scoring_policy_version": (
-            selection.taxonomy_scoring_policy_version
-        ),
-        "taxonomy_fingerprint": selection.taxonomy_fingerprint,
-        "scoring_weights": selection.scoring_weights,
-        "parameters": selection.parameters.model_dump(mode="json"),
-        "shortlist_decision_fingerprint": (
-            selection.shortlist_decision_fingerprint
-        ),
-        "candidates_by_step": {
-            str(step): [
-                candidate.model_dump(mode="json")
-                for candidate in sorted(
-                    candidates, key=lambda item: item.candidate_rank
-                )
-            ]
-            for step, candidates in sorted(selection.candidates_by_step.items())
-        },
-        "uncovered_step_indexes": selection.uncovered_step_indexes,
-        "direction_rejected_step_indexes": (
-            selection.direction_rejected_step_indexes
-        ),
-        "direction_risk_step_indexes": selection.direction_risk_step_indexes,
-    }
-
-
-def main_enzyme_selection_fingerprint(
-    selection: MainEnzymeSelectionResult,
-) -> str:
-    """Fingerprint a validated candidate selection without absolute paths."""
-
-    return stable_json_hash(_selection_projection(selection))
-
-
 def _failure_result(
     *,
     status: str,
     solution_id: int,
     expansion_depth: int,
-    solution_fingerprint_value: str,
     chassis_key: str,
     required_step_indexes: list[int],
     max_sets: int,
@@ -1381,34 +1186,17 @@ def _failure_result(
     reason: str,
     source_artifacts: Mapping[str, str],
 ) -> dict[str, Any]:
-    candidate_pool_fingerprint = stable_json_hash(
-        {
-            "algorithm_version": MAIN_ENZYME_SETS_ALGORITHM_VERSION,
-            "status": status,
-            "solution_fingerprint": solution_fingerprint_value,
-            "chassis_key": chassis_key,
-            "reason": reason,
-        }
-    )
-    input_fingerprint = _input_fingerprint(
-        candidate_pool_fingerprint,
-        max_sets=max_sets,
-        max_search_nodes=max_search_nodes,
-    )
     result = MainEnzymeSetsResult(
         ok=False,
         status=status,
         selected_solution_id=solution_id,
         expansion_depth=expansion_depth,
-        solution_fingerprint=solution_fingerprint_value,
         chassis_key=chassis_key,
         parameters={
             "max_sets": max_sets,
             "max_search_nodes": max_search_nodes,
             "candidate_scope": "top_n_shortlist",
         },
-        candidate_pool_fingerprint=candidate_pool_fingerprint,
-        input_fingerprint=input_fingerprint,
         required_step_indexes=required_step_indexes,
         minimum_protein_count=None,
         search_complete=False,
@@ -1465,7 +1253,6 @@ def _write_set_outputs(
                 "exact_specificity_count": metrics[
                     "exact_specificity_count"
                 ],
-                "set_fingerprint": enzyme_set["set_fingerprint"],
                 "warnings": enzyme_set["warnings"],
             }
         )
@@ -1499,6 +1286,7 @@ def _write_set_outputs(
     return {key: rel_or_abs(path) for key, path in paths.items()}
 
 
+@serialized_main_enzyme_run
 def build_main_enzyme_sets(
     manifest_path: str | Path,
     selection_path: str | Path,
@@ -1514,11 +1302,18 @@ def build_main_enzyme_sets(
     manifest_path = Path(manifest_path)
     selection_path = Path(selection_path)
     candidate_csv_path = Path(candidate_csv_path)
+    from src.main_protein_selection.lifecycle import invalidate_current
+    from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
+    invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
+    write_json_atomic(main_enzyme_set_paths(output_dir)["main_enzyme_sets_json"], {"status": "running"})
     manifest = read_manifest(manifest_path)
+    source_revision = int(manifest.get("revision", 0))
+    def publish(result):
+        require_revision(manifest_path, source_revision)
+        return _write_set_outputs(output_dir, result)
     solution_id, steps = get_solution_steps(manifest)
     solution = manifest["solution"]
     expansion_depth = _int(solution.get("expansion_depth"))
-    route_fingerprint = solution_fingerprint(solution_id, steps)
     requirements = heterologous_requirements(steps)
     required_indexes = sorted(
         _int(item.get("step_index")) for item in requirements
@@ -1535,7 +1330,6 @@ def build_main_enzyme_sets(
             status="source_unavailable",
             solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
             chassis_key="unknown",
             required_step_indexes=required_indexes,
             max_sets=max_sets,
@@ -1543,15 +1337,13 @@ def build_main_enzyme_sets(
             reason="Missing main-enzyme candidate artifact(s): " + ", ".join(missing),
             source_artifacts=source_artifacts,
         )
-        result["output_files"] = _write_set_outputs(output_dir, result)
+        result["output_files"] = publish(result)
         return result
 
     source_artifacts.update(
         {
             "candidate_selection": rel_or_abs(selection_path),
-            "candidate_selection_sha256": file_sha256(selection_path),
             "candidate_details": rel_or_abs(candidate_csv_path),
-            "candidate_details_sha256": file_sha256(candidate_csv_path),
         }
     )
     try:
@@ -1566,7 +1358,6 @@ def build_main_enzyme_sets(
             status="stale_input",
             solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
             chassis_key="unknown",
             required_step_indexes=required_indexes,
             max_sets=max_sets,
@@ -1574,7 +1365,7 @@ def build_main_enzyme_sets(
             reason=f"Invalid main-enzyme selection artifact: {exc}",
             source_artifacts=source_artifacts,
         )
-        result["output_files"] = _write_set_outputs(output_dir, result)
+        result["output_files"] = publish(result)
         return result
 
     stale_reasons: list[str] = []
@@ -1582,8 +1373,6 @@ def build_main_enzyme_sets(
         stale_reasons.append("selected solution ID changed")
     if selection.expansion_depth != expansion_depth:
         stale_reasons.append("selected expansion depth changed")
-    if selection.solution_fingerprint != route_fingerprint:
-        stale_reasons.append("selected route fingerprint changed")
     try:
         validate_genome_ec_filter(selection.genome_ec_filter, requirements, selection.chassis_key, genome_path)
     except (OSError, ValueError) as exc:
@@ -1593,7 +1382,6 @@ def build_main_enzyme_sets(
             status="stale_input",
             solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
             chassis_key=selection.chassis_key,
             required_step_indexes=required_indexes,
             max_sets=max_sets,
@@ -1601,7 +1389,7 @@ def build_main_enzyme_sets(
             reason="; ".join(stale_reasons) + "; rerun main-enzyme",
             source_artifacts=source_artifacts,
         )
-        result["output_files"] = _write_set_outputs(output_dir, result)
+        result["output_files"] = publish(result)
         return result
 
     if selection.status == "source_unavailable":
@@ -1609,7 +1397,6 @@ def build_main_enzyme_sets(
             status="source_unavailable",
             solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint_value=route_fingerprint,
             chassis_key=selection.chassis_key,
             required_step_indexes=required_indexes,
             max_sets=max_sets,
@@ -1617,7 +1404,7 @@ def build_main_enzyme_sets(
             reason="Main-enzyme candidate retrieval was unavailable; rerun main-enzyme.",
             source_artifacts=source_artifacts,
         )
-        result["output_files"] = _write_set_outputs(output_dir, result)
+        result["output_files"] = publish(result)
         return result
 
     rows = read_csv(candidate_csv_path)
@@ -1627,16 +1414,9 @@ def build_main_enzyme_sets(
         if _text(row.get("selection_status")).lower() == "selected"
     ]
 
-    detail_fingerprint = shortlist_decision_fingerprint(shortlist_rows)
-
-    source_artifacts["candidate_selection_fingerprint"] = (
-        main_enzyme_selection_fingerprint(selection)
-    )
-    source_artifacts["candidate_detail_fingerprint"] = detail_fingerprint
     result = build_main_enzyme_sets_from_rows(
         solution_id=solution_id,
         expansion_depth=expansion_depth,
-        solution_fingerprint_value=route_fingerprint,
         chassis_key=selection.chassis_key,
         required_steps=requirements,
         candidate_rows=shortlist_rows,
@@ -1645,7 +1425,7 @@ def build_main_enzyme_sets(
         source_artifacts=source_artifacts,
         genome_ec_filter=selection.genome_ec_filter,
     )
-    output_files = _write_set_outputs(output_dir, result)
+    output_files = publish(result)
     return {**result, "output_files": output_files}
 
 
@@ -1691,9 +1471,6 @@ __all__ = [
     "MAIN_ENZYME_SET_MEMBERS_FILENAME",
     "build_main_enzyme_sets",
     "build_main_enzyme_sets_from_rows",
-    "candidate_pool_fingerprint_from_rows",
-    "main_enzyme_selection_fingerprint",
     "main_enzyme_set_paths",
     "run_main_enzyme_sets",
-    "shortlist_decision_fingerprint",
 ]

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 
 PLASMID_COLLECTION = "plasmid_templates_v2"
-PLASMID_CANDIDATES_SCHEMA_VERSION = "plasmid_candidates.v2"
-PLASMID_SELECTION_SCHEMA_VERSION = "plasmid_selection.v2"
-PLASMID_RECOMMENDATION_ALGORITHM_VERSION = "plasmid_recommendation.v2.0.0"
+PLASMID_CANDIDATES_SCHEMA_VERSION = "plasmid_candidates.v3"
+PLASMID_SELECTION_SCHEMA_VERSION = "plasmid_selection.v3"
+PLASMID_RECOMMENDATION_ALGORITHM_VERSION = "plasmid_recommendation.v3.0.0"
 PLASMID_CANDIDATES_FILENAME = "plasmid_candidates.json"
 DEFAULT_CANDIDATE_COUNT = 5
 MIN_CANDIDATE_COUNT = 1

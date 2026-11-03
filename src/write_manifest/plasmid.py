@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -16,17 +15,15 @@ from src.plasmid_selection.config import (
     PLASMID_RECOMMENDATION_ALGORITHM_VERSION,
     PLASMID_SELECTION_SCHEMA_VERSION,
 )
-from src.plasmid_selection.get_plasmid_context import (
-    load_plasmid_context,
-    stable_json_hash,
-)
+from src.plasmid_selection.get_plasmid_context import load_plasmid_context
 from src.plasmid_selection.sequence_fetch import validate_genbank_bytes
-from src.write_manifest.store import read_design_manifest, update_design_manifest
+from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
 
 
 PLASMID_SELECTION_DOWNSTREAM_SECTIONS = (
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
 
 
@@ -65,20 +62,6 @@ def _positive_rank(config: Any) -> int:
     return rank
 
 
-def _candidate_set_fingerprint(candidates: list[Any]) -> str:
-    return stable_json_hash(
-        [
-            {
-                key: value
-                for key, value in candidate.items()
-                if key not in {"system_recommended"}
-            }
-            for candidate in candidates
-            if isinstance(candidate, Mapping)
-        ]
-    )
-
-
 def _resolve_project_file(project_output: Path, value: Any) -> Path:
     text = str(value or "").strip()
     if not text:
@@ -113,16 +96,8 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("质粒候选缺少 source")
-    expected = {
-        "context_input_fingerprint": context.input_fingerprint,
-        "parts_selection_fingerprint": context.parts_selection_fingerprint,
-        "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
-    }
-    for key, value in expected.items():
-        if source.get(key) != value:
-            raise ValueError(
-                "质粒候选与当前表达构建不一致，请重新运行 plasmid --recommend"
-            )
+    if source.get("manifest_revision") != context.manifest_revision:
+        raise ValueError("质粒候选与当前项目版本不一致，请重新运行 plasmid --recommend")
     raw_candidates = artifact.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ValueError("质粒候选文件中没有 candidates")
@@ -135,8 +110,6 @@ def _validate_artifact(
     primary_count = sum(item.get("system_recommended") is True for item in candidates)
     if primary_count != 1 or candidates[0].get("system_recommended") is not True:
         raise ValueError("质粒候选必须且只能有一个首选方案")
-    if artifact.get("candidate_set_fingerprint") != _candidate_set_fingerprint(candidates):
-        raise ValueError("质粒候选内容指纹无效")
     return candidates
 
 
@@ -155,23 +128,11 @@ def _validate_candidate_file(
             f"候选质粒 GenBank 文件缺失：{path}；请重新运行 plasmid --recommend"
         )
     content = path.read_bytes()
-    actual_file_hash = hashlib.sha256(content).hexdigest()
-    if actual_file_hash != sequence_file.get("file_sha256"):
-        raise ValueError(
-            f"候选质粒文件哈希无效：{path}；请重新运行 plasmid --recommend"
-        )
-    validated = validate_genbank_bytes(
+    validate_genbank_bytes(
         content,
         template,
         source_download_url=str(sequence_file.get("source_download_url") or "local"),
     )
-    if (
-        validated.sequence_content_sha256
-        != sequence_file.get("sequence_content_sha256")
-        or validated.canonical_sequence_sha256
-        != sequence_file.get("canonical_sequence_sha256")
-    ):
-        raise ValueError("候选质粒序列审计值与候选文件不一致")
     return path, content, dict(sequence_file)
 
 
@@ -195,23 +156,6 @@ def _install_bytes_atomic(path: Path, content: bytes) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-
-
-def _selected_file_is_intact(
-    path: Path,
-    expected_file_hash: str,
-    template: Mapping[str, Any],
-) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        content = path.read_bytes()
-        if hashlib.sha256(content).hexdigest() != expected_file_hash:
-            return False
-        validate_genbank_bytes(content, template, source_download_url="selected")
-    except Exception:
-        return False
-    return True
 
 
 def _selection_payload(
@@ -249,13 +193,6 @@ def _selection_payload(
             "path": selected_relative_path,
             "format": "genbank",
             "length_bp": sequence_file.get("length_bp"),
-            "file_sha256": sequence_file.get("file_sha256"),
-            "sequence_content_sha256": sequence_file.get(
-                "sequence_content_sha256"
-            ),
-            "canonical_sequence_sha256": sequence_file.get(
-                "canonical_sequence_sha256"
-            ),
         },
         "source": {
             "source": template.get("source"),
@@ -312,23 +249,12 @@ def _selection_payload(
             ),
             "candidate_artifact_schema_version": artifact.get("schema_version"),
             "candidate_algorithm_version": artifact.get("algorithm_version"),
-            "candidate_set_fingerprint": artifact.get("candidate_set_fingerprint"),
-            "request_fingerprint": artifact.get("source", {}).get(
-                "request_fingerprint"
-            ),
-            "candidate_snapshot_fingerprint": artifact.get("source", {}).get(
-                "candidate_snapshot_fingerprint"
-            ),
-            "context_input_fingerprint": context.input_fingerprint,
-            "parts_selection_fingerprint": context.parts_selection_fingerprint,
-            "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
             "expression_burden_model_version": context.constructs[
                 0
             ].burden.model_version,
         },
         "warnings": list(candidate.get("warnings") or []),
     }
-    base["selection_fingerprint"] = stable_json_hash(base)
     return base
 
 
@@ -361,26 +287,10 @@ def write_plasmid_selection(config: Any) -> dict[str, Any]:
         / "plasmid_selection"
         / "selected_backbone.gb"
     )
-    manifest = read_design_manifest(context.manifest_path)
-    current = manifest.get("plasmid_selection")
-    unchanged = (
-        isinstance(current, Mapping)
-        and current.get("schema_version") == PLASMID_SELECTION_SCHEMA_VERSION
-        and current.get("selection_fingerprint")
-        == payload["selection_fingerprint"]
-    )
-    intact = _selected_file_is_intact(
-        destination,
-        str(sequence_file.get("file_sha256") or ""),
-        candidate["template"],
-    )
-    repaired = False
-    if unchanged:
-        if not intact:
-            _install_bytes_atomic(destination, candidate_content)
-            repaired = True
-        updated_manifest = manifest
-    else:
+    with manifest_update_lock(context.manifest_path):
+        current = read_design_manifest(context.manifest_path)
+        if int(current.get("revision") or 0) != context.manifest_revision:
+            raise ValueError("项目版本已变化，请重新运行推荐")
         old_content = destination.read_bytes() if destination.is_file() else None
         _install_bytes_atomic(destination, candidate_content)
         try:
@@ -410,8 +320,7 @@ def write_plasmid_selection(config: Any) -> dict[str, Any]:
         "selected_backbone": str(destination.resolve()),
         "manifest_path": str(context.manifest_path.resolve()),
         "manifest_revision": updated_manifest["revision"],
-        "manifest_modified": not unchanged,
-        "selected_file_repaired": repaired,
+        "manifest_modified": True,
     }
 
 

@@ -313,7 +313,6 @@ def audit_cds(
     }
     failed_checks = [name for name, passed in checks.items() if passed is False]
     return {
-        "sequence_sha256": sha256_text(dna),
         "length_nt": len(dna),
         "gc_percent": round(100.0 * gc_value, 8),
         "local_gc_min_percent": round(100.0 * min(local_values), 8)
@@ -332,7 +331,6 @@ def audit_cds(
         "max_homopolymer": max_homopolymer_length(dna),
         "forbidden_site_count": sum(hits.values()),
         "forbidden_site_hits": hits,
-        "translated_protein_sha256": sha256_text(translated) if translated is not None else None,
         "checks": checks,
         "gate_status": "FAIL" if failed_checks else "PASS",
         "failed_checks": failed_checks,

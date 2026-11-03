@@ -10,10 +10,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from filelock import FileLock
+from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
 
 from src.final_assemble_plan.common import (
     relative_project_path,
-    stable_json_hash,
 )
 from src.final_assemble_plan.config import (
     ASSEMBLY_PLAN_ALGORITHM_VERSION,
@@ -77,66 +78,6 @@ def _parameters(requested_method: str | None) -> dict[str, Any]:
     }
 
 
-def _request_fingerprint(
-    context_fingerprint: str,
-    parameters: Mapping[str, Any],
-) -> str:
-    return stable_json_hash(
-        {
-            "algorithm_version": ASSEMBLY_PLAN_ALGORITHM_VERSION,
-            "context_input_fingerprint": context_fingerprint,
-            "parameters": parameters,
-        }
-    )
-
-
-def _plan_set_fingerprint(plans: list[Mapping[str, Any]]) -> str:
-    return stable_json_hash(plans)
-
-
-def _cached_payload(
-    path: Path,
-    *,
-    request_fingerprint: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    source = payload.get("source")
-    plans = payload.get("plans")
-    if (
-        payload.get("schema_version")
-        != ASSEMBLY_PLAN_RECOMMENDATIONS_SCHEMA_VERSION
-        or payload.get("algorithm_version") != ASSEMBLY_PLAN_ALGORITHM_VERSION
-        or payload.get("status") not in {"complete", "partial"}
-        or not isinstance(source, Mapping)
-        or source.get("request_fingerprint") != request_fingerprint
-        or not isinstance(plans, list)
-        or not plans
-        or int(payload.get("planned_design_count") or 0) != len(plans)
-        or payload.get("plan_set_fingerprint")
-        != _plan_set_fingerprint(plans)
-    ):
-        return None
-    identities = [item.get("parts_design_id") for item in plans if isinstance(item, Mapping)]
-    if len(identities) != len(plans) or len(identities) != len(set(identities)):
-        return None
-    for plan in plans:
-        if plan.get("assembly_method") not in SUPPORTED_METHODS:
-            return None
-        recorded = str(plan.get("plan_fingerprint") or "")
-        unsigned = dict(plan)
-        unsigned.pop("plan_fingerprint", None)
-        if recorded != stable_json_hash(unsigned):
-            return None
-    return payload
-
-
 def _candidate_rank(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
     method = str(candidate.get("assembly_method") or "")
     linearization = candidate.get("backbone_linearization")
@@ -190,8 +131,6 @@ def _decorate_plan(
                 ),
                 "format": "genbank",
                 "length_bp": construct.length_bp,
-                "file_sha256": construct.file_sha256,
-                "sequence_sha256": construct.sequence_sha256,
             },
             "backbone": {
                 "plasmid_id": context.backbone.plasmid_id,
@@ -200,16 +139,11 @@ def _decorate_plan(
                     context.project_output_path, context.backbone.path
                 ),
                 "length_bp": context.backbone.length_bp,
-                "file_sha256": context.backbone.file_sha256,
-                "sequence_content_sha256": (
-                    context.backbone.sequence_content_sha256
-                ),
                 "topology": context.backbone.topology,
                 "assembly_policy": context.backbone.assembly_policy,
             },
         }
     )
-    plan["plan_fingerprint"] = stable_json_hash(plan)
     return plan
 
 
@@ -257,11 +191,11 @@ def assembly_plan_summary(
         "warnings": payload.get("warnings", []),
         "output_path": str(output_path.resolve()),
         "reused_existing": reused_existing,
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
 
 
-def run_final_assembly_plan(config: Any) -> dict[str, Any]:
+def _run_final_assembly_plan(config: Any) -> dict[str, Any]:
     """Generate one best plan per complete expression construct."""
 
     raw_method = getattr(config, "assembly_method", None)
@@ -272,23 +206,20 @@ def run_final_assembly_plan(config: Any) -> dict[str, Any]:
         )
     context = load_final_assembly_context(config)
     parameters = _parameters(requested_method)
-    request_fingerprint = _request_fingerprint(
-        context.input_fingerprint,
-        parameters,
-    )
-    output_path = (
-        context.project_output_path
-        / "final_assemble_plan"
-        / ASSEMBLY_PLAN_RECOMMENDATIONS_FILENAME
-    )
-    cached = _cached_payload(
-        output_path,
-        request_fingerprint=request_fingerprint,
-    )
-    if cached is not None:
-        return assembly_plan_summary(
-            cached, output_path, reused_existing=True
-        )
+    output_path = (context.project_output_path / "final_assemble_plan" / ASSEMBLY_PLAN_RECOMMENDATIONS_FILENAME)
+    with manifest_update_lock(context.manifest_path):
+        manifest = read_design_manifest(context.manifest_path)
+        if manifest.get("revision", 0) != context.manifest_revision:
+            raise ValueError("项目版本已变化，请重试")
+        obsolete = ("final_assembly_plan", "final_assembly", "final_design_report")
+        update_design_manifest(context.manifest_path, target_compound_id=context.target_compound_id,
+                               sections={}, discard_sections=obsolete, expected_revision=context.manifest_revision)
+        if output_path.exists():
+            from uuid import uuid4
+            history = output_path.parent / "history" / uuid4().hex
+            history.mkdir(parents=True)
+            os.replace(output_path, history / output_path.name)
+        context = load_final_assembly_context(config)
 
     plans: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -349,31 +280,28 @@ def run_final_assembly_plan(config: Any) -> dict[str, Any]:
         "source": {
             "manifest_path": str(context.manifest_path),
             "manifest_revision": context.manifest_revision,
-            "context_input_fingerprint": context.input_fingerprint,
-            "parts_selection_fingerprint": context.parts_selection_fingerprint,
-            "assembled_constructs_fingerprint": (
-                context.assembled_constructs_fingerprint
-            ),
-            "plasmid_selection_fingerprint": (
-                context.plasmid_selection_fingerprint
-            ),
-            "request_fingerprint": request_fingerprint,
         },
         "parameters": parameters,
         "design_count": len(context.constructs),
         "planned_design_count": len(plans),
         "failed_design_count": len(failures),
         "method_counts": dict(sorted(method_counts.items())),
-        "plan_set_fingerprint": _plan_set_fingerprint(plans),
         "plans": plans,
         "failures": failures,
         "warnings": warnings,
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
     _write_json_atomic(output_path, payload)
     return assembly_plan_summary(
         payload, output_path, reused_existing=False
     )
+
+
+def run_final_assembly_plan(config: Any) -> dict[str, Any]:
+    directory = Path(config.project_output_path) / "final_assemble_plan"
+    directory.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(directory / ".plan.lock"), timeout=0):
+        return _run_final_assembly_plan(config)
 
 
 __all__ = [

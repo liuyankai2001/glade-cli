@@ -13,7 +13,6 @@ from src.main_protein_selection.models import (
     MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MainEnzymeSelectionResult,
 )
-from src.main_protein_selection.provenance import solution_fingerprint
 
 
 FIT_STATUS_NAMES = {
@@ -80,18 +79,12 @@ def _load_current_selection_context(
     solution_id, steps = get_solution_steps(manifest)
     validate_genome_ec_filter(selection.genome_ec_filter, heterologous_requirements(steps),
                              selection.chassis_key, getattr(config, "genome_file", None))
-    current_fingerprint = solution_fingerprint(solution_id, steps)
 
     if selection.selected_solution_id != solution_id:
         raise ValueError(
             "主酶候选对应的路线与 manifest 当前路线不一致，"
             "请重新运行 main-enzyme"
         )
-    if selection.solution_fingerprint != current_fingerprint:
-        raise ValueError(
-            "manifest 中的路线已经发生变化，请重新运行 main-enzyme"
-        )
-
     steps_by_index = {
         int(step.get("step_index") or 0): step
         for step in steps
@@ -392,17 +385,6 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
             "主酶候选 JSON 与 CSV 的分类来源分不一致，"
             "请重新运行 main-enzyme"
         )
-    csv_sequence_sha256 = str(detail.get("sequence_sha256") or "").strip()
-    if (
-        candidate.sequence_sha256
-        and csv_sequence_sha256
-        and candidate.sequence_sha256.lower() != csv_sequence_sha256.lower()
-    ):
-        raise ValueError(
-            "主酶候选 JSON 与 CSV 的序列摘要不一致，"
-            "请重新运行 main-enzyme"
-        )
-
     coverage: list[dict[str, Any]] = []
     for covered_step_index in sorted(selection.candidates_by_step):
         covered_step = steps_by_index.get(covered_step_index, {})
@@ -543,7 +525,6 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
         "序列信息": {
             "长度": candidate.length,
             "序列版本": candidate.sequence_version,
-            "SHA256": candidate.sequence_sha256,
             "序列": candidate.sequence,
         },
     }

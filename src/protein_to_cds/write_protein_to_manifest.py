@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -27,7 +26,7 @@ from src.protein_to_cds.sequence_constraints import cds_structure_checks
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS, cds_dependency_update
 
-CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v3"
+CDS_SELECTION_SCHEMA_VERSION = "protein_to_cds.selection.v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,18 +49,6 @@ class FailedProteinCds:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _read_single_fasta(
@@ -137,8 +124,7 @@ def _validated_success_payload(
     )
     if protein_record_id != accession:
         raise ValueError(f"protein FASTA header accession mismatch: {accession}")
-    protein_hash = _sha256_text(protein_sequence)
-    if protein_sequence != protein.sequence or protein_hash != protein.sequence_sha256:
+    if protein_sequence != protein.sequence:
         raise ValueError(f"protein FASTA changed after validation: {accession}")
 
     raw_record_id, raw_sequence = _read_single_fasta(
@@ -153,31 +139,23 @@ def _validated_success_payload(
         raise ValueError(f"CDS FASTA header accession mismatch: {accession}")
     if optimization.accession != accession:
         raise ValueError(f"optimization result accession mismatch: {accession}")
-    if optimization.protein_sequence_sha256 != protein_hash:
-        raise ValueError(f"optimization result protein hash mismatch: {accession}")
     if optimization.codon_transformer_organism_id != host.codon_transformer_organism_id:
         raise ValueError(f"optimization result host mismatch: {accession}")
     if raw_sequence != optimization.raw_sequence:
         raise ValueError(f"raw CDS FASTA changed after optimization: {accession}")
     if final_sequence != optimization.final_sequence:
         raise ValueError(f"optimized CDS FASTA changed after optimization: {accession}")
-    if _sha256_text(raw_sequence) != optimization.raw_sequence_sha256:
-        raise ValueError(f"raw CDS hash mismatch: {accession}")
-    if _sha256_text(final_sequence) != optimization.final_sequence_sha256:
-        raise ValueError(f"optimized CDS hash mismatch: {accession}")
     try:
         report = json.loads(optimization.report_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"optimization report is invalid JSON: {accession}") from exc
     if not isinstance(report, dict):
         raise ValueError(f"optimization report root is not an object: {accession}")
-    if report != optimization.report:
-        raise ValueError(f"optimization report changed after optimization: {accession}")
     generation_only = report.get("processing_mode") == GENERATION_MODE
     model_constrained = generation_only and report.get("schema_version") == GENERATION_SCHEMA_VERSION
     if generation_only:
         if (
-            report.get("schema_version") not in {GENERATION_SCHEMA_VERSION, "protein_to_cds.generation.v1"}
+            report.get("schema_version") != GENERATION_SCHEMA_VERSION
             or report.get("status") != "PASS"
             or report.get("constraint_repair_applied") is not False
             or report.get("quality_checks_enforced") is not False
@@ -202,17 +180,6 @@ def _validated_success_payload(
             raise ValueError(f"raw CDS does not encode the selected protein: {accession}")
         if _translated_protein(final_sequence) != protein_sequence:
             raise ValueError(f"optimized CDS does not encode the selected protein: {accession}")
-    if report.get("protein", {}).get("sequence_sha256") != protein_hash:
-        raise ValueError(f"optimization report protein hash mismatch: {accession}")
-    if report.get("input_fingerprint") != optimization.input_fingerprint:
-        raise ValueError(f"optimization report input fingerprint mismatch: {accession}")
-    if report.get("raw", {}).get("sequence_sha256") != optimization.raw_sequence_sha256:
-        raise ValueError(f"optimization report raw CDS hash mismatch: {accession}")
-    if (
-        report.get("final", {}).get("sequence_sha256")
-        != optimization.final_sequence_sha256
-    ):
-        raise ValueError(f"optimization report final CDS hash mismatch: {accession}")
     if (
         report.get("host", {}).get("codon_transformer_organism_id")
         != host.codon_transformer_organism_id
@@ -231,7 +198,6 @@ def _validated_success_payload(
         },
         "protein_sequence": {
             "path": _relative_path(project_output_path, protein.fasta_path),
-            "file_sha256": _sha256_file(protein.fasta_path),
             "length_aa": len(protein_sequence),
             "source_url": protein.source_url,
             "reused_existing": protein.reused_existing,
@@ -241,14 +207,10 @@ def _validated_success_payload(
                 project_output_path,
                 optimization.optimized_fasta_path,
             ),
-            "file_sha256": _sha256_file(optimization.optimized_fasta_path),
-            "sequence_sha256": optimization.final_sequence_sha256,
             "length_nt": len(final_sequence),
             "report": {
                 "path": _relative_path(project_output_path, optimization.report_path),
-                "file_sha256": _sha256_file(optimization.report_path),
             },
-            "input_fingerprint": optimization.input_fingerprint,
             "constraint_policy_version": report.get("constraint_policy_version"),
             "processing_mode": report.get("processing_mode", "codon_transformer_and_repair"),
             "constraint_repair_applied": not generation_only,
@@ -261,7 +223,6 @@ def _validated_success_payload(
                 },
                 "changes": report.get("changes", {}),
             },
-            "reused_existing": optimization.reused_existing,
             "optimization_skipped": False,
         },
     }
@@ -286,6 +247,7 @@ def _write_cds_selection_to_manifest(
     failures: Iterable[FailedProteinCds],
     warnings: Iterable[str],
     run_summary_path: str | Path,
+    previous_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate the full batch and atomically replace ``cds_selection``."""
 
@@ -334,7 +296,6 @@ def _write_cds_selection_to_manifest(
         "status": status,
         "generated_at": _utc_now(),
         "source_manifest_revision": context.manifest_revision,
-        "source_fingerprint": context.source_fingerprint,
         "restriction_enzymes": manifest.get("cds_selection", {}).get("restriction_enzymes", []),
         "homopolymer_max": manifest.get("cds_selection", {}).get("homopolymer_max"),
         "source_selection": {
@@ -354,7 +315,10 @@ def _write_cds_selection_to_manifest(
             "path": _relative_path(project_root, summary_path),
         },
     }
-    retained_sections, discard_sections = cds_dependency_update(manifest, payload)
+    retained_sections, discard_sections = cds_dependency_update(previous_manifest if previous_manifest is not None else manifest, payload)
+    from src.main_protein_selection.lifecycle import retained_uploaded_draft
+    for key, value in retained_uploaded_draft(manifest).items():
+        retained_sections.setdefault(key, value)
     updated = update_design_manifest(
         context.manifest_path,
         target_compound_id=context.target_compound_id,
@@ -374,12 +338,13 @@ def write_cds_selection_to_manifest(
     project_output_path: str | Path, successes: Iterable[CompletedProteinCds],
     failures: Iterable[FailedProteinCds], warnings: Iterable[str],
     run_summary_path: str | Path,
+    previous_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and publish the selected main-enzyme CDS batch."""
     return _write_cds_selection_to_manifest(
         context=context, host=host, project_output_path=project_output_path,
         successes=successes, failures=failures, warnings=warnings,
-        run_summary_path=run_summary_path,
+        run_summary_path=run_summary_path, previous_manifest=previous_manifest,
     )
 
 

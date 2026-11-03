@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections.abc import Mapping
 from typing import Any
 
 
-EXPRESSION_BURDEN_SCHEMA_VERSION = "expression_burden.v1"
+EXPRESSION_BURDEN_SCHEMA_VERSION = "expression_burden.v2"
 EXPRESSION_BURDEN_MODEL_VERSION = "intrinsic_expression_burden.v1.0.0"
 REFERENCE_LOAD_UNITS = 0.75
 REFERENCE_CDS_LENGTH_NT = 1_500
@@ -20,17 +18,6 @@ OSTIR_PERCENTILE_WEIGHT = 0.60
 UNINTENDED_START_WEIGHT = 0.05
 UNINTENDED_START_CAP = 5
 MIN_HIGH_CONFIDENCE_REFERENCE_COUNT = 6
-
-
-def stable_payload_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def empirical_log_percentile(value: float, reference: tuple[float, ...]) -> float:
@@ -292,7 +279,6 @@ def calculate_expression_burden(
         "gene_metrics": gene_metrics,
         "warnings": list(dict.fromkeys(warnings)),
     }
-    payload["fingerprint"] = stable_payload_hash(payload)
     return payload
 
 
@@ -308,11 +294,6 @@ def validate_expression_burden(
         raise ValueError("expression burden schema is missing or unsupported")
     if payload.get("model_version") != EXPRESSION_BURDEN_MODEL_VERSION:
         raise ValueError("expression burden model version is unsupported")
-    recorded_fingerprint = str(payload.get("fingerprint") or "")
-    unsigned = dict(payload)
-    unsigned.pop("fingerprint", None)
-    if recorded_fingerprint != stable_payload_hash(unsigned):
-        raise ValueError("expression burden fingerprint is invalid")
     metrics = payload.get("gene_metrics")
     if not isinstance(metrics, list) or not metrics:
         raise ValueError("expression burden gene_metrics are missing")
@@ -498,7 +479,6 @@ def expression_burden_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "minimum_ostir_reference_count": payload.get(
             "minimum_ostir_reference_count"
         ),
-        "fingerprint": payload.get("fingerprint"),
         "warnings": list(payload.get("warnings") or []),
     }
 
@@ -534,9 +514,6 @@ def validate_expression_burden_summary(payload: Mapping[str, Any]) -> None:
         raise ValueError("expression burden summary level is invalid")
     if payload.get("confidence") not in {"high", "medium"}:
         raise ValueError("expression burden summary confidence is invalid")
-    fingerprint = str(payload.get("fingerprint") or "")
-    if len(fingerprint) != 64 or set(fingerprint) - set("0123456789abcdef"):
-        raise ValueError("expression burden summary fingerprint is invalid")
 
 
 __all__ = [
@@ -547,7 +524,6 @@ __all__ = [
     "burden_model_parameters",
     "empirical_log_percentile",
     "expression_burden_summary",
-    "stable_payload_hash",
     "validate_expression_burden",
     "validate_expression_burden_summary",
 ]

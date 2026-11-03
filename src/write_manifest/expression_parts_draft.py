@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import uuid
 import math
 import os
 import re
@@ -15,6 +15,7 @@ from typing import Any
 from Bio import SeqIO
 
 from src.expression_box.parts_preparation import (
+    read_part_sequence,
     PARTS_DRAFT_SCHEMA, bind_cds, make_parts_draft, normalize_parts_draft,
 )
 
@@ -47,6 +48,7 @@ EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS = (
     "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
 PROMOTER_UPLOAD_DOWNSTREAM_SECTIONS = EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS
 _SUPPORTED_SUFFIXES = {".txt", ".fa", ".fasta", ".fna"}
@@ -57,10 +59,6 @@ _ROLE_LABELS = {
     "rbs": "RBS",
     "terminator": "终止子",
 }
-
-
-def _sha256_bytes(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -193,20 +191,13 @@ def _relative(project_root: Path, path: Path) -> str:
 
 def _current_expression_box(
     manifest: Mapping[str, Any],
-) -> tuple[str, str, list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     selection = _mapping(
         manifest.get("expression_box_selection"),
         "expression_box_selection",
     )
-    if selection.get("schema_version") != "expression_box_selection.v1":
+    if selection.get("schema_version") != "expression_box_selection.v2":
         raise ValueError("请先写入有效的表达盒方案")
-    box_fingerprint = str(selection.get("selected_design_fingerprint") or "").strip()
-    if not box_fingerprint:
-        raise ValueError("表达盒方案缺少 fingerprint")
-    cds_selection = _mapping(manifest.get("cds_selection"), "cds_selection")
-    cds_fingerprint = str(cds_selection.get("source_fingerprint") or "").strip()
-    if not cds_fingerprint:
-        raise ValueError("CDS 选择缺少 source_fingerprint")
     raw_cassettes = selection.get("cassettes")
     if not isinstance(raw_cassettes, list) or not raw_cassettes:
         raise ValueError("表达盒方案没有有效分组")
@@ -230,27 +221,18 @@ def _current_expression_box(
                 "terminator": None,
             }
         )
-    return box_fingerprint, cds_fingerprint, cassettes
+    return cassettes
 
 
 def _merge_existing_draft(
     manifest: Mapping[str, Any],
     cassettes: list[dict[str, Any]],
-    *,
-    box_fingerprint: str,
-    cds_fingerprint: str,
 ) -> None:
     raw_draft = manifest.get("expression_parts_draft")
-    if not isinstance(raw_draft, Mapping):
+    if not isinstance(raw_draft, Mapping) or raw_draft.get("source_type") == "recommended":
         return
     draft = normalize_parts_draft(raw_draft)
     if draft["source_type"] != "user_uploaded":
-        return
-    source = draft.get("source")
-    if not isinstance(source, Mapping) or (
-        source.get("expression_box_selection_fingerprint") != box_fingerprint
-        or source.get("cds_selection_source_fingerprint") != cds_fingerprint
-    ):
         return
     raw_cassettes = draft["designs"][0]["cassettes"]
     if not isinstance(raw_cassettes, list):
@@ -279,7 +261,8 @@ def _merge_existing_draft(
 def _assert_part_id_consistent(
     cassettes: list[dict[str, Any]],
     part_id: str,
-    sequence_sha256: str,
+    sequence: str,
+    project_root: Path,
     *,
     replacing_cassette_index: int,
     replacing_role: str,
@@ -307,15 +290,13 @@ def _assert_part_id_consistent(
         for raw in parts:
             if not isinstance(raw, Mapping) or raw.get("part_id") != part_id:
                 continue
-            if raw.get("sequence_sha256") != sequence_sha256:
+            if read_part_sequence(raw, project_root) != sequence:
                 raise ValueError(f"元件 ID {part_id} 已对应另一条 DNA 序列")
 
 
 def _draft_payload(
     *,
     target_compound_id: str,
-    box_fingerprint: str,
-    cds_fingerprint: str,
     cassettes: list[dict[str, Any]],
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -323,10 +304,7 @@ def _draft_payload(
     bind_cds(cassettes, proteins)
     return make_parts_draft(
         target=target_compound_id,
-        source={
-            "expression_box_selection_fingerprint": box_fingerprint,
-            "cds_selection_source_fingerprint": cds_fingerprint,
-        },
+        source={},
         source_type="user_uploaded",
         designs=[{"design_id": 1, "rank": 1, "name": "用户上传元件方案", "cassettes": cassettes}],
     )
@@ -352,16 +330,7 @@ def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, 
         def part_sequence(part):
             if part is new_part:
                 return new_sequence
-            reference = part["sequence_file"]
-            path = (project_root / reference["path"]).resolve()
-            _relative(project_root, path)
-            content = path.read_bytes()
-            if _sha256_bytes(content) != reference["file_sha256"]:
-                raise ValueError("上传元件快照已变化，无法检查完整表达盒")
-            sequence = str(SeqIO.read(StringIO(content.decode("utf-8")), "fasta").seq).upper()
-            if _sha256_bytes(sequence.encode("utf-8")) != part["sequence_sha256"]:
-                raise ValueError("上传元件序列与草稿记录不一致")
-            return sequence
+            return read_part_sequence(part, project_root)
         append(part_sequence(cassette["promoter"]), "promoter")
         for accession in cassette["protein_accessions"]:
             append(part_sequence(cassette["rbs_by_accession"][accession]), f"rbs:{accession}")
@@ -369,14 +338,12 @@ def _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, 
         append(part_sequence(cassette["terminator"]), "terminator")
         sequence = "".join(chunks)
         audit = restriction_site_audit(sequence, enzymes)
-        audit["sequence_sha256"] = _sha256_bytes(sequence.encode("utf-8"))
         audit["length_nt"] = len(sequence)
         for site in audit["sites"]:
             site["components"] = [label for start, end, label in spans
                                    if start <= site["end_1based"] and end >= site["start_1based"]]
         cassette["restriction_site_audit"] = audit
         homopolymers = homopolymer_audit(sequence, maximum)
-        homopolymers["sequence_sha256"] = audit["sequence_sha256"]
         homopolymers["length_nt"] = len(sequence)
         for run in homopolymers["violations"]:
             run["components"] = [label for start, end, label in spans
@@ -391,8 +358,6 @@ def _commit_uploaded_part(
     current_revision: int,
     project_root: Path,
     target_compound_id: str,
-    box_fingerprint: str,
-    cds_fingerprint: str,
     cassettes: list[dict[str, Any]],
     cassette_index: int,
     role: str,
@@ -404,11 +369,11 @@ def _commit_uploaded_part(
     extra_fields: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     label = _ROLE_LABELS[role]
-    sequence_sha256 = hashlib.sha256(sequence.encode("utf-8")).hexdigest()
     _assert_part_id_consistent(
         cassettes,
         part_id,
-        sequence_sha256,
+        sequence,
+        project_root,
         replacing_cassette_index=cassette_index,
         replacing_role=role,
         replacing_accession=accession,
@@ -424,7 +389,7 @@ def _commit_uploaded_part(
     if accession is not None:
         snapshot_dir = snapshot_dir / accession
     snapshot_path = (
-        snapshot_dir / f"{part_id}.{sequence_sha256[:12]}.fasta"
+        snapshot_dir / f"{part_id}.{uuid.uuid4().hex}.fasta"
     ).resolve()
     snapshot_relative = _relative(project_root, snapshot_path)
     part = {
@@ -436,9 +401,7 @@ def _commit_uploaded_part(
         "sequence_file": {
             "path": snapshot_relative,
             "format": "fasta",
-            "file_sha256": _sha256_bytes(fasta_bytes),
         },
-        "sequence_sha256": sequence_sha256,
         "length_bp": len(sequence),
         "metrics": {
             "gc_percent": round(100.0 * gc_fraction(sequence), 8),
@@ -459,8 +422,6 @@ def _commit_uploaded_part(
     _audit_uploaded_cassettes(manifest, manifest_path, cassettes, project_root, part, sequence)
     payload = _draft_payload(
         target_compound_id=target_compound_id,
-        box_fingerprint=box_fingerprint,
-        cds_fingerprint=cds_fingerprint,
         cassettes=cassettes,
         manifest=manifest,
     )
@@ -476,7 +437,7 @@ def _commit_uploaded_part(
     snapshot_existed = snapshot_path.is_file()
     snapshot_matches = (
         snapshot_existed
-        and _sha256_bytes(snapshot_path.read_bytes()) == _sha256_bytes(fasta_bytes)
+        and snapshot_path.read_bytes() == fasta_bytes
     )
     previous_sequence_file = (
         previous_part.get("sequence_file")
@@ -522,7 +483,6 @@ def _commit_uploaded_part(
         "输入文件": f"parts/{filename}",
         "序列长度_bp": len(sequence),
         "GC百分比": part["metrics"]["gc_percent"],
-        "序列SHA256": sequence_sha256,
         "快照文件": str(snapshot_path),
         "快照是否写入": not snapshot_matches,
         "快照是否修复": snapshot_repair,
@@ -579,7 +539,7 @@ def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
         current_revision = int(manifest.get("revision", 0))
     except (TypeError, ValueError) as exc:
         raise ValueError("manifest revision 必须是整数") from exc
-    box_fingerprint, cds_fingerprint, cassettes = _current_expression_box(manifest)
+    cassettes = _current_expression_box(manifest)
     if cassette_index > len(cassettes):
         raise ValueError(
             f"不存在表达盒 {cassette_index}；可用编号：{list(range(1, len(cassettes) + 1))}"
@@ -587,8 +547,6 @@ def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
     _merge_existing_draft(
         manifest,
         cassettes,
-        box_fingerprint=box_fingerprint,
-        cds_fingerprint=cds_fingerprint,
     )
 
     return _commit_uploaded_part(
@@ -597,8 +555,6 @@ def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
         current_revision=current_revision,
         project_root=project_root,
         target_compound_id=target_compound_id,
-        box_fingerprint=box_fingerprint,
-        cds_fingerprint=cds_fingerprint,
         cassettes=cassettes,
         cassette_index=cassette_index,
         role=role,
@@ -672,15 +628,10 @@ def _predict_uploaded_rbs(
     )
     if not isinstance(prediction, RbsPrediction):
         raise ValueError("OSTIR 预测器没有返回有效的 RbsPrediction")
-    expected_context_hash = hashlib.sha256(
-        prediction_sequence.encode("utf-8")
-    ).hexdigest()
     if prediction.part_id != part_id or prediction.accession != accession:
         raise ValueError("OSTIR 预测结果与当前 RBS 或蛋白不一致")
     if prediction.intended_start_position != intended_start:
         raise ValueError("OSTIR 预测结果的预期起始位置不一致")
-    if prediction.context_sha256 != expected_context_hash:
-        raise ValueError("OSTIR 预测结果的上下文 SHA-256 不一致")
     if not math.isfinite(prediction.expression) or prediction.expression <= 0:
         raise ValueError("OSTIR 翻译起始率必须是正有限数")
     if not math.isfinite(prediction.d_g_total):
@@ -692,7 +643,6 @@ def _predict_uploaded_rbs(
         "d_g_total": prediction.d_g_total,
         "intended_start_position": prediction.intended_start_position,
         "unintended_start_count": prediction.unintended_start_count,
-        "context_sha256": prediction.context_sha256,
         "context_parameters": {
             "previous_cds_suffix_nt": RBS_CONTEXT_PREVIOUS_CDS_SUFFIX_NT,
             "current_cds_prefix_nt": RBS_CONTEXT_CDS_PREFIX_NT,
@@ -731,13 +681,16 @@ def _upload_expression_rbs(
         current_revision = int(manifest.get("revision", 0))
     except (TypeError, ValueError) as exc:
         raise ValueError("manifest revision 必须是整数") from exc
-    box_fingerprint, cds_fingerprint, cassettes = _current_expression_box(manifest)
+    cassettes = _current_expression_box(manifest)
     cassette_index, cds_index = _rbs_location(cassettes, accession)
+    from src.expression_box.pipeline import _invalidate_calculation
+    _invalidate_calculation(manifest_path, grouping=False, preserve_draft=True)
+    manifest = read_design_manifest(manifest_path)
+    current_revision = int(manifest["revision"])
+    cassettes = _current_expression_box(manifest)
     _merge_existing_draft(
         manifest,
         cassettes,
-        box_fingerprint=box_fingerprint,
-        cds_fingerprint=cds_fingerprint,
     )
     ostir = _predict_uploaded_rbs(
         manifest_path=manifest_path,
@@ -755,8 +708,6 @@ def _upload_expression_rbs(
         current_revision=current_revision,
         project_root=project_root,
         target_compound_id=target_compound_id,
-        box_fingerprint=box_fingerprint,
-        cds_fingerprint=cds_fingerprint,
         cassettes=cassettes,
         cassette_index=cassette_index,
         role="rbs",

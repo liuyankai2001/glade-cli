@@ -41,7 +41,6 @@ class DesignRequest(BaseModel):
     t0_id: str | None = Field(default=None, min_length=1, max_length=120)
     t1_id: str | None = Field(default=None, min_length=1, max_length=120)
     expected_revision: StrictInt = Field(ge=0)
-    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     components: list[dict] | None = None
     component_order: list[
         Literal["resistance", "replication", "t0", "t1", "expression"]

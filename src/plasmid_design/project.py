@@ -1,4 +1,4 @@
-"""Readiness and source fingerprints for one existing expression construct."""
+"""Readiness and revision checks for one existing expression construct."""
 
 from __future__ import annotations
 
@@ -10,10 +10,7 @@ from Bio.SeqRecord import SeqRecord
 
 from src.plasmid_design.catalog import ModuleCatalog
 from src.plasmid_design.errors import DesignError
-from src.plasmid_selection.get_plasmid_context import (
-    load_plasmid_context,
-    stable_json_hash,
-)
+from src.plasmid_selection.get_plasmid_context import load_plasmid_context
 from src.write_manifest.store import read_design_manifest
 
 
@@ -23,7 +20,6 @@ class ProjectSnapshot:
     source: Any
     catalog: ModuleCatalog
     insert_record: SeqRecord
-    fingerprint: str
 
 
 def read_project(config: Any) -> ProjectSnapshot:
@@ -66,27 +62,11 @@ def read_project(config: Any) -> ProjectSnapshot:
         raise DesignError(
             "表达构建 GenBank 无法读取，请重新组装并刷新。", code="project_not_ready"
         ) from exc
-    from src.final_assemble_execute.common import sha256_sequence
-
-    if sha256_sequence(str(record.seq)) != source.constructs[0].sequence_sha256:
-        raise DesignError("表达构建文件已变化，请重新组装并刷新。", code="stale_source")
-    fingerprint = stable_json_hash(
-        {
-            "context": source.input_fingerprint,
-            "catalog": catalog.fingerprint,
-            "cds_selection": manifest.get("cds_selection"),
-            "parts_selection": parts,
-            "assembled_expression_constructs": assembled,
-        }
-    )
-    return ProjectSnapshot(manifest, source, catalog, record, fingerprint)
+    return ProjectSnapshot(manifest, source, catalog, record)
 
 
 def authenticate_request(snapshot: ProjectSnapshot, request: dict) -> None:
-    if (
-        request.get("expected_revision") != snapshot.source.manifest_revision
-        or request.get("source_fingerprint") != snapshot.fingerprint
-    ):
+    if request.get("expected_revision") != snapshot.source.manifest_revision:
         raise DesignError(
             "项目已更新，请刷新页面后重新检查与生成。", code="stale_source"
         )

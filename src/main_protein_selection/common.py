@@ -428,12 +428,7 @@ def _validate_duplicate_sequences(
         for row in rows
         if (sequence := _normalized_sequence(row.get("sequence")))
     }
-    hashes = {
-        str(row.get("sequence_sha256") or "").strip().lower()
-        for row in rows
-        if str(row.get("sequence_sha256") or "").strip()
-    }
-    if len(sequences) > 1 or len(hashes) > 1:
+    if len(sequences) > 1:
         raise ValueError(
             "Conflicting sequence evidence for main-enzyme candidate "
             f"{accession} at step {step_index}"
@@ -472,7 +467,7 @@ def _merge_step_accession_rows(
     for field in _MERGED_LIST_FIELDS:
         merged[field] = _join(_values_from_rows(rows, field))
 
-    for field in ("sequence", "sequence_sha256"):
+    for field in ("sequence",):
         merged[field] = next(
             (
                 row.get(field)
@@ -699,7 +694,7 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "catalytic_activity_records_json", "cofactors", "subunit",
                     "function_comments", "ptm_comments", "feature_annotations",
                     "domain_ids", "keywords", "protein_existence", "sequence_version",
-                    "sequence_sha256", "subcellular_locations", "taxonomic_lineage",
+                    "subcellular_locations", "taxonomic_lineage",
                     "rhea_ids", "sequence",
                 )
             },

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib.metadata
 import json
 import sys
@@ -54,7 +53,7 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
     if manifest.get("target_compound_id") != config.target_name:
         raise ValueError("manifest 目标与当前输入不一致")
     selection = manifest.get("cds_selection")
-    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v3" or selection.get("status") != "complete":
+    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v4" or selection.get("status") != "complete":
         raise ValueError("请先运行 protein-to-cds，得到完整 CDS 批次")
     proteins = selection.get("proteins")
     if not isinstance(proteins, list) or not proteins:
@@ -63,6 +62,12 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
     if any(not isinstance(name, str) or not name for name in accessions) or len(set(name.upper() for name in accessions)) != len(accessions):
         raise ValueError("当前 CDS 批次的蛋白编号无效或重复")
     guards = {manifest_path: manifest_bytes}
+    from src.main_protein_selection.lifecycle import invalidate_current, retained_uploaded_draft
+    from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
+    previous_manifest = manifest
+    manifest = invalidate_current(manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS),
+                                  expected_revision=int(manifest.get("revision", 0)))
+    guards[manifest_path] = manifest_path.read_bytes()
     if homopolymer_mode:
         enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
     else:
@@ -86,27 +91,13 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
         request = {
             "restriction_enzymes": enzymes, "gc_settings": settings,
             "raw_sequence_sha256": sha256_text(source.raw), "protein_sequence_sha256": sha256_text(source.protein),
-            "dnachisel_version": importlib.metadata.version("dnachisel"), "algorithm_version": report_schema,
+            "dnachisel_version": importlib.metadata.version("dnachisel"), "algorithm_version": ("protein_to_cds.homopolymer_optimization.v1" if homopolymer_mode else "protein_to_cds.restriction_optimization.v1"),
         }
         if maximum is not None:
             request["homopolymer_max"] = maximum
-        reused = (
-            selection.get("restriction_enzymes") == enzymes
-            and source.previous.get("restriction_enzymes") == enzymes
-            and input_pass and input_audit["restriction_site_audit"]["passed"]
-            and (maximum is None or input_audit["homopolymer_audit"]["passed"])
-            and selection.get("homopolymer_max") == maximum
-            and source.previous.get("homopolymer_max") == maximum
-            and source.source_report.get("homopolymer_max") == maximum
-            and source.source_report.get("restriction_enzymes") == enzymes
-            and source.source_path == output and "raw_cds" not in item
-            and "raw" not in source.previous.get("metrics", {})
-        )
-        if reused:
-            results.append({"accession": accession, "reused_existing": True, "output_path": str(output)})
-            continue
         lower, upper = count_bounds(settings["global"]["range_percent"], len(source.raw)) if "global" in settings else (0, len(source.raw))
         seed = int(sha256_text(json.dumps(request, sort_keys=True) + sha256_text(source.source_sequence))[:8], 16)
+        request["algorithm_version"] = report_schema
         options = {"local": settings.get("local"), "enzymes": enzymes}
         if maximum is not None:
             options["homopolymer_max"] = maximum
@@ -119,10 +110,9 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
             raise ValueError(f"{accession} 优化结果未满足 GC、限制酶或同聚物约束，整批未保存")
         report = {
             "schema_version": report_schema, "processing_mode": processing_mode, "status": "PASS",
-            "request": request, "deterministic_seed": seed,
-            "source": {"raw_path": source.raw_path.relative_to(root).as_posix(), "raw_sequence_sha256": sha256_text(source.raw),
-                       "input_path": source.source_path.relative_to(root).as_posix(), "input_sequence_sha256": sha256_text(source.source_sequence),
-                       "cds_selection_source_fingerprint": selection.get("source_fingerprint")},
+            "request": {k: v for k, v in request.items() if k not in {"raw_sequence_sha256", "protein_sequence_sha256"}}, "deterministic_seed": seed,
+            "source": {"raw_path": source.raw_path.relative_to(root).as_posix(),
+                       "input_path": source.source_path.relative_to(root).as_posix()},
             "raw_cds": source.raw_meta, "additional_forbidden_motifs": source.extras,
             "restriction_enzymes": enzymes, "gc_settings": settings,
             "enforced_checks": ["encoding_identity", "start_stop_unchanged"] + [f"{scope}_gc" for scope in settings] + (["restriction_sites"] if enzymes else []),
@@ -142,9 +132,9 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
         fasta = (f">{accession} {header}\n" + "\n".join(final[i:i + 80] for i in range(0, len(final), 80)) + "\n").encode("utf-8")
         files.update({output: fasta, report_path: report_bytes})
         metadata = {
-            "path": output.relative_to(root).as_posix(), "file_sha256": hashlib.sha256(fasta).hexdigest(),
-            "sequence_sha256": sha256_text(final), "length_nt": len(final),
-            "report": {"path": report_path.relative_to(root).as_posix(), "file_sha256": hashlib.sha256(report_bytes).hexdigest()},
+            "path": output.relative_to(root).as_posix(),
+            "length_nt": len(final),
+            "report": {"path": report_path.relative_to(root).as_posix()},
             "processing_mode": processing_mode, "constraint_repair_applied": True, "optimization_skipped": False,
             "quality_checks_enforced": False, "enforced_checks": report["enforced_checks"],
             "restriction_enzymes": enzymes, "gc_settings": settings,
@@ -166,7 +156,9 @@ def _optimize_batch(config: Any, kind: str) -> dict[str, Any]:
         updated_item.pop("raw_cds", None)
         results.append({"accession": accession, "reused_existing": False, "output_path": str(output)})
     if files or selection.get("restriction_enzymes") != enzymes:
-        retained, discard = cds_dependency_update(manifest, updated)
+        retained, discard = cds_dependency_update(previous_manifest, updated)
+        for key, value in retained_uploaded_draft(manifest).items():
+            retained.setdefault(key, value)
         commit_cds_optimization(manifest_path=manifest_path, project_root=root, target=config.target_name,
                                 revision=int(manifest.get("revision", 0)), selection=updated,
                                 discard_sections=discard, dependent_sections=retained, files=files, guards=guards)

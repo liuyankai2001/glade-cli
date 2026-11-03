@@ -4,10 +4,10 @@ from __future__ import annotations
 
 
 ASSEMBLY_PLAN_RECOMMENDATIONS_SCHEMA_VERSION = (
-    "assembly_plan_recommendations.v1"
+    "assembly_plan_recommendations.v2"
 )
-FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION = "final_assembly_plan.v2"
-ASSEMBLY_PLAN_ALGORITHM_VERSION = "final_assembly_planning.v1.0.0"
+FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION = "final_assembly_plan.v3"
+ASSEMBLY_PLAN_ALGORITHM_VERSION = "final_assembly_planning.v2.0.0"
 ASSEMBLY_PLAN_RECOMMENDATIONS_FILENAME = "assembly_plan_recommendations.json"
 SUPPORTED_METHODS = ("restriction", "gibson")
 

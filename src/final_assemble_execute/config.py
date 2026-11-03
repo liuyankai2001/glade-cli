@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 
-FINAL_ASSEMBLY_SCHEMA_VERSION = "final_assembly.v2"
-FINAL_DESIGN_REPORT_SCHEMA_VERSION = "final_design_report.v2"
-FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION = "final_assembly_execute.v1.0.0"
+FINAL_ASSEMBLY_SCHEMA_VERSION = "final_assembly.v3"
+FINAL_DESIGN_REPORT_SCHEMA_VERSION = "final_design_report.v3"
+FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION = "final_assembly_execute.v2.0.0"
 
 FINAL_ASSEMBLY_DIRNAME = "final_assembly"
 RUN_SUMMARY_FILENAME = "run_summary.json"

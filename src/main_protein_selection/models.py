@@ -15,8 +15,8 @@ from src.main_protein_selection.taxonomy_compatibility import (
 )
 
 
-MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v6"
-MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v6"
+MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v7"
+MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v7"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
     "evidence_constrained_assignment.v6_main_enzyme_only_taxonomy_ranked"
 )
@@ -108,7 +108,6 @@ class MainEnzymeCandidate(BaseModel):
     matched_ko_ids: list[str] = Field(default_factory=list)
     reaction_confidence: str = ""
     sequence_version: int | None = Field(default=None, ge=1)
-    sequence_sha256: str = ""
     sequence: str = ""
     warnings: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
@@ -162,7 +161,6 @@ class MainEnzymeCandidate(BaseModel):
             matched_ko_ids=_values(row.get("matched_ko_ids")),
             reaction_confidence=_string(row.get("reaction_confidence")),
             sequence_version=_optional_int(row.get("sequence_version")),
-            sequence_sha256=_string(row.get("sequence_sha256")),
             sequence=_string(row.get("sequence")),
             warnings=_values(row.get("warnings")),
             reasons=_values(row.get("reasons")),
@@ -185,14 +183,13 @@ class MainEnzymeSelectionResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_selection.v6"] = (
+    schema_version: Literal["main_enzyme_selection.v7"] = (
         MAIN_ENZYME_SELECTION_SCHEMA_VERSION
     )
     ok: bool
     status: SelectionStatus
     selected_solution_id: int = Field(ge=1)
     expansion_depth: int = Field(ge=0)
-    solution_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     chassis_key: str = Field(min_length=1)
     host_taxon_id: int = Field(default=511145, ge=1)
     taxonomy_status: Literal["resolved", "unknown"] = "resolved"
@@ -201,10 +198,6 @@ class MainEnzymeSelectionResult(BaseModel):
         default="taxonomy_lca_rank.v1",
         min_length=1,
     )
-    taxonomy_fingerprint: str = Field(
-        default="0" * 64,
-        pattern=r"^[0-9a-f]{64}$",
-    )
     scoring_weights: dict[str, float] = Field(default_factory=lambda: {
         "function": 0.40,
         "evidence": 0.15,
@@ -212,10 +205,6 @@ class MainEnzymeSelectionResult(BaseModel):
         "host": 0.25,
     })
     parameters: MainEnzymeSelectionParameters
-    shortlist_decision_fingerprint: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{64}$",
-    )
     candidates_by_step: dict[int, list[MainEnzymeCandidate]]
     uncovered_step_indexes: list[int] = Field(default_factory=list)
     direction_rejected_step_indexes: list[int] = Field(default_factory=list)
@@ -302,7 +291,6 @@ class MainEnzymeSetProtein(BaseModel):
     protein_name: str = ""
     organism_name: str = ""
     reviewed: bool
-    sequence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     cofactors: list[str] = Field(default_factory=list)
     capable_step_indexes: list[int]
     assigned_step_indexes: list[int]
@@ -378,7 +366,6 @@ class MainEnzymeSet(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     set_id: int = Field(ge=1)
-    set_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: MainEnzymeSetStatus
     protein_count: int = Field(ge=1)
     coverage_complete: bool
@@ -648,7 +635,7 @@ class MainEnzymeSetsResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_sets.v6"] = (
+    schema_version: Literal["main_enzyme_sets.v7"] = (
         MAIN_ENZYME_SETS_SCHEMA_VERSION
     )
     algorithm_version: Literal[
@@ -660,11 +647,8 @@ class MainEnzymeSetsResult(BaseModel):
     status: MainEnzymeSetsStatus
     selected_solution_id: int = Field(ge=1)
     expansion_depth: int = Field(ge=0)
-    solution_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     chassis_key: str = Field(min_length=1)
     parameters: MainEnzymeSetParameters
-    candidate_pool_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     required_step_indexes: list[int]
     minimum_protein_count: int | None = Field(default=None, ge=1)
     search_complete: bool
@@ -699,12 +683,6 @@ class MainEnzymeSetsResult(BaseModel):
         set_ids = [enzyme_set.set_id for enzyme_set in self.sets]
         if set_ids != list(range(1, len(self.sets) + 1)):
             raise ValueError("set_id values must be contiguous from 1")
-        set_fingerprints = [
-            enzyme_set.set_fingerprint for enzyme_set in self.sets
-        ]
-        if len(set_fingerprints) != len(set(set_fingerprints)):
-            raise ValueError("set_fingerprint values must be unique")
-
         for enzyme_set in self.sets:
             set_steps = set(enzyme_set.covered_step_indexes) | set(
                 enzyme_set.uncovered_step_indexes

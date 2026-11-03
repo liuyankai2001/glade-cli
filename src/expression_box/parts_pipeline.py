@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -45,17 +44,6 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _stable_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -79,28 +67,6 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-
-
-def _cached_payload(path: Path, input_fingerprint: str) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    source = payload.get("source") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") != EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION
-        or payload.get("status") not in {"complete", "partial", "failed"}
-        or not isinstance(source, dict)
-        or source.get("input_fingerprint") != input_fingerprint
-        or not isinstance(payload.get("designs"), list)
-        or (payload.get("status") != "failed" and not payload["designs"])
-        or (payload.get("status") == "failed" and payload["designs"])
-    ):
-        return None
-    return payload
 
 
 def _summary(
@@ -145,11 +111,11 @@ def _summary(
         "warnings": payload["warnings"],
         "output_path": str(output_path),
         "reused_existing": reused_existing,
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
 
 
-def run_expression_parts_design(
+def _run_expression_parts_design(
     config: Any,
     *,
     milvus_client: Any | None = None,
@@ -173,7 +139,12 @@ def run_expression_parts_design(
 
     manifest_path = Path(config.manifest_output_path).expanduser().resolve()
     project_root = Path(config.project_output_path).expanduser().resolve()
+    from src.expression_box.pipeline import _invalidate_calculation
+    _invalidate_calculation(manifest_path, grouping=False)
+    output_path = project_root / "expression_box" / EXPRESSION_PARTS_DESIGNS_FILENAME
+    _write_json_atomic(output_path, {"schema_version": EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION, "status": "in_progress"})
     context = load_expression_parts_context(manifest_path, project_root)
+    original_manifest = manifest_path.read_bytes()
     snapshot = fetch_expression_part_candidates(
         context,
         client=milvus_client,
@@ -181,50 +152,11 @@ def run_expression_parts_design(
     backends = backend_versions()
     backends["dnachisel"] = __import__("dnachisel").__version__
     backends["pymilvus"] = __import__("pymilvus").__version__
-    input_fingerprint = _stable_hash(
-        {
-            "algorithm_version": PARTS_RECOMMENDATION_ALGORITHM_VERSION,
-            "context_input_fingerprint": context.input_fingerprint,
-            "collection_name": snapshot.collection_name,
-            "collection_schema_fingerprint": snapshot.schema_fingerprint,
-            "candidate_snapshot_fingerprint": snapshot.candidate_fingerprint,
-            "backends": backends,
-            "parameters": {
-                "requested_design_count": requested_design_count,
-                "rbs_shortlist_per_strength": RBS_SHORTLIST_PER_STRENGTH,
-                "rbs_context_cds_prefix_nt": RBS_CONTEXT_CDS_PREFIX_NT,
-                "rbs_context_previous_cds_suffix_nt": (
-                    RBS_CONTEXT_PREVIOUS_CDS_SUFFIX_NT
-                ),
-                "candidate_pool_min": EXPRESSION_PARTS_CANDIDATE_POOL_MIN,
-                "candidate_pool_multiplier": (
-                    EXPRESSION_PARTS_CANDIDATE_POOL_MULTIPLIER
-                ),
-                "candidate_pool_max": EXPRESSION_PARTS_CANDIDATE_POOL_MAX,
-                "minimum_success_score": EXPRESSION_SUCCESS_MIN_SCORE,
-                "success_score_weights": {
-                    "evidence": EXPRESSION_SUCCESS_EVIDENCE_WEIGHT,
-                    "promoter": EXPRESSION_SUCCESS_PROMOTER_WEIGHT,
-                    "translation": EXPRESSION_SUCCESS_TRANSLATION_WEIGHT,
-                    "terminator": EXPRESSION_SUCCESS_TERMINATOR_WEIGHT,
-                    "assembly": EXPRESSION_SUCCESS_ASSEMBLY_WEIGHT,
-                },
-                "expression_burden_model": burden_model_parameters(),
-            },
-        }
-    )
     output_path = (
         project_root
         / "expression_box"
         / EXPRESSION_PARTS_DESIGNS_FILENAME
     )
-    cached = _cached_payload(output_path, input_fingerprint)
-    if cached is not None:
-        try:
-            return _summary(cached, output_path, reused_existing=True)
-        except (KeyError, TypeError, ValueError):
-            pass
-
     generation_kwargs: dict[str, Any] = {}
     if predictor is not None:
         generation_kwargs["predictor"] = predictor
@@ -242,17 +174,7 @@ def run_expression_parts_design(
         "source": {
             "manifest_path": str(manifest_path),
             "manifest_revision": context.manifest_revision,
-            "expression_box_selection_fingerprint": (
-                context.expression_box_selection_fingerprint
-            ),
-            "cds_selection_source_fingerprint": (
-                context.cds_selection_source_fingerprint
-            ),
-            "context_input_fingerprint": context.input_fingerprint,
             "milvus_collection": snapshot.collection_name,
-            "milvus_schema_fingerprint": snapshot.schema_fingerprint,
-            "candidate_snapshot_fingerprint": snapshot.candidate_fingerprint,
-            "input_fingerprint": input_fingerprint,
         },
         "target_compound_id": context.target_compound_id,
         "host": {
@@ -300,10 +222,19 @@ def run_expression_parts_design(
         "prediction_failure_count": generation["prediction_failure_count"],
         "prediction_failures": generation["prediction_failures"],
         "warnings": generation["warnings"],
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
+    if manifest_path.read_bytes() != original_manifest:
+        raise ValueError("manifest 在表达元件计算期间发生变化，请重试")
     _write_json_atomic(output_path, payload)
     return _summary(payload, output_path, reused_existing=False)
+
+
+def run_expression_parts_design(config: Any, *, milvus_client: Any | None = None, predictor: Any | None = None) -> dict[str, Any]:
+    from src.protein_to_cds.artifacts import ArtifactTransaction
+    root = Path(config.project_output_path).expanduser().resolve()
+    with ArtifactTransaction([], lock_path=root / "protein_to_cds" / ".gc_optimization.lock"):
+        return _run_expression_parts_design(config, milvus_client=milvus_client, predictor=predictor)
 
 
 __all__ = [

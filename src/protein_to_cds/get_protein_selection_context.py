@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,7 +30,6 @@ class ProteinToCdsContext:
     chassis_key: str
     selected_solution_id: int
     selected_set_id: int
-    source_fingerprint: str
     proteins: tuple[SelectedProteinForCds, ...]
     warnings: tuple[str, ...]
 
@@ -71,16 +68,6 @@ def _step_indexes(value: Any, field_name: str) -> tuple[int, ...]:
     if not indexes:
         raise ValueError(f"manifest field must not be empty: {field_name}")
     return indexes
-
-
-def _stable_fingerprint(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _main_proteins(
@@ -163,50 +150,18 @@ def get_proteins_for_cds(
 
     proteins = _main_proteins(selection)
     from src.main_protein_selection.common import get_solution_steps, heterologous_requirements
-    from src.main_protein_selection.provenance import solution_fingerprint
 
     solution_id, steps = get_solution_steps(manifest)
     genome_filter = validate_genome_ec_filter(
         selection.get("genome_ec_filter"), heterologous_requirements(steps), chassis_key, genome_path,
     )
     if genome_filter is not None:
-        source = _mapping(selection.get("source"), "main_enzyme_selection.source")
-        if source.get("solution_fingerprint") != solution_fingerprint(solution_id, steps):
-            raise ValueError("Selected route changed; rerun main-enzyme and write --main-enzyme-set")
         assigned = {step for protein in proteins.values() for step in protein.assigned_step_indexes}
         if (assigned != set(genome_filter.external_required_step_indexes)
                 or coverage.get("required_step_indexes") != genome_filter.required_step_indexes
                 or coverage.get("covered_step_indexes") != genome_filter.required_step_indexes):
             raise ValueError("Genome and external enzyme coverage are inconsistent; rerun main-enzyme")
-        current_path = path.parent / "main_protein_selection" / "main_enzyme_selection.json"
-        if current_path.is_file():
-            current = read_current_genome_selection(path, genome_path)
-            from src.main_protein_selection.build_main_enzyme_sets import main_enzyme_selection_fingerprint
-            if (current is None or current.genome_ec_filter != genome_filter
-                    or source.get("candidate_selection_fingerprint") != main_enzyme_selection_fingerprint(current)):
-                raise ValueError("Genome candidate results changed; rerun main-enzyme-sets and write --main-enzyme-set")
     ordered = tuple(proteins[accession] for accession in sorted(proteins))
-    fingerprint_payload = {
-        "schema_version": "protein_to_cds.input.v3",
-        "target_compound_id": target_compound_id,
-        "selected_solution_id": selected_solution_id,
-        "selected_set_id": selected_set_id,
-        "selected_set_fingerprint": str(
-            selection.get("selected_set_fingerprint") or ""
-        ),
-        "chassis_key": chassis_key,
-        "proteins": [
-            {
-                "accession": item.accession,
-                "roles": item.roles,
-                "protein_name": item.protein_name,
-                "organism_name": item.organism_name,
-                "assigned_step_indexes": item.assigned_step_indexes,
-            }
-            for item in ordered
-        ],
-        **({"genome_ec_filter_fingerprint": genome_filter.fingerprint} if genome_filter else {}),
-    }
     return ProteinToCdsContext(
         manifest_path=path,
         manifest_revision=revision,
@@ -214,7 +169,6 @@ def get_proteins_for_cds(
         chassis_key=chassis_key,
         selected_solution_id=selected_solution_id,
         selected_set_id=selected_set_id,
-        source_fingerprint=_stable_fingerprint(fingerprint_payload),
         proteins=ordered,
         warnings=tuple(warnings),
     )

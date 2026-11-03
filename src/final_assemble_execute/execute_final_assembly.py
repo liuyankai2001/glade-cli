@@ -17,9 +17,6 @@ from src.final_assemble_execute.common import (
     assemble_sequence,
     build_final_record,
     load_execution_context,
-    sha256_file,
-    sha256_sequence,
-    stable_json_hash,
     validate_written_outputs,
     write_fasta,
     write_genbank,
@@ -39,7 +36,7 @@ from src.final_assemble_execute.export_final_design_report import (
     generate_final_design_report,
 )
 from src.final_assemble_execute.models import FinalAssemblyExecutionContext
-from src.write_manifest.store import update_design_manifest
+from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
 
 
 DesignExecutor = Callable[
@@ -66,13 +63,11 @@ def _staged_file_info(
     result: dict[str, Any] = {
         "path": _final_relative(filename),
         "format": file_format,
-        "file_sha256": sha256_file(path),
     }
     if sequence is not None:
         result.update(
             {
                 "length_bp": len(sequence),
-                "sequence_sha256": sha256_sequence(sequence),
             }
         )
     return result
@@ -140,19 +135,12 @@ def _execute_one_design(
         ),
     }
     report_payload = {
-        "schema_version": "final_assembly_design_report.v1",
+        "schema_version": "final_assembly_design_report.v2",
         "status": "assembled_in_silico",
         "algorithm_version": FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION,
         "target_compound_id": context.source_context.target_compound_id,
         "parts_design_id": design_id,
-        "source": {
-            "final_assembly_plan_selection_fingerprint": (
-                context.plan_selection_fingerprint
-            ),
-            "plan_fingerprint": plan.get("plan_fingerprint"),
-            "backbone_file_sha256": context.source_context.backbone.file_sha256,
-            "insert_file_sha256": construct.file_sha256,
-        },
+        "source": {"manifest_revision": context.manifest_revision},
         "assembly_method": plan.get("assembly_method"),
         "backbone_linearization": dict(linearization),
         "target": assembled.target_audit,
@@ -160,7 +148,6 @@ def _execute_one_design(
             "record_id": record_id,
             "length_bp": len(assembled.sequence),
             "topology": "circular",
-            "sequence_sha256": sha256_sequence(assembled.sequence),
             "feature_count": len(final_record.features),
             "files": files,
         },
@@ -178,11 +165,9 @@ def _execute_one_design(
         "status": "assembled_in_silico",
         "assembly_method": plan.get("assembly_method"),
         "enzyme_summary": linearization.get("enzyme_summary"),
-        "plan_fingerprint": plan.get("plan_fingerprint"),
         "target": assembled.target_audit,
         "length_bp": len(assembled.sequence),
         "topology": "circular",
-        "sequence_sha256": sha256_sequence(assembled.sequence),
         "feature_count": len(final_record.features),
         "files": files,
         "validation": validation,
@@ -249,11 +234,9 @@ class FinalAssemblyOutputTransaction:
         warning: str | None = None
         if self.backup_dir is not None and self.backup_dir.exists():
             try:
-                _remove_transaction_path(
-                    self.backup_dir,
-                    self.project_root,
-                    f".{FINAL_ASSEMBLY_DIRNAME}.backup-",
-                )
+                history = self.project_root / "final_assembly_history"
+                history.mkdir(exist_ok=True)
+                self.backup_dir.rename(history / uuid.uuid4().hex)
             except OSError as exc:
                 warning = f"could not remove previous final-assembly backup: {exc}"
         self.backup_dir = None
@@ -275,12 +258,6 @@ def _status(planned: int, succeeded: int) -> str:
     return "partial" if succeeded else "failed"
 
 
-def _selection_fingerprint(section: Mapping[str, Any]) -> str:
-    unsigned = dict(section)
-    unsigned.pop("selection_fingerprint", None)
-    return stable_json_hash(unsigned)
-
-
 def execute_final_assembly(
     config: Any,
     *,
@@ -289,6 +266,17 @@ def execute_final_assembly(
     """Regenerate and commit the complete in-silico final-assembly bundle."""
 
     context = load_execution_context(config)
+    with manifest_update_lock(context.manifest_path):
+        manifest = read_design_manifest(context.manifest_path)
+        if manifest.get("revision", 0) != context.manifest_revision:
+            raise ValueError("项目版本已变化，请重试")
+        obsolete = ("final_assembly", "final_design_report")
+        if any(name in manifest for name in obsolete):
+            update_design_manifest(context.manifest_path,
+                                   target_compound_id=context.source_context.target_compound_id,
+                                   sections={}, discard_sections=obsolete,
+                                   expected_revision=context.manifest_revision)
+            context = load_execution_context(config)
     project_root = context.project_output_path.resolve()
     project_root.mkdir(parents=True, exist_ok=True)
     target_dir = project_root / FINAL_ASSEMBLY_DIRNAME
@@ -333,17 +321,8 @@ def execute_final_assembly(
                 f"{len(failures)} design(s) failed during in-silico execution; "
                 "successful designs were retained."
             )
-        bundle_fingerprint = stable_json_hash(
-            {
-                "algorithm_version": FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION,
-                "plan_selection_fingerprint": context.plan_selection_fingerprint,
-                "status": status,
-                "constructs": constructs,
-                "failures": failures,
-            }
-        )
         run_summary: dict[str, Any] = {
-            "schema_version": "final_assembly_run_summary.v1",
+            "schema_version": "final_assembly_run_summary.v2",
             "algorithm_version": FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION,
             "status": status,
             "generated_at": generated_at,
@@ -354,13 +333,9 @@ def execute_final_assembly(
             "method_counts": method_counts,
             "source": {
                 "manifest_revision": context.manifest_revision,
-                "final_assembly_plan_selection_fingerprint": (
-                    context.plan_selection_fingerprint
-                ),
             },
             "constructs": constructs,
             "failures": failures,
-            "bundle_fingerprint": bundle_fingerprint,
             "warnings": warnings_list,
         }
         final_section: dict[str, Any] = {
@@ -376,20 +351,8 @@ def execute_final_assembly(
             "failed_count": len(failures),
             "method_counts": method_counts,
             "output_dir": FINAL_ASSEMBLY_DIRNAME,
-            "source_fingerprints": {
-                "final_assembly_plan_selection_fingerprint": (
-                    context.plan_selection_fingerprint
-                ),
-                "plasmid_selection_fingerprint": (
-                    context.source_context.plasmid_selection_fingerprint
-                ),
-                "assembled_constructs_fingerprint": (
-                    context.source_context.assembled_constructs_fingerprint
-                ),
-            },
             "constructs": constructs,
             "failures": failures,
-            "bundle_fingerprint": bundle_fingerprint,
             "warnings": warnings_list,
         }
 
@@ -421,9 +384,6 @@ def execute_final_assembly(
         final_section["run_summary_file"] = run_summary_file
         final_section["report_file"] = report_file
         final_section["warnings"] = warnings_list
-        final_section["selection_fingerprint"] = _selection_fingerprint(
-            final_section
-        )
         design_report_section: dict[str, Any] = {
             "schema_version": FINAL_DESIGN_REPORT_SCHEMA_VERSION,
             "status": "exported",
@@ -432,27 +392,27 @@ def execute_final_assembly(
             "language": "zh-CN",
             "generated_by": generated_by,
             "report_file": report_file,
-            "source_final_assembly_bundle_fingerprint": bundle_fingerprint,
             "warnings": [report_warning] if report_warning else [],
         }
-        design_report_section["selection_fingerprint"] = _selection_fingerprint(
-            design_report_section
-        )
 
-        transaction.install()
-        try:
-            updated = update_design_manifest(
-                context.manifest_path,
-                target_compound_id=context.source_context.target_compound_id,
-                sections={
-                    "final_assembly": final_section,
-                    "final_design_report": design_report_section,
-                },
-                expected_revision=context.manifest_revision,
-            )
-        except Exception:
-            transaction.rollback()
-            raise
+        with manifest_update_lock(context.manifest_path):
+            current = read_design_manifest(context.manifest_path)
+            if int(current.get("revision") or 0) != context.manifest_revision:
+                raise ValueError("项目版本已变化，请重试")
+            transaction.install()
+            try:
+                updated = update_design_manifest(
+                    context.manifest_path,
+                    target_compound_id=context.source_context.target_compound_id,
+                    sections={
+                        "final_assembly": final_section,
+                        "final_design_report": design_report_section,
+                    },
+                    expected_revision=context.manifest_revision,
+                )
+            except Exception:
+                transaction.rollback()
+                raise
         cleanup_warning = transaction.finalize()
         if cleanup_warning:
             warnings_list.append(cleanup_warning)

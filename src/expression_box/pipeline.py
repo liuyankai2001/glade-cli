@@ -63,7 +63,6 @@ def _protein_payload(protein: ExpressionProtein) -> dict[str, Any]:
         "roles": list(protein.roles),
         "assigned_step_indexes": list(protein.assigned_step_indexes),
         "optimized_cds_length_nt": protein.optimized_cds_length_nt,
-        "optimized_cds_sequence_sha256": (protein.optimized_cds_sequence_sha256),
     }
 
 
@@ -118,10 +117,6 @@ def _full_payload(
         "source": {
             "manifest_path": str(context.manifest_path),
             "manifest_revision": context.manifest_revision,
-            "cds_selection_source_fingerprint": (
-                context.cds_selection_source_fingerprint
-            ),
-            "input_fingerprint": context.input_fingerprint,
         },
         "constraints": {
             "balanced_max_main_units_per_cassette": (
@@ -143,30 +138,6 @@ def _full_payload(
         ],
         "warnings": list(generation.warnings),
     }
-
-
-def _load_cached_payload(
-    path: Path,
-    input_fingerprint: str,
-) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    source = payload.get("source") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") != EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION
-        or payload.get("status") != "complete"
-        or not isinstance(source, dict)
-        or source.get("input_fingerprint") != input_fingerprint
-        or not isinstance(payload.get("designs"), list)
-        or not payload["designs"]
-    ):
-        return None
-    return payload
 
 
 def _summary(
@@ -198,28 +169,60 @@ def _summary(
         "warnings": payload["warnings"],
         "output_path": str(output_path),
         "reused_existing": reused_existing,
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
 
 
-def run_expression_box_design(config: Any) -> dict[str, Any]:
+
+def _invalidate_calculation(manifest_path: Path, *, grouping: bool, preserve_draft: bool = False) -> None:
+    from src.write_manifest.store import read_design_manifest, update_design_manifest
+    from src.expression_box.parts_preparation import normalize_parts_draft, stale_parts_designs
+    manifest = read_design_manifest(manifest_path)
+    target = manifest.get("target_compound_id")
+    if not target:
+        return
+    downstream = ("parts_selection", "assembled_expression_cassettes",
+                  "assembled_expression_constructs", "plasmid_selection",
+                  "final_assembly_plan", "final_assembly", "final_design_report")
+    if grouping:
+        downstream = ("expression_box_selection", "expression_cassette_assembly", *downstream)
+    sections = {}
+    raw_draft = manifest.get("expression_parts_draft")
+    if isinstance(raw_draft, dict) and (preserve_draft or raw_draft.get("source_type") == "user_uploaded" or raw_draft.get("schema_version") == "expression_parts_draft.v1"):
+        try:
+            draft = normalize_parts_draft(raw_draft)
+            stale_parts_designs(draft["designs"])
+            sections["expression_parts_draft"] = draft
+        except (KeyError, TypeError, ValueError):
+            pass
+    elif raw_draft is not None:
+        downstream = (*downstream, "expression_parts_draft")
+    update_design_manifest(manifest_path, target_compound_id=target, sections=sections,
+                           discard_sections=downstream, expected_revision=int(manifest["revision"]))
+
+def _run_expression_box_design(config: Any) -> dict[str, Any]:
     """Generate and persist system-recommended protein grouping candidates."""
 
     manifest_path = Path(config.manifest_output_path).expanduser().resolve()
     project_root = Path(config.project_output_path).expanduser().resolve()
-    context = load_expression_grouping_context(manifest_path)
+    _invalidate_calculation(manifest_path, grouping=True)
     output_path = project_root / "expression_box" / EXPRESSION_BOX_DESIGNS_FILENAME
-    cached = _load_cached_payload(output_path, context.input_fingerprint)
-    if cached is not None:
-        try:
-            return _summary(cached, output_path, reused_existing=True)
-        except (KeyError, TypeError, ValueError):
-            pass
-
+    _write_json_atomic(output_path, {"schema_version": EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION, "status": "in_progress"})
+    context = load_expression_grouping_context(manifest_path)
+    current_manifest = manifest_path.read_bytes() if manifest_path.is_file() else None
     generation = generate_grouping_designs(context.proteins)
     payload = _full_payload(context, generation)
+    if current_manifest is not None and manifest_path.read_bytes() != current_manifest:
+        raise ValueError("manifest 在表达盒计算期间发生变化，请重试")
     _write_json_atomic(output_path, payload)
     return _summary(payload, output_path, reused_existing=False)
+
+
+def run_expression_box_design(config: Any) -> dict[str, Any]:
+    from src.protein_to_cds.artifacts import ArtifactTransaction
+    root = Path(config.project_output_path).expanduser().resolve()
+    with ArtifactTransaction([], lock_path=root / "protein_to_cds" / ".gc_optimization.lock"):
+        return _run_expression_box_design(config)
 
 
 __all__ = [

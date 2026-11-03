@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from collections.abc import Mapping
@@ -23,25 +21,6 @@ from src.final_assemble_plan.config import (
 
 
 DNA_ALPHABET = frozenset("ACGT")
-
-
-def stable_json_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def sha256_bytes(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def sha256_sequence(sequence: str) -> str:
-    return hashlib.sha256(sequence.upper().encode("ascii")).hexdigest()
 
 
 def resolve_project_file(project_output: Path, value: Any) -> Path:
@@ -261,8 +240,5 @@ __all__ = [
     "region_bounds",
     "relative_project_path",
     "resolve_project_file",
-    "sha256_bytes",
-    "sha256_sequence",
     "span_inside_region",
-    "stable_json_hash",
 ]

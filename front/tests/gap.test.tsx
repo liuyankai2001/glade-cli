@@ -28,10 +28,10 @@ const library = {
   ],
 };
 const context = {
-  project: { target: "gap-demo", name: "Gap demo", host: "E. coli", manifest_revision: 1, source_fingerprint: "source" },
+  project: { target: "gap-demo", name: "Gap demo", host: "E. coli", manifest_revision: 1, },
   ready: true,
   issues: [],
-  construct: { id: 1, name: "Source", length_bp: 100, gc_percent: 50, sequence_sha256: "source", features: [] },
+  construct: { id: 1, name: "Source", length_bp: 100, gc_percent: 50, features: [] },
   restriction_enzymes: [],
   selection: null,
   result: null,
@@ -64,7 +64,7 @@ function install() {
     return Promise.resolve(new Response(JSON.stringify(
       url === "/api/modules" ? library : url === "/api/preview" ? {
         ...body, valid: true, issues: [], warnings: [], terminator_warnings: [], sequence: "", length_bp: cursor - 1,
-        gc_percent: 50, sequence_sha256: "preview", source_fingerprint: "source", manifest_revision: 1, segments, features: [], enzymes: [],
+        gc_percent: 50, manifest_revision: 1, segments, features: [], enzymes: [],
       } : context,
     )));
   });
@@ -150,7 +150,7 @@ it("keeps an explicit unversioned gap and gives a 14 bp gap a grey coordinate ca
     <PlasmidRing
       preview={{
         valid: true, issues: [], warnings: [], sequence: "", length_bp: 1000,
-        gc_percent: 50, sequence_sha256: "preview", source_fingerprint: "source", manifest_revision: 1,
+        gc_percent: 50, manifest_revision: 1,
         components: restored,
         segments: [{ id: "landing", instance_id: "gap-instance", component_type: "gap", label: "Landing spacer", kind: "gap", start_bp: 100, end_bp: 113, length_bp: 14 }],
         features: [], enzymes: [],
@@ -214,7 +214,7 @@ it("applies the grey gap color to computed callout text and the drag insertion m
     <PlasmidRing
       preview={{
         valid: true, issues: [], warnings: [], sequence: "", length_bp: 114,
-        gc_percent: 50, sequence_sha256: "preview", source_fingerprint: "source", manifest_revision: 1,
+        gc_percent: 50, manifest_revision: 1,
         components: [
           { instance_id: "gap", component_type: "gap", module_id: "landing" },
           { instance_id: "expression", component_type: "expression" },
@@ -254,7 +254,7 @@ it("persists a reordered duplicate gap list across reload and hides a stale orde
   ];
   localStorage.setItem("plasmid:gap-demo", JSON.stringify({ assembly_schema_version: 2, components: saved }));
   const staleResult = {
-    id: "stale", components: saved, source_fingerprint: "source", manifest_revision: 1,
+    id: "stale", components: saved, manifest_revision: 1,
     files: [{ id: "final_genbank", label: "GenBank", filename: "stale.gb", format: "gb", url: "/stale.gb" }], warnings: [],
   };
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
@@ -262,7 +262,7 @@ it("persists a reordered duplicate gap list across reload and hides a stale orde
     if (url === "/api/modules") return Promise.resolve(new Response(JSON.stringify(library)));
     if (url === "/api/preview") return Promise.resolve(new Response(JSON.stringify({
       ...body, valid: true, issues: [], warnings: [], terminator_warnings: [], sequence: "", length_bp: 136,
-      gc_percent: 50, sequence_sha256: "preview", source_fingerprint: "source", manifest_revision: 1,
+      gc_percent: 50, manifest_revision: 1,
       segments: body.components.map((component: { instance_id: string; component_type: string; module_id?: string }, index: number) => ({
         id: component.module_id || "source", instance_id: component.instance_id, component_type: component.component_type,
         label: component.module_id || "Source", kind: component.component_type, start_bp: index * 14 + 1, end_bp: index * 14 + 14, length_bp: 14,
@@ -273,6 +273,7 @@ it("persists a reordered duplicate gap list across reload and hides a stale orde
   vi.stubGlobal("fetch", fetcher);
   const { container, unmount } = render(<Workbench />);
   await screen.findByRole("link", { name: "下载 GenBank" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled());
   const rows = Array.from(container.querySelectorAll<HTMLElement>(".component-row"));
   rows.forEach((row, index) => vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
     x: 0, y: index * 60, top: index * 60, left: 0, right: 200, bottom: index * 60 + 50, width: 200, height: 50, toJSON: () => ({}),

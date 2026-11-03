@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+
+def without_audit_hashes(value: Any) -> Any:
+    """Remove historical digest metadata while retaining actual source data."""
+    if isinstance(value, Mapping):
+        return {key: without_audit_hashes(item) for key, item in value.items()
+                if "fingerprint" not in str(key).lower()
+                and not str(key).lower().endswith("sha256")}
+    if isinstance(value, (list, tuple)):
+        return [without_audit_hashes(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,10 +32,9 @@ class ExpressionBurden:
     cassette_count: int
     total_cds_length_nt: int
     minimum_ostir_reference_count: int
-    fingerprint: str
     warnings: tuple[str, ...]
 
-    def fingerprint_payload(self) -> dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "model_version": self.model_version,
@@ -38,7 +49,6 @@ class ExpressionBurden:
             "minimum_ostir_reference_count": (
                 self.minimum_ostir_reference_count
             ),
-            "fingerprint": self.fingerprint,
             "warnings": list(self.warnings),
         }
 
@@ -50,22 +60,8 @@ class ExpressionConstruct:
     length_bp: int
     cassette_count: int
     component_count: int
-    sequence_sha256: str
-    file_sha256: str
     path: Path
     burden: ExpressionBurden
-
-    def fingerprint_payload(self) -> dict[str, Any]:
-        return {
-            "design_id": self.design_id,
-            "rank": self.rank,
-            "length_bp": self.length_bp,
-            "cassette_count": self.cassette_count,
-            "component_count": self.component_count,
-            "sequence_sha256": self.sequence_sha256,
-            "file_sha256": self.file_sha256,
-            "expression_burden": self.burden.fingerprint_payload(),
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +72,6 @@ class PlasmidContext:
     manifest_revision: int
     host_key: str
     host_name: str
-    parts_selection_fingerprint: str
-    assembled_constructs_fingerprint: str
-    input_fingerprint: str
     selected_design_ids: tuple[int, ...]
     constructs: tuple[ExpressionConstruct, ...]
 
@@ -107,8 +100,6 @@ class PlasmidContext:
 class PlasmidSnapshot:
     collection_name: str
     collection_row_count: int
-    schema_fingerprint: str
-    candidate_fingerprint: str
     candidates: tuple[dict[str, Any], ...]
 
 
@@ -116,9 +107,6 @@ class PlasmidSnapshot:
 class DownloadedSequence:
     content: bytes
     length_bp: int
-    sequence_content_sha256: str
-    canonical_sequence_sha256: str
-    file_sha256: str
     source_download_url: str
 
 

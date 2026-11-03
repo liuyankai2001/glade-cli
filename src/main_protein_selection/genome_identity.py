@@ -1,7 +1,6 @@
 """Strict host identity and immutable input binding for one GenBank file."""
 from __future__ import annotations
 
-import hashlib
 import io
 import re
 import warnings
@@ -12,7 +11,6 @@ from Bio import BiopythonParserWarning, SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from .host_registry import get_host_preset, register_host
-from .provenance import file_sha256
 
 
 @dataclass(frozen=True)
@@ -20,12 +18,8 @@ class GenomeIdentity:
     path: Path
     name: str
     taxon_id: int
-    genome_sha256: str
     records: tuple[SeqRecord, ...] = field(repr=False, compare=False)
 
-    def assert_current(self) -> None:
-        if file_sha256(self.path) != self.genome_sha256:
-            raise ValueError('genome_file changed while being read; rerun main-enzyme')
 
 
 def read_genome_identity(path: str | Path) -> GenomeIdentity:
@@ -64,19 +58,16 @@ def read_genome_identity(path: str | Path) -> GenomeIdentity:
     except (ValueError, BiopythonParserWarning) as exc:
         raise ValueError(f'Invalid GenBank genome_file {path}: {exc}') from exc
     _, taxon_id = next(iter(identities))
-    identity = GenomeIdentity(path, names[0], taxon_id, hashlib.sha256(data).hexdigest(), records)
-    identity.assert_current()
+    identity = GenomeIdentity(path, names[0], taxon_id, records)
     return identity
 
 
 def resolve_genome_chassis(identity: GenomeIdentity, chassis_key: str | None = None) -> str:
     """Candidate generation only: explicit keys constrain identity; otherwise register."""
-    identity.assert_current()
     if chassis_key is not None:
         preset = get_host_preset(chassis_key)
         if preset['taxon_id'] != identity.taxon_id:
             raise ValueError(f'genome_file host mismatch / 菌株不匹配: {chassis_key}, taxon={identity.taxon_id}')
         return chassis_key
     key = register_host(identity.name, identity.taxon_id)
-    identity.assert_current()
     return key

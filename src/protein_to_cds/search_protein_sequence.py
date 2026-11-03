@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import tempfile
@@ -63,7 +62,6 @@ class ProteinSequenceRecord:
     entry_name: str
     sequence: str
     length_aa: int
-    sequence_sha256: str
     source_url: str
     fasta_path: Path
     reused_existing: bool
@@ -78,10 +76,6 @@ def normalize_uniprot_accession(accession: str) -> str:
     if _ACCESSION_RE.fullmatch(normalized) is None:
         raise InvalidUniProtAccessionError(f"invalid UniProt accession: {accession!r}")
     return normalized
-
-
-def _sequence_sha256(sequence: str) -> str:
-    return hashlib.sha256(sequence.encode("utf-8")).hexdigest()
 
 
 def _parse_record_identity(
@@ -282,7 +276,6 @@ def search_protein_sequence(
             entry_name=entry_name,
             sequence=sequence,
             length_aa=len(sequence),
-            sequence_sha256=_sequence_sha256(sequence),
             source_url=UNIPROT_FASTA_URL_TEMPLATE.format(accession=requested_accession),
             fasta_path=existing_path,
             reused_existing=True,
@@ -294,13 +287,12 @@ def search_protein_sequence(
     )
     primary_accession, entry_name, sequence = _parse_single_fasta(fasta_text)
     fasta_path = destination_dir / f"{primary_accession}.fasta"
-    sequence_hash = _sequence_sha256(sequence)
     canonical_fasta = _canonical_fasta(primary_accession, entry_name, sequence)
 
     with _WRITE_LOCK:
         if fasta_path.exists():
             existing_sequence = _read_existing_sequence(fasta_path)
-            if _sequence_sha256(existing_sequence) != sequence_hash:
+            if existing_sequence != sequence:
                 raise ProteinSequenceConflictError(
                     "refusing to overwrite a different protein sequence for "
                     f"UniProt accession {primary_accession}: {fasta_path}"
@@ -319,7 +311,6 @@ def search_protein_sequence(
         entry_name=entry_name,
         sequence=sequence,
         length_aa=len(sequence),
-        sequence_sha256=sequence_hash,
         source_url=source_url,
         fasta_path=fasta_path,
         reused_existing=False,

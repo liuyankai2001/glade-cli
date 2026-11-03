@@ -16,7 +16,6 @@ from Bio.SeqRecord import SeqRecord
 from src.final_assemble_execute.common import (
     assemble_sequence,
     build_final_record,
-    sha256_sequence,
 )
 from src.final_assemble_execute.models import SequenceAssemblyResult
 from src.final_assemble_plan.common import enzyme_cut_positions, gc_percent
@@ -662,7 +661,6 @@ def build_design(
         "sequence": str(final.seq),
         "length_bp": len(final),
         "gc_percent": gc_percent(str(final.seq)),
-        "sequence_sha256": sha256_sequence(str(final.seq)),
         "segments": segments,
         "features": feature_payloads(final),
         "enzymes": [e.to_payload() for e in enzymes],

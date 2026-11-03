@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
+import uuid
 from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
@@ -13,16 +12,11 @@ from typing import Any
 from Bio import SeqIO
 
 
-PARTS_DRAFT_SCHEMA = "expression_parts_draft.v2"
+PARTS_DRAFT_SCHEMA = "expression_parts_draft.v3"
+PREVIOUS_PARTS_DRAFT_SCHEMA = "expression_parts_draft.v2"
 LEGACY_PARTS_DRAFT_SCHEMA = "expression_parts_draft.v1"
-SELECTED_PARTS_SCHEMA = "expression_selected_parts.v1"
+SELECTED_PARTS_SCHEMA = "expression_selected_parts.v2"
 SELECTED_PARTS_PATH = "expression_box/selected_expression_parts.json"
-
-
-def stable_hash(value: Any) -> str:
-    content = json.dumps(value, ensure_ascii=False, sort_keys=True,
-                         separators=(",", ":"), default=str)
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def draft_content(draft: Mapping[str, Any]) -> dict[str, Any]:
@@ -53,16 +47,24 @@ def make_parts_draft(*, target: str, source: Mapping[str, Any],
                     "promoter_count": promoter_count,
                     "required_promoter_count": len(cassettes),
                     "rbs_count": rbs_count, "terminator_count": terminator_count},
-        "draft_fingerprint": stable_hash(content),
     }
+
+
+def _without_validation_digests(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _without_validation_digests(item) for key, item in value.items()
+                if not str(key).endswith(("sha256", "fingerprint"))}
+    if isinstance(value, list):
+        return [_without_validation_digests(item) for item in value]
+    return value
 
 
 def normalize_parts_draft(draft: Mapping[str, Any]) -> dict[str, Any]:
     schema = draft.get("schema_version")
-    if schema not in {PARTS_DRAFT_SCHEMA, LEGACY_PARTS_DRAFT_SCHEMA}:
+    if schema not in {PARTS_DRAFT_SCHEMA, PREVIOUS_PARTS_DRAFT_SCHEMA, LEGACY_PARTS_DRAFT_SCHEMA}:
         raise ValueError("不支持的 expression_parts_draft schema_version")
-    if draft.get("draft_fingerprint") != stable_hash(draft_content(draft)):
-        raise ValueError("元件准备记录 fingerprint 校验失败")
+    if schema == PREVIOUS_PARTS_DRAFT_SCHEMA and draft.get("source_type") == "recommended":
+        raise ValueError("旧版推荐元件草稿已过期，请重新计算并确认表达元件方案")
     source = draft.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("元件准备记录缺少 source")
@@ -75,6 +77,8 @@ def normalize_parts_draft(draft: Mapping[str, Any]) -> dict[str, Any]:
         source_type = draft.get("source_type")
     if source_type not in {"recommended", "user_uploaded"}:
         raise ValueError("元件准备记录的来源无效")
+    if schema != PARTS_DRAFT_SCHEMA and source_type != "user_uploaded":
+        raise ValueError("旧版推荐元件草稿已过期，请重新计算并确认表达元件方案")
     if not isinstance(designs, list) or not designs:
         raise ValueError("元件准备记录没有方案")
     ids, ranks = set(), set()
@@ -102,6 +106,10 @@ def normalize_parts_draft(draft: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError("元件准备方案包含未知 RBS 蛋白")
     if source_type == "user_uploaded" and len(designs) != 1:
         raise ValueError("上传元件只能对应一个当前方案")
+    if schema != PARTS_DRAFT_SCHEMA:
+        source = _without_validation_digests(source)
+        designs = _without_validation_digests(designs)
+        stale_parts_designs(designs)
     designs.sort(key=lambda d: d["rank"])
     return make_parts_draft(target=draft["target_compound_id"], source=source,
                             source_type=source_type, designs=designs)
@@ -121,15 +129,12 @@ def read_part_sequence(part: Mapping[str, Any], root: Path,
         raise ValueError("表达元件缺少有效的 FASTA 快照引用")
     path = project_file(root, reference.get("path"))
     content = path.read_bytes()
-    if hashlib.sha256(content).hexdigest() != reference.get("file_sha256"):
-        raise ValueError(f"表达元件快照文件哈希不匹配：{path}")
     try:
         record = SeqIO.read(StringIO(content.decode("utf-8")), "fasta")
     except Exception as exc:
         raise ValueError(f"表达元件快照不是有效 FASTA：{path}") from exc
     sequence = str(record.seq).upper()
     if (not sequence or set(sequence) - set("ACGT") or record.id != part.get("part_id")
-            or hashlib.sha256(sequence.encode("utf-8")).hexdigest() != part.get("sequence_sha256")
             or len(sequence) != part.get("length_bp")):
         raise ValueError(f"表达元件序列与记录不一致：{path}")
     if guarded is not None:
@@ -140,14 +145,13 @@ def read_part_sequence(part: Mapping[str, Any], root: Path,
 
 
 def snapshot_part(part: Mapping[str, Any], root: Path) -> tuple[dict[str, Any], Path, bytes]:
-    """Prepare a content-addressed snapshot without writing anything."""
+    """Prepare an immutable snapshot without writing anything."""
     result = copy.deepcopy(dict(part))
     sequence = str(result.pop("sequence")).upper()
     part_id = str(result["part_id"])
     content = (f">{part_id}\n{sequence}\n").encode("utf-8")
-    file_hash = hashlib.sha256(content).hexdigest()
-    relative = f"expression_box/prepared_parts/{result['role']}/{file_hash}.fasta"
-    result["sequence_file"] = {"path": relative, "format": "fasta", "file_sha256": file_hash}
+    relative = f"expression_box/prepared_parts/{result['role']}/{uuid.uuid4().hex}.fasta"
+    result["sequence_file"] = {"path": relative, "format": "fasta"}
     return result, project_file(root, relative), content
 
 

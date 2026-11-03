@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import tempfile
 import uuid
@@ -22,22 +21,10 @@ from src.protein_to_cds.sequence_constraints import DNA_ALPHABET
 
 
 ASSEMBLED_EXPRESSION_CONSTRUCTS_SCHEMA_VERSION = (
-    "assembled_expression_constructs.v1"
+    "assembled_expression_constructs.v2"
 )
 EXPRESSION_CONSTRUCTS_DIRNAME = "expression_constructs"
 JUNCTION_POLICY = "direct_concatenation"
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def audit_expression_construct_sequence(sequence: str, enzymes=(), homopolymer_max=None) -> dict[str, Any]:
@@ -49,8 +36,6 @@ def _part_sequence(part: Mapping[str, Any], role: str) -> str:
     sequence = str(part.get("sequence") or "").strip().upper()
     if actual_role != role or not sequence or set(sequence) - DNA_ALPHABET:
         raise ValueError(f"invalid {role} sequence in expression-parts design")
-    if part.get("sequence_sha256") != _sha256_text(sequence):
-        raise ValueError(f"{role} sequence hash does not match expression-parts design")
     if int(part.get("length_bp") or 0) != len(sequence):
         raise ValueError(f"{role} sequence length does not match expression-parts design")
     return sequence
@@ -81,10 +66,8 @@ def _part_qualifiers(
         direction=part.get("direction"),
         host_match_kind=part.get("host_match_kind"),
         evidence_grade=part.get("evidence_grade"),
-        sequence_sha256=part.get("sequence_sha256"),
         source=part.get("source"),
         source_input_file=part.get("source_input_file"),
-        sequence_file_sha256=reference.get("file_sha256") if isinstance(reference, Mapping) else None,
         parts_design_id=parts_design_id,
         cassette_index=cassette_index,
     )
@@ -120,8 +103,7 @@ def _expected_cassette_sequence(
             "is missing assembled_sequence"
         )
     expected_length = int(assembled.get("length_nt") or 0)
-    expected_hash = str(assembled.get("sequence_sha256") or "")
-    if expected_length != len(sequence) or expected_hash != _sha256_text(sequence):
+    if expected_length != len(sequence):
         raise ValueError(
             f"expression-parts design {design_id} cassette {cassette_index} "
             "cannot be reconstructed from the selected parts and optimized CDS"
@@ -129,7 +111,6 @@ def _expected_cassette_sequence(
     audit = raw_cassette.get("sequence_audit")
     if (
         not isinstance(audit, Mapping)
-        or audit.get("sequence_sha256") != expected_hash
     ):
         raise ValueError(
             f"expression-parts design {design_id} cassette {cassette_index} "
@@ -140,7 +121,6 @@ def _expected_cassette_sequence(
 def _build_record(
     design: Mapping[str, Any],
     context: ExpressionPartsContext,
-    selection_fingerprint: str,
 ) -> tuple[SeqRecord, dict[str, Any]]:
     design_id = int(design["design_id"])
     rank = int(design["rank"])
@@ -203,8 +183,6 @@ def _build_record(
                 raise ValueError(f"expression-parts design {design_id} has invalid gene")
             if str(raw_gene.get("accession") or "") != cds.accession:
                 raise ValueError(f"expression-parts design {design_id} CDS order changed")
-            if raw_gene.get("cds_sequence_sha256") != cds.sequence_sha256:
-                raise ValueError(f"expression-parts design {design_id} CDS hash changed")
 
             rbs = raw_gene.get("rbs")
             ostir = raw_gene.get("ostir")
@@ -228,7 +206,6 @@ def _build_record(
                     d_g_total=ostir.get("d_g_total"),
                     start_position=ostir.get("intended_start_position"),
                     off_target_starts=ostir.get("unintended_start_count"),
-                    ostir_context_sha256=ostir.get("context_sha256"),
                 )
             )
             _append_feature(
@@ -252,7 +229,6 @@ def _build_record(
                     label=f"cassette_{cassette_index}_{cds.accession}_CDS",
                     accession=cds.accession,
                     gene_order=gene_number,
-                    cds_sequence_sha256=cds.sequence_sha256,
                     parts_design_id=design_id,
                     cassette_index=cassette_index,
                     codon_start=1,
@@ -294,7 +270,6 @@ def _build_record(
                 "end_1based": cursor,
                 "length_bp": cursor - cassette_start,
                 "protein_accessions": [item.accession for item in cassette.cds],
-                "sequence_sha256": _sha256_text(cassette_sequence),
             }
         )
 
@@ -354,7 +329,6 @@ def _build_record(
             parts_design_id=design_id,
             source_type=source_type,
             expression_score=score,
-            selection_sha256=selection_fingerprint,
             junction_policy=JUNCTION_POLICY,
         ),
     )
@@ -371,7 +345,6 @@ def _build_record(
                 cassette_index=item["cassette_index"],
                 parts_design_id=design_id,
                 protein_accessions=",".join(item["protein_accessions"]),
-                sequence_sha256=item["sequence_sha256"],
             ),
         )
         for item in cassette_ranges
@@ -386,7 +359,6 @@ def _build_record(
         "expression_regime": str(design.get("expression_regime") or ""),
         "record_id": record_id,
         "length_bp": len(whole_sequence),
-        "sequence_sha256": audit["sequence_sha256"],
         "cassette_count": len(cassette_ranges),
         "component_count": component_count,
         "cassette_ranges": cassette_ranges,
@@ -399,7 +371,7 @@ def _write_and_validate_record(
     path: Path,
     record: SeqRecord,
     metadata: Mapping[str, Any],
-) -> str:
+) -> None:
     written = SeqIO.write(record, path, "genbank")
     if written != 1:
         raise ValueError(f"failed to write one GenBank record: {path}")
@@ -409,8 +381,6 @@ def _write_and_validate_record(
         raise ValueError(f"could not read back generated GenBank: {path}") from exc
     if parsed.id != record.id or str(parsed.seq).upper() != str(record.seq).upper():
         raise ValueError(f"generated GenBank sequence changed during round trip: {path}")
-    if _sha256_text(str(parsed.seq).upper()) != metadata["sequence_sha256"]:
-        raise ValueError(f"generated GenBank sequence hash is invalid: {path}")
     if len(parsed.features) != len(record.features):
         raise ValueError(f"generated GenBank feature table is incomplete: {path}")
     expected_features = [
@@ -423,7 +393,6 @@ def _write_and_validate_record(
     ]
     if parsed_features != expected_features:
         raise ValueError(f"generated GenBank feature coordinates changed: {path}")
-    return _sha256_file(path)
 
 
 def _is_safe_child(path: Path, root: Path) -> bool:
@@ -437,40 +406,6 @@ def _remove_transaction_path(path: Path, root: Path, allowed_prefix: str) -> Non
     if not _is_safe_child(path, root) or not path.name.startswith(allowed_prefix):
         raise ValueError(f"refusing to remove unsafe construct transaction path: {path}")
     shutil.rmtree(path)
-
-
-def _current_artifacts_match(
-    current: Any,
-    desired: Mapping[str, Any],
-    target_dir: Path,
-) -> bool:
-    if not isinstance(current, Mapping) or dict(current) != dict(desired):
-        return False
-    expected_names = {
-        Path(str(item["path"])).name for item in desired.get("constructs", [])
-    }
-    if not target_dir.is_dir():
-        return False
-    entries = list(target_dir.iterdir())
-    actual_names = {path.name for path in entries}
-    if actual_names != expected_names:
-        return False
-    if any(not path.is_file() for path in entries):
-        return False
-    for item in desired.get("constructs", []):
-        path = target_dir / Path(str(item["path"])).name
-        if not path.is_file() or _sha256_file(path) != item["file_sha256"]:
-            return False
-        try:
-            parsed = SeqIO.read(path, "genbank")
-        except Exception:
-            return False
-        if (
-            len(parsed.seq) != int(item["length_bp"])
-            or _sha256_text(str(parsed.seq).upper()) != item["sequence_sha256"]
-        ):
-            return False
-    return True
 
 
 @dataclass(slots=True)
@@ -576,26 +511,21 @@ def prepare_expression_constructs(
             record, metadata = _build_record(
                 design,
                 context,
-                str(selection_payload["selection_fingerprint"]),
             )
             filename = f"design_{int(design['design_id']):03d}.gb"
             staged_path = staging_dir / filename
-            file_hash = _write_and_validate_record(staged_path, record, metadata)
+            _write_and_validate_record(staged_path, record, metadata)
             constructs.append(
                 {
                     **metadata,
                     "format": "genbank",
                     "path": f"{EXPRESSION_CONSTRUCTS_DIRNAME}/{filename}",
-                    "file_sha256": file_hash,
                 }
             )
         section = {
             "schema_version": ASSEMBLED_EXPRESSION_CONSTRUCTS_SCHEMA_VERSION,
             "status": "assembled",
             "source": "expression_assemble",
-            "source_parts_selection_fingerprint": selection_payload[
-                "selection_fingerprint"
-            ],
             "target_compound_id": context.target_compound_id,
             "junction_policy": JUNCTION_POLICY,
             "linker_sequence": "",
@@ -603,26 +533,14 @@ def prepare_expression_constructs(
             "design_count": len(constructs),
             "constructs": constructs,
         }
-        artifacts_match = _current_artifacts_match(
-            current_section,
-            section,
-            target_dir,
-        )
-        is_repair = (
-            isinstance(current_section, Mapping)
-            and dict(current_section) == section
-            and not artifacts_match
-        )
         transaction = ExpressionConstructTransaction(
             project_root=root,
             target_dir=target_dir,
             staging_dir=staging_dir,
             section=section,
-            needs_install=not artifacts_match,
-            is_repair=is_repair,
+            needs_install=True,
+            is_repair=False,
         )
-        if artifacts_match:
-            transaction.cleanup_staging()
         return transaction
     except Exception:
         _remove_transaction_path(

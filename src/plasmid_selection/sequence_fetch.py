@@ -154,6 +154,16 @@ def validate_genbank_bytes(
             f"expected one GenBank record, found {len(records)}"
         )
     record = records[0]
+    accession = str(template.get("source_record_id") or "").strip().upper()
+    source = str(template.get("source") or "").strip().lower()
+    source_url = str(template.get("source_url") or "").lower()
+    if accession and _ACCESSION_RE.fullmatch(accession) and (
+        source == "ncbi" or "ncbi.nlm.nih.gov" in source_url
+    ):
+        actual = str(record.id or "").strip().upper()
+        matches = actual == accession if "." in accession else actual.split(".", 1)[0] == accession
+        if not matches:
+            raise PlasmidSequenceError("downloaded GenBank accession does not match source record")
     sequence = str(record.seq).upper()
     if not sequence or set(sequence) - set("ACGT"):
         raise PlasmidSequenceError(
@@ -171,26 +181,9 @@ def validate_genbank_bytes(
             f"sequence length mismatch: expected {expected_length}, got {len(sequence)}"
         )
 
-    content_hash = hashlib.sha256(sequence.encode("ascii")).hexdigest()
-    canonical_hash = canonical_circular_sha256(sequence)
-    expected_content_hash = str(
-        template.get("sequence_content_sha256") or ""
-    ).strip().lower()
-    expected_canonical_hash = str(
-        template.get("canonical_sequence_sha256") or ""
-    ).strip().lower()
-    content_matches = content_hash == expected_content_hash
-    canonical_matches = canonical_hash == expected_canonical_hash
-    if not content_matches and not canonical_matches:
-        raise PlasmidSequenceError(
-            "downloaded sequence does not match the audited content/canonical SHA-256"
-        )
     return DownloadedSequence(
         content=content,
         length_bp=len(sequence),
-        sequence_content_sha256=content_hash,
-        canonical_sequence_sha256=canonical_hash,
-        file_sha256=hashlib.sha256(content).hexdigest(),
         source_download_url=source_download_url,
     )
 

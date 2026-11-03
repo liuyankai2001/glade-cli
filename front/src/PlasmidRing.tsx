@@ -127,20 +127,18 @@ export function PlasmidRing({
   const focused = outer.find(
     (part) => selectable(part) && selectionKey(part) === selected,
   );
-  const sourceFingerprint = useRef(preview?.source_fingerprint);
+  const sourceRevision = useRef(preview?.manifest_revision);
   useEffect(() => {
     if (selected && !focused) setSelected(null);
   }, [selected, !!focused]);
   useEffect(() => {
-    const next = preview?.source_fingerprint;
-    // A provisional geometry has no fingerprint; arriving validation should not
-    // discard its selection. A changed verified source does invalidate it.
-    if (next && sourceFingerprint.current && next !== sourceFingerprint.current) {
+    const next = preview?.manifest_revision;
+    if (next != null && sourceRevision.current != null && next !== sourceRevision.current) {
       setSelected(null);
     }
-    if (next) sourceFingerprint.current = next;
-  }, [preview?.source_fingerprint]);
-  useEffect(() => setSelected(null), [construct?.sequence_sha256]);
+    if (next != null) sourceRevision.current = next;
+  }, [preview?.manifest_revision]);
+  useEffect(() => setSelected(null), [construct?.id]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelected(null);
@@ -158,7 +156,7 @@ export function PlasmidRing({
     length,
     componentOrder,
     zoom,
-    preview?.source_fingerprint || construct?.sequence_sha256,
+    preview?.manifest_revision ?? construct?.id,
     outer.map((part) => [
       part.id,
       part.kind,

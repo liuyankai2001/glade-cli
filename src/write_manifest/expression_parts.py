@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import re
@@ -28,7 +27,7 @@ from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 
-PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v2"
+PARTS_SELECTION_SCHEMA_VERSION = "parts_selection.v3"
 PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_parts_draft",
     "assembled_expression_cassettes",
@@ -36,6 +35,7 @@ PARTS_SELECTION_DOWNSTREAM_SECTIONS = (
     "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
 _SELECTION_TOKEN = re.compile(r"^[0-9]+(?::[0-9]+)?$")
 
@@ -120,11 +120,7 @@ def _part_sequence_valid(part: Mapping[str, Any], role: str) -> bool:
     sequence = str(part.get("sequence") or "").strip().upper()
     if not sequence or set(sequence) - set("ACGT"):
         return False
-    expected_hash = hashlib.sha256(sequence.encode("utf-8")).hexdigest()
-    return (
-        part.get("sequence_sha256") == expected_hash
-        and int(part.get("length_bp") or 0) == len(sequence)
-    )
+    return int(part.get("length_bp") or 0) == len(sequence)
 
 
 def _validate_design_structure(
@@ -177,8 +173,6 @@ def _validate_design_structure(
                 raise ValueError(f"表达元件方案 {design_id} 包含无效 gene")
             if str(raw_gene.get("accession") or "") != expected_cds.accession:
                 raise ValueError(f"表达元件方案 {design_id} 的 CDS 顺序已经变化")
-            if raw_gene.get("cds_sequence_sha256") != expected_cds.sequence_sha256:
-                raise ValueError(f"表达元件方案 {design_id} 的 CDS 已经变化")
             if int(raw_gene.get("cds_length_nt") or 0) != len(expected_cds.sequence):
                 raise ValueError(f"表达元件方案 {design_id} 的 CDS 长度无效")
             rbs = raw_gene.get("rbs")
@@ -234,18 +228,8 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("表达元件候选方案缺少 source")
-    if source.get("context_input_fingerprint") != context.input_fingerprint:
-        raise ValueError(
-            "表达元件候选方案与当前 CDS 或表达盒不一致，请重新运行 "
-            "expression --design --parts"
-        )
-    if (
-        source.get("expression_box_selection_fingerprint")
-        != context.expression_box_selection_fingerprint
-        or source.get("cds_selection_source_fingerprint")
-        != context.cds_selection_source_fingerprint
-    ):
-        raise ValueError("表达元件候选方案的上游来源已经变化")
+    if source.get("manifest_revision") != context.manifest_revision:
+        raise ValueError("表达元件候选方案的 manifest revision 已变化，请重新计算")
     ranking = artifact.get("ranking")
     if not isinstance(ranking, Mapping):
         raise ValueError("表达元件候选方案缺少 ranking")
@@ -321,10 +305,7 @@ def _recommended_draft(selected, artifact, context, manifest):
                         "name": design.get("name", ""), "recommendation": recommendation,
                         "cassettes": cassettes})
     source = {
-        "expression_box_selection_fingerprint": context.expression_box_selection_fingerprint,
-        "cds_selection_source_fingerprint": context.cds_selection_source_fingerprint,
         "recommendation_artifact": "expression_box/expression_parts_designs.json",
-        "recommendation_input_fingerprint": artifact["source"]["input_fingerprint"],
         "recommendation_algorithm_version": artifact["algorithm_version"],
     }
     return make_parts_draft(target=context.target_compound_id, source=source,
@@ -365,8 +346,6 @@ def _write_prepared_selection(config):
                 write_bytes_atomic(snapshot, content)
         if path.read_bytes() != original_manifest or artifact_path.read_bytes() != artifact_bytes:
             raise ValueError("manifest 或推荐候选文件在确认时发生变化，请重试")
-        if load_expression_parts_context(path, context.project_root).input_fingerprint != context.input_fingerprint:
-            raise ValueError("CDS 在确认元件时发生变化，请重试")
         updated = update_design_manifest(
             path, target_compound_id=target, sections={"expression_parts_draft": draft},
             discard_sections=discard, expected_revision=context.manifest_revision,

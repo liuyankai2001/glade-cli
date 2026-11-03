@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 from collections.abc import Mapping
@@ -20,7 +19,7 @@ from src.expression_box.ostir_adapter import predict_rbs_context
 from src.expression_box.parts_manifest_adapter import load_expression_parts_context
 from src.expression_box.parts_preparation import (
     SELECTED_PARTS_PATH, SELECTED_PARTS_SCHEMA, bind_cds, make_parts_draft,
-    normalize_parts_draft, project_file, read_part_sequence, stable_hash,
+    normalize_parts_draft, project_file, read_part_sequence,
 )
 from src.expression_box.sequence_audit import audit_expression_sequence
 from src.pathway_analyze.target_id import validate_target_compound_id
@@ -31,7 +30,7 @@ from src.write_manifest.store import read_design_manifest, update_design_manifes
 
 
 ASSEMBLY_DOWNSTREAM = (
-    "assembled_expression_cassettes", "plasmid_selection", "final_assembly_plan", "final_assembly",
+    "assembled_expression_cassettes", "plasmid_selection", "final_assembly_plan", "final_assembly", "final_design_report",
 )
 
 
@@ -49,7 +48,6 @@ def _prediction_current(ostir, rbs_sequence, cassette, index):
             math.isfinite(expression) and expression > 0 and math.isfinite(energy)
             and type(ostir["unintended_start_count"]) is int and ostir["unintended_start_count"] >= 0
             and ostir.get("intended_start_position") == len(upstream) + len(rbs_sequence) + 1
-            and ostir.get("context_sha256") == hashlib.sha256(sequence.encode("utf-8")).hexdigest()
             and ostir.get("context_parameters", parameters) == parameters
         )
     except (KeyError, TypeError, ValueError):
@@ -88,8 +86,7 @@ def _normalize_design(prepared, context, source_type, guarded, predictor):
         for index, cds in enumerate(cassette.cds):
             reference = raw.get("optimized_cds_by_accession", {}).get(cds.accession)
             if reference is not None and (
-                reference.get("sequence_sha256") != cds.sequence_sha256
-                or reference.get("length_nt") != len(cds.sequence)
+                reference.get("length_nt") != len(cds.sequence)
                 or project_file(context.project_root, reference.get("path")) != cds.path.resolve()
             ):
                 raise ValueError(f"{cds.accession} 的当前 CDS 引用已变化，请更新元件准备记录")
@@ -108,7 +105,7 @@ def _normalize_design(prepared, context, source_type, guarded, predictor):
                 prediction_changed = True
             rbs.pop("ostir", None)
             rbs.pop("ostir_status", None)
-            genes.append({"accession": cds.accession, "cds_sequence_sha256": cds.sequence_sha256,
+            genes.append({"accession": cds.accession,
                           "cds_length_nt": len(cds.sequence), "optimized_cds": copy.deepcopy(reference),
                           "rbs": rbs, "ostir": copy.deepcopy(ostir)})
             chunks.extend((rbs["sequence"], cds.sequence))
@@ -125,8 +122,7 @@ def _normalize_design(prepared, context, source_type, guarded, predictor):
         design["cassettes"].append({"cassette_index": cassette.cassette_index,
                                    "promoter": promoter, "terminator": terminator, "genes": genes,
                                    "sequence_audit": audit,
-                                   "assembled_sequence": {"stored": False, "length_nt": len(sequence),
-                                                          "sequence_sha256": audit["sequence_sha256"]}})
+                                   "assembled_sequence": {"stored": False, "length_nt": len(sequence)}})
 
     recommendation = prepared.get("recommendation", {})
     fallback = 50.0
@@ -160,20 +156,14 @@ def _selection_payload(designs, draft, context, snapshot_bytes):
                    "expression_success_score": design.get("expression_success_score"),
                    "expression_regime": design.get("expression_regime", ""),
                    "expression_burden": expression_burden_summary(design["expression_burden"]),
-                   "system_recommended": draft["source_type"] == "recommended",
-                   "design_fingerprint": stable_hash(design)} for design in designs]
-    content = {"context_input_fingerprint": context.input_fingerprint,
-               "draft_fingerprint": draft["draft_fingerprint"], "design_references": references}
-    return {"schema_version": "parts_selection.v2", "status": "selected",
+                   "system_recommended": draft["source_type"] == "recommended"} for design in designs]
+    return {"schema_version": "parts_selection.v3", "status": "selected",
             "selection_status": "user_selected", "source_type": draft["source_type"],
             "selected_design_ids": [d["design_id"] for d in designs],
             "primary_design_id": designs[0]["design_id"], "design_count": len(designs),
-            "selection_fingerprint": stable_hash(content), "design_references": references,
+            "design_references": references,
             "source": {**draft["source"], "artifact": SELECTED_PARTS_PATH,
-                       "artifact_file_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
-                       "designs_schema_version": SELECTED_PARTS_SCHEMA,
-                       "context_input_fingerprint": context.input_fingerprint,
-                       "draft_fingerprint": draft["draft_fingerprint"]},
+                       "designs_schema_version": SELECTED_PARTS_SCHEMA},
             "warnings": list(dict.fromkeys(w for d in designs for w in d.get("warnings", [])))}
 
 
@@ -182,6 +172,8 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
     snapshot_path = project_file(root, SELECTED_PARTS_PATH)
     with ArtifactTransaction([snapshot_path], lock_path=root / "protein_to_cds" / ".gc_optimization.lock") as files:
         path = Path(config.manifest_output_path).expanduser().resolve()
+        from src.expression_box.pipeline import _invalidate_calculation
+        _invalidate_calculation(path, grouping=False, preserve_draft=True)
         original_manifest = path.read_bytes()
         manifest = read_design_manifest(path)
         target = validate_target_compound_id(config.target_name)
@@ -200,11 +192,8 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
         if not isinstance(raw_draft, Mapping):
             raise ValueError("请先上传表达元件，或使用 write --expression-parts 确认推荐方案")
         draft = normalize_parts_draft(raw_draft)
-        if draft["target_compound_id"] != target or (
-            draft["source"].get("expression_box_selection_fingerprint") != context.expression_box_selection_fingerprint
-            or draft["source"].get("cds_selection_source_fingerprint") != context.cds_selection_source_fingerprint
-        ):
-            raise ValueError("元件准备记录与当前表达盒分组或 CDS 来源不一致")
+        if draft["target_compound_id"] != target:
+            raise ValueError("元件准备记录与当前目标不一致")
         guarded = {cds.path: cds.path.read_bytes() for c in context.cassettes for cds in c.cds}
         proteins = {row["accession"]: row for row in manifest["cds_selection"]["proteins"]}
         for design in draft["designs"]:
@@ -220,7 +209,7 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
             bind_cds(design["cassettes"], proteins)
         draft = make_parts_draft(target=target, source=draft["source"], source_type=draft["source_type"], designs=draft["designs"])
         snapshot = {"schema_version": SELECTED_PARTS_SCHEMA, "target_compound_id": target,
-                    "source": {**draft["source"], "context_input_fingerprint": context.input_fingerprint},
+                    "source": dict(draft["source"]),
                     "source_type": draft["source_type"], "designs": designs}
         snapshot_bytes = (json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
         selection = _selection_payload(designs, draft, context, snapshot_bytes)
@@ -232,8 +221,6 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
         try:
             if path.read_bytes() != original_manifest or any(p.read_bytes() != content for p, content in guarded.items()):
                 raise ValueError("manifest、CDS 或元件快照在构建时发生变化，请重试")
-            if load_expression_parts_context(path, root).input_fingerprint != context.input_fingerprint:
-                raise ValueError("当前 CDS 或表达盒上下文在构建时发生变化，请重试")
             transaction.install()
             if not snapshot_path.is_file() or snapshot_path.read_bytes() != snapshot_bytes:
                 write_bytes_atomic(snapshot_path, snapshot_bytes)

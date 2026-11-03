@@ -140,7 +140,6 @@ def _translate_message(value: str) -> str:
     replacements = (
         ("rerun main-enzyme", "请重新运行 main-enzyme"),
         ("rerun main-enzyme-sets", "请重新运行 main-enzyme-sets"),
-        ("selected route fingerprint changed", "所选路线指纹已经变化"),
         ("selected solution ID changed", "所选路径编号已经变化"),
         ("selected expansion depth changed", "所选扩展深度已经变化"),
     )
@@ -348,7 +347,6 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
         },
         "推荐理由": _translated_messages(enzyme_set.reasons),
         "警告": _translated_messages(enzyme_set.warnings),
-        "组合指纹": enzyme_set.set_fingerprint,
     }
 
 

@@ -22,9 +22,6 @@ from src.main_protein_selection.models import (
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
-from src.main_protein_selection.provenance import (
-    solution_fingerprint,
-)
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.write_manifest.store import (
     read_design_manifest,
@@ -32,7 +29,7 @@ from src.write_manifest.store import (
 )
 
 
-MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v5"
+MAIN_ENZYME_MANIFEST_SCHEMA_VERSION = "main_enzyme_manifest_selection.v6"
 
 MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "protein_selection",
@@ -50,6 +47,7 @@ MAIN_ENZYME_DOWNSTREAM_SECTIONS = (
     "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
 
 _SUPPORTED_DIRECTIONS = {
@@ -110,7 +108,7 @@ def _positive_set_id(config: Any) -> int:
 
 def _current_solution_context(
     manifest: Mapping[str, Any],
-) -> tuple[int, int, list[dict[str, Any]], str]:
+) -> tuple[int, int, list[dict[str, Any]]]:
     solution_id, steps = get_solution_steps(dict(manifest))
     solution = manifest.get("solution")
     if not isinstance(solution, Mapping):
@@ -125,7 +123,6 @@ def _current_solution_context(
         solution_id,
         expansion_depth,
         steps,
-        solution_fingerprint(solution_id, steps),
     )
 
 
@@ -277,7 +274,6 @@ def _manifest_payload(
         "schema_version": MAIN_ENZYME_MANIFEST_SCHEMA_VERSION,
         "selection_status": selection_status,
         "selected_set_id": selected.set_id,
-        "selected_set_fingerprint": selected.set_fingerprint,
         "selected_solution_id": result.selected_solution_id,
         "expansion_depth": result.expansion_depth,
         "chassis_key": result.chassis_key,
@@ -287,21 +283,6 @@ def _manifest_payload(
             ),
             "sets_schema_version": result.schema_version,
             "algorithm_version": result.algorithm_version,
-            "solution_fingerprint": result.solution_fingerprint,
-            "candidate_pool_fingerprint": (
-                result.candidate_pool_fingerprint
-            ),
-            "input_fingerprint": result.input_fingerprint,
-            "candidate_selection_fingerprint": (
-                result.source_artifacts.get(
-                    "candidate_selection_fingerprint", ""
-                )
-            ),
-            "candidate_detail_fingerprint": (
-                result.source_artifacts.get(
-                    "candidate_detail_fingerprint", ""
-                )
-            ),
         },
         "coverage": {
             "complete": selected.coverage_complete,
@@ -369,24 +350,26 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
             f"与当前输入目标 {target_compound} 不一致"
         )
 
-    solution_id, depth, steps, route_fingerprint = _current_solution_context(manifest)
+    solution_id, depth, steps = _current_solution_context(manifest)
 
     result = _read_sets(_sets_path(config))
+    if result.expansion_depth != depth or result.selected_solution_id != solution_id:
+        raise ValueError("Selected route changed; rerun main-enzyme and main-enzyme-sets")
     genome_path = getattr(config, "genome_file", UNSPECIFIED_GENOME)
     genome_filter = validate_genome_ec_filter(
         result.genome_ec_filter, heterologous_requirements(steps), result.chassis_key, genome_path,
     )
     if genome_filter is not None:
-        if (result.solution_fingerprint != route_fingerprint or result.expansion_depth != depth):
-            raise ValueError("Selected route changed; rerun main-enzyme and main-enzyme-sets")
-        current = read_current_genome_selection(manifest_path, genome_path)
-        from src.main_protein_selection.build_main_enzyme_sets import main_enzyme_selection_fingerprint
-        if (current is None or current.genome_ec_filter != genome_filter
-                or result.source_artifacts.get("candidate_selection_fingerprint") != main_enzyme_selection_fingerprint(current)):
-            raise ValueError("Genome candidate results changed; rerun main-enzyme-sets")
         if genome_filter.no_external_enzymes_required:
             raise ValueError("无需外源酶和 CDS 构建，无需选择主酶组合")
     selected = _select_set(result, set_id)
+    required = {int(step["step_index"]): str(step.get("reaction_id") or "") for step in heterologous_requirements(steps)}
+    external = set(genome_filter.external_required_step_indexes) if genome_filter is not None else set(required)
+    if set(result.required_step_indexes) != external or any(
+        assignment.step_index not in required or assignment.reaction_id != required[assignment.step_index]
+        for assignment in selected.step_assignments
+    ):
+        raise ValueError("Selected route steps or reactions changed; rerun main-enzyme and main-enzyme-sets")
     payload = _manifest_payload(
         result,
         selected,
@@ -406,11 +389,13 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
     if unchanged:
         updated_manifest = manifest
     else:
+        from src.main_protein_selection.lifecycle import retained_uploaded_draft
         updated_manifest = update_design_manifest(
             manifest_path,
             target_compound_id=target_compound,
-            sections={"main_enzyme_selection": payload},
+            sections={"main_enzyme_selection": payload, **retained_uploaded_draft(manifest)},
             discard_sections=MAIN_ENZYME_DOWNSTREAM_SECTIONS,
+            expected_revision=int(manifest.get("revision", 0)),
         )
 
     proteins = sorted(

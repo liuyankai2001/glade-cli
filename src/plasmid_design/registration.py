@@ -7,8 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.final_assemble_execute.common import (
-    sha256_file,
-    sha256_sequence,
     validate_written_outputs,
     write_fasta,
     write_genbank,
@@ -21,18 +19,13 @@ from src.final_assemble_plan.config import (
 from src.final_assemble_plan.get_final_assembly_context import (
     build_final_assembly_context,
 )
-from src.plasmid_selection.get_plasmid_context import stable_json_hash
+from src.plasmid_selection.models import without_audit_hashes
 
-DESIGN_VERSION = "component_plasmid_design.v7"
+DESIGN_VERSION = "component_plasmid_design.v8"
 DESIGN_WARNING = "这些文件是计算拼接设计，实际质粒需制备并验证。"
 PROTECTIVE_WARNING = (
     "制备片段两端已加入 6 bp 保护碱基，实验前请核对所选酶的末端切割条件。"
 )
-
-
-def _signed(payload: dict) -> dict:
-    payload["selection_fingerprint"] = stable_json_hash(payload)
-    return payload
 
 
 def _file_info(
@@ -41,15 +34,12 @@ def _file_info(
     info = {
         "path": path.relative_to(root).as_posix(),
         "format": file_format,
-        "file_sha256": sha256_file(path),
         "label": label,
     }
     if sequence is not None:
         info.update(
             {
                 "length_bp": len(sequence),
-                "sequence_sha256": sha256_sequence(sequence),
-                "sequence_content_sha256": sha256_sequence(sequence),
             }
         )
     return info
@@ -121,15 +111,13 @@ def export_design(
             )
     source_provenance = dict(snapshot.catalog.scaffold["provenance"])
     # Mapping proxies are thawed via JSON-safe source fields, never mutated.
-    source_provenance = {
+    source_provenance = without_audit_hashes({
         k: dict(v) if hasattr(v, "items") else v for k, v in source_provenance.items()
-    }
+    })
     component_design = {
         "assembly_schema_version": 2,
         "generation_id": generation_id,
         "algorithm_version": DESIGN_VERSION,
-        "source_fingerprint": snapshot.fingerprint,
-        "catalog_fingerprint": snapshot.catalog.fingerprint,
         "resistance_id": resistance.id,
         "replication_id": replication.id,
         "t0_id": design.preview["t0_id"],
@@ -142,9 +130,8 @@ def export_design(
         ),
         "preparation_files": preparation_files,
     }
-    selection = _signed(
-        {
-            "schema_version": "plasmid_selection.v2",
+    selection = {
+            "schema_version": "plasmid_selection.v3",
             "status": "selected",
             "selection_status": "user_selected",
             "source": "web_component_design",
@@ -191,15 +178,9 @@ def export_design(
                     "experimental_validation": "not_demonstrated_for_this_new_design",
                 },
             },
-            "provenance": {
-                "context_input_fingerprint": source.input_fingerprint,
-                "parts_selection_fingerprint": source.parts_selection_fingerprint,
-                "assembled_constructs_fingerprint": source.assembled_constructs_fingerprint,
-            },
             "component_design": component_design,
             "warnings": warnings,
         }
-    )
     final_context = build_final_assembly_context(source, selection)
     construct = final_context.constructs[0]
     plan = deepcopy(design.plan)
@@ -208,40 +189,16 @@ def export_design(
             "backbone": {
                 "path": backbone_file["path"],
                 "length_bp": final_context.backbone.length_bp,
-                "file_sha256": final_context.backbone.file_sha256,
-                "sequence_content_sha256": final_context.backbone.sequence_content_sha256,
             },
             "insert": {
                 "path": construct.path.relative_to(root).as_posix(),
                 "length_bp": construct.length_bp,
-                "file_sha256": construct.file_sha256,
-                "sequence_sha256": construct.sequence_sha256,
             },
             "selection_reason": "user_selected_modules_and_manifest_enzymes",
             "warnings": warnings,
         }
     )
-    plan["plan_fingerprint"] = stable_json_hash(plan)
-    plan_source = {
-        "context_input_fingerprint": final_context.input_fingerprint,
-        "parts_selection_fingerprint": source.parts_selection_fingerprint,
-        "assembled_constructs_fingerprint": source.assembled_constructs_fingerprint,
-        "plasmid_selection_fingerprint": selection["selection_fingerprint"],
-        "request_fingerprint": stable_json_hash(
-            {
-                "source": snapshot.fingerprint,
-                "resistance": resistance.id,
-                "replication": replication.id,
-                "component_order": design.preview["component_order"],
-                "components": components,
-                "assembly_schema_version": 2,
-                "t0_id": design.preview["t0_id"],
-                "t1_id": design.preview["t1_id"],
-                "enzymes": design.preview["enzymes"],
-            }
-        ),
-        "plan_set_fingerprint": stable_json_hash([plan]),
-    }
+    plan_source = {"generation_id": generation_id}
     plan_path = directory / "assembly_plan.json"
     plan_artifact = {
         "schema_version": ASSEMBLY_PLAN_RECOMMENDATIONS_SCHEMA_VERSION,
@@ -253,15 +210,13 @@ def export_design(
         "requested_method": "restriction",
         "design_count": 1,
         "plans": [plan],
-        "plan_set_fingerprint": plan_source["plan_set_fingerprint"],
         "source": plan_source,
         "warnings": warnings,
     }
     write_json_atomic(plan_path, plan_artifact)
     plan_file = _file_info(plan_path, root, "组装计划 JSON", "json")
-    plan_selection = _signed(
-        {
-            "schema_version": "final_assembly_plan.v2",
+    plan_selection = {
+            "schema_version": "final_assembly_plan.v3",
             "status": "selected",
             "selection_mode": "user_selected_components",
             "requested_method": "restriction",
@@ -276,7 +231,6 @@ def export_design(
             },
             "warnings": warnings,
         }
-    )
     final_sequence = str(design.final_record.seq)
     final_genbank = directory / "final_plasmid.gb"
     final_fasta = directory / "final_plasmid.fasta"
@@ -303,26 +257,18 @@ def export_design(
     write_json_atomic(
         assembly_path,
         {
-            "schema_version": "final_assembly_design_report.v1",
+            "schema_version": "final_assembly_design_report.v2",
             "status": "assembled_in_silico",
             "algorithm_version": DESIGN_VERSION,
             "target_compound_id": source.target_compound_id,
             "parts_design_id": design_id,
-            "source": {
-                "final_assembly_plan_selection_fingerprint": plan_selection[
-                    "selection_fingerprint"
-                ],
-                "plan_fingerprint": plan["plan_fingerprint"],
-                "backbone_file_sha256": final_context.backbone.file_sha256,
-                "insert_file_sha256": construct.file_sha256,
-            },
+            "source": {"generation_id": generation_id},
             "assembly_method": "restriction",
             "backbone_linearization": plan["backbone_linearization"],
             "target": plan["target"],
             "final_construct": {
                 "length_bp": len(final_sequence),
                 "topology": "circular",
-                "sequence_sha256": sha256_sequence(final_sequence),
                 "files": final_files,
             },
             "validation": validation,
@@ -337,22 +283,13 @@ def export_design(
         "status": "assembled_in_silico",
         "assembly_method": "restriction",
         "enzyme_summary": plan["backbone_linearization"]["enzyme_summary"],
-        "plan_fingerprint": plan["plan_fingerprint"],
         "length_bp": len(final_sequence),
         "topology": "circular",
-        "sequence_sha256": sha256_sequence(final_sequence),
         "feature_count": len(design.final_record.features),
         "files": final_files,
         "validation": validation,
         "warnings": warnings,
     }
-    bundle_fingerprint = stable_json_hash(
-        {
-            "plan_selection_fingerprint": plan_selection["selection_fingerprint"],
-            "constructs": [final_construct],
-            "algorithm_version": DESIGN_VERSION,
-        }
-    )
     report_path = directory / "design_report_zh.md"
     rows = "\n".join(
         f"| {e['role']} | {e['name']} | {e['site']} | {e['overhang']} |"
@@ -392,7 +329,7 @@ def export_design(
     write_json_atomic(
         summary_path,
         {
-            "schema_version": "final_assembly_run_summary.v1",
+            "schema_version": "final_assembly_run_summary.v2",
             "status": "complete",
             "generated_at": generated_at,
             "target_compound_id": source.target_compound_id,
@@ -402,14 +339,12 @@ def export_design(
             "method_counts": {"restriction": 1},
             "constructs": [final_construct],
             "failures": [],
-            "bundle_fingerprint": bundle_fingerprint,
             "warnings": warnings,
         },
     )
     summary_file = _file_info(summary_path, root, "生成汇总 JSON", "json")
-    final_section = _signed(
-        {
-            "schema_version": "final_assembly.v2",
+    final_section = {
+            "schema_version": "final_assembly.v3",
             "status": "complete",
             "result_kind": "in_silico_theoretical_assembly",
             "source": "web_component_design",
@@ -421,34 +356,24 @@ def export_design(
             "failed_count": 0,
             "method_counts": {"restriction": 1},
             "output_dir": directory.relative_to(root).as_posix(),
-            "source_fingerprints": {
-                "final_assembly_plan_selection_fingerprint": plan_selection[
-                    "selection_fingerprint"
-                ],
-                "plasmid_selection_fingerprint": selection["selection_fingerprint"],
-                "assembled_constructs_fingerprint": source.assembled_constructs_fingerprint,
-            },
+            "generation_id": generation_id,
             "constructs": [final_construct],
             "failures": [],
-            "bundle_fingerprint": bundle_fingerprint,
             "warnings": warnings,
             "run_summary_file": summary_file,
             "report_file": report_file,
         }
-    )
-    design_report = _signed(
-        {
-            "schema_version": "final_design_report.v2",
+    design_report = {
+            "schema_version": "final_design_report.v3",
             "status": "exported",
             "source": "web_component_design",
             "generated_at": generated_at,
             "language": "zh-CN",
             "generated_by": "deterministic_template",
             "report_file": report_file,
-            "source_final_assembly_bundle_fingerprint": bundle_fingerprint,
+            "generation_id": generation_id,
             "warnings": [],
         }
-    )
     return {
         "plasmid_selection": selection,
         "final_assembly_plan": plan_selection,

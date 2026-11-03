@@ -15,10 +15,7 @@ from src.plasmid_selection.config import (
     SUPPORTED_ASSEMBLY_POLICIES,
     SUPPORTED_PRIORITIES,
 )
-from src.plasmid_selection.models import PlasmidContext
-
-
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+from src.plasmid_selection.models import PlasmidContext, without_audit_hashes
 
 
 def normalize_marker_name(value: Any) -> str:
@@ -131,15 +128,6 @@ def hard_filter_reason(
         length_bp = 0
     if length_bp < 1:
         return "invalid_backbone_length"
-    content_hash = str(template.get("sequence_content_sha256") or "").lower()
-    canonical_hash = str(template.get("canonical_sequence_sha256") or "").lower()
-    source_file_hash = str(template.get("source_file_sha256") or "").lower()
-    if (
-        not _SHA256_RE.fullmatch(content_hash)
-        or not _SHA256_RE.fullmatch(canonical_hash)
-        or not _SHA256_RE.fullmatch(source_file_hash)
-    ):
-        return "missing_sequence_hashes"
     if not str(template.get("source") or "").strip():
         return "missing_sequence_source"
     if not str(template.get("sequence_file") or "").strip():
@@ -294,7 +282,7 @@ def score_template(
                 "estimated_final_length_bp": final_length,
                 "score": total,
                 "breakdown": breakdown,
-                "expression_burden": construct.burden.fingerprint_payload(),
+                "expression_burden": construct.burden.to_payload(),
                 "copy_load_fit_details": copy_load_details,
             }
         )
@@ -359,7 +347,7 @@ def score_template(
         "confidence": "medium",
         "rationales": rationales,
         "warnings": warnings,
-        "template": dict(template),
+        "template": without_audit_hashes(dict(template)),
     }
 
 

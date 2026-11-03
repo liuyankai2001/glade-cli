@@ -8,7 +8,7 @@ from src.protein_to_cds.restriction_sites import enzyme_constraints, restriction
 from src.protein_to_cds.homopolymers import homopolymer_audit, homopolymer_constraints
 from src.protein_to_cds.sequence_constraints import (
     DNA_ALPHABET, HOMOPOLYMER_LIMIT,
-    LOCAL_GC_WINDOW_NT, gc_fraction, local_gc_values, max_homopolymer_length, sha256_text,
+    LOCAL_GC_WINDOW_NT, gc_fraction, local_gc_values, max_homopolymer_length,
 )
 
 
@@ -28,7 +28,7 @@ def audit_expression_sequence(sequence: str, enzymes=(), homopolymer_max: int | 
               "homopolymer_pass": homopolymers["passed"],
               "dnachisel_constraints_pass": problem.all_constraints_pass()}
     return {"engine": "DNA Chisel", "engine_version": version("dnachisel"),
-            "sequence_sha256": sha256_text(normalized), "length_nt": len(normalized),
+            "length_nt": len(normalized),
             "gc_percent": round(100 * gc_fraction(normalized), 8),
             "local_gc_window_nt": LOCAL_GC_WINDOW_NT,
             "local_gc_min_percent": round(100 * min(local_values), 8),

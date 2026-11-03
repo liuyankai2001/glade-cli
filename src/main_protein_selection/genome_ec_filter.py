@@ -10,7 +10,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .provenance import stable_json_hash
 from .host_registry import get_host_preset
 from .genome_identity import GenomeIdentity, read_genome_identity
 
@@ -57,24 +56,16 @@ class GenomeSupportedStep(BaseModel):
     matches: list[GenomeEcMatch] = Field(min_length=1)
 
 
-def _filter_fingerprint(payload: Mapping[str, Any]) -> str:
-    return stable_json_hash({key: value for key, value in payload.items()
-                             if key not in {"genome_file", "fingerprint"}})
-
-
 class GenomeEcFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["genome_ec_filter.v1"] = "genome_ec_filter.v1"
+    schema_version: Literal["genome_ec_filter.v2"] = "genome_ec_filter.v2"
     policy_version: Literal["complete_ec_any_source.v1"] = "complete_ec_any_source.v1"
     genome_file: str
-    genome_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    requirements_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     chassis_key: str
     record_ids: list[str]
     required_step_indexes: list[int]
     external_required_step_indexes: list[int]
     matched_steps: list[GenomeSupportedStep]
-    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_partition(self) -> "GenomeEcFilter":
@@ -86,8 +77,6 @@ class GenomeEcFilter(BaseModel):
             supported + self.external_required_step_indexes
         ) != self.required_step_indexes:
             raise ValueError("genome EC matches must partition the construction requirements")
-        if self.fingerprint != _filter_fingerprint(self.model_dump(mode="json")):
-            raise ValueError("genome EC filter fingerprint mismatch; rerun main-enzyme")
         return self
 
     @property
@@ -142,10 +131,7 @@ def build_genome_ec_filter(
     identity = genome_identity if genome_identity is not None else read_genome_identity(path)
     if identity.path != path:
         raise ValueError("genome_file identity belongs to a different path")
-    identity.assert_current()
-    before_sha = identity.genome_sha256
     record_ids, index = _genome_index(path, chassis_key, identity)
-    identity.assert_current()
     matched: list[GenomeSupportedStep] = []
     input_requirements: list[dict[str, Any]] = []
     required = sorted({int(item["step_index"]) for item in requirements})
@@ -183,13 +169,12 @@ def build_genome_ec_filter(
                          for ec, names in sorted(sources.items())],
             ))
     supported = {item.step_index for item in matched}
-    payload = {"schema_version": "genome_ec_filter.v1", "policy_version": "complete_ec_any_source.v1",
-               "genome_file": str(path), "genome_sha256": before_sha, "chassis_key": chassis_key,
-               "requirements_fingerprint": stable_json_hash(input_requirements),
+    payload = {"schema_version": "genome_ec_filter.v2", "policy_version": "complete_ec_any_source.v1",
+               "genome_file": str(path), "chassis_key": chassis_key,
                "record_ids": record_ids, "required_step_indexes": required,
                "external_required_step_indexes": sorted(set(required) - supported),
                "matched_steps": [item.model_dump(mode="json") for item in matched]}
-    return GenomeEcFilter(**payload, fingerprint=_filter_fingerprint(payload))
+    return GenomeEcFilter(**payload)
 
 
 def validate_genome_ec_filter(
@@ -210,16 +195,15 @@ def validate_genome_ec_filter(
         live = build_genome_ec_filter(saved.genome_file, requirements, chassis_key)
     except (OSError, ValueError) as exc:
         raise ValueError(f"genome_file is stale; rerun main-enzyme: {exc}") from exc
-    if live.fingerprint != saved.fingerprint:
-        raise ValueError("genome_file or construction requirements changed; rerun main-enzyme")
-    return saved
+    if live.external_required_step_indexes != saved.external_required_step_indexes:
+        raise ValueError("genome EC coverage changed; rerun main-enzyme")
+    return live
 
 
 def read_current_genome_selection(manifest_path: str | Path, genome_path: Any = UNSPECIFIED_GENOME):
     """Read the current selection only when genome filtering is relevant."""
     from .common import get_solution_steps, heterologous_requirements, read_manifest
     from .models import MainEnzymeSelectionResult
-    from .provenance import solution_fingerprint
 
     manifest_path = Path(manifest_path)
     path = manifest_path.parent / "main_protein_selection" / "main_enzyme_selection.json"
@@ -234,7 +218,7 @@ def read_current_genome_selection(manifest_path: str | Path, genome_path: Any = 
     selection = MainEnzymeSelectionResult.model_validate(raw)
     manifest = read_manifest(manifest_path)
     solution_id, steps = get_solution_steps(manifest)
-    if (selection.solution_fingerprint != solution_fingerprint(solution_id, steps)
+    if (selection.selected_solution_id != solution_id
             or selection.expansion_depth != int(manifest["solution"].get("expansion_depth") or 0)):
         raise ValueError("Selected route changed; rerun main-enzyme")
     validate_genome_ec_filter(selection.genome_ec_filter, heterologous_requirements(steps),

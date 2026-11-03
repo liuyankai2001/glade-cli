@@ -75,12 +75,11 @@ def raw_cds_metadata(item: Mapping[str, Any], report: Mapping[str, Any]) -> dict
     """Read the immutable baseline from a report, accepting legacy manifests."""
     metadata = report.get("raw_cds", item.get("raw_cds"))
     if isinstance(metadata, Mapping) and metadata.get("path"):
-        return dict(metadata)
+        return {key: metadata[key] for key in ("path", "length_nt") if key in metadata}
     metrics = report.get("raw")
-    if not isinstance(metrics, Mapping) or not metrics.get("sequence_sha256"):
+    if not isinstance(metrics, Mapping):
         return None
     return {
         "path": f"protein_to_cds/raw_cds/{item['accession']}.raw.fasta",
-        "sequence_sha256": metrics["sequence_sha256"],
         "length_nt": metrics.get("length_nt"),
     }

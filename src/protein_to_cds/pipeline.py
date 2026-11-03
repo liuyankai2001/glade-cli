@@ -7,6 +7,7 @@ import os
 import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ from src.protein_to_cds.write_protein_to_manifest import (
     write_cds_selection_to_manifest,
 )
 
-RUN_SUMMARY_SCHEMA_VERSION = "protein_to_cds.run_summary.v3"
+RUN_SUMMARY_SCHEMA_VERSION = "protein_to_cds.run_summary.v4"
 
 
 def _utc_now() -> str:
@@ -126,12 +127,20 @@ def run_protein_to_cds(
             output_root / "reports" / f"{accession}.generation.json",
         ))
     with ArtifactTransaction(paths, lock_path=output_root / ".gc_optimization.lock") as transaction:
-        return _run_batch(context, host, project_root, requested_device, motifs, transaction)
+        from src.main_protein_selection.lifecycle import invalidate_current
+        from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
+        from src.write_manifest.store import read_design_manifest
+        previous_manifest = read_design_manifest(context.manifest_path)
+        current = invalidate_current(context.manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS),
+                                     expected_revision=context.manifest_revision)
+        context = replace(context, manifest_revision=int(current.get("revision", 0)))
+        return _run_batch(context, host, project_root, requested_device, motifs, transaction, previous_manifest)
 
 
 def _run_batch(
     context: ProteinToCdsContext, host: HostProfile, project_root: Path,
     requested_device: str, motifs: tuple[str, ...], transaction: ArtifactTransaction,
+    previous_manifest: dict[str, Any],
 ) -> dict[str, Any]:
 
     output_root = project_root / "protein_to_cds"
@@ -187,7 +196,6 @@ def _run_batch(
         "target_compound_id": context.target_compound_id,
         "source_manifest": str(context.manifest_path),
         "source_manifest_revision": context.manifest_revision,
-        "source_fingerprint": context.source_fingerprint,
         "host": host.to_dict(),
         "device_request": requested_device,
         "additional_forbidden_motifs": list(motifs),
@@ -214,7 +222,6 @@ def _run_batch(
                     success.optimization.report_path,
                 ),
                 "protein_reused": success.protein.reused_existing,
-                "optimization_reused": success.optimization.reused_existing,
             }
             for success in successes
         ],
@@ -241,6 +248,7 @@ def _run_batch(
             failures=failures,
             warnings=context.warnings,
             run_summary_path=summary_path,
+            previous_manifest=previous_manifest,
         )
     except Exception as exc:
         summary["manifest_error"] = {

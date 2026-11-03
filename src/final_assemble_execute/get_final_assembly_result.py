@@ -41,7 +41,7 @@ def get_final_assembly_result(config: Any) -> dict[str, Any]:
             if isinstance(value, Mapping)
         }
         intact = bool(file_status) and all(
-            value.get("exists") and value.get("file_sha256_matches")
+            value.get("exists")
             for value in file_status.values()
         )
         if not intact:
@@ -62,7 +62,6 @@ def get_final_assembly_result(config: Any) -> dict[str, Any]:
             top_level_files[key] = inspect_file(project_root, value)
             if not (
                 top_level_files[key].get("exists")
-                and top_level_files[key].get("file_sha256_matches")
             ):
                 issue_count += 1
     return {

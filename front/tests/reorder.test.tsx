@@ -58,8 +58,7 @@ const context = {
     name: "Demo",
     host: "E. coli",
     manifest_revision: 1,
-    source_fingerprint: "source",
-  },
+    },
   ready: true,
   issues: [],
   construct: {
@@ -67,7 +66,6 @@ const context = {
     name: "Source",
     length_bp: 40,
     gc_percent: 50,
-    sequence_sha256: "source",
     features: [],
   },
   restriction_enzymes: [],
@@ -108,8 +106,6 @@ const preview: Preview = {
   sequence: "",
   length_bp: 112,
   gc_percent: 50,
-  sequence_sha256: "preview",
-  source_fingerprint: "source",
   manifest_revision: 1,
   segments,
   features: [
@@ -129,7 +125,6 @@ const result = {
   resistance_id: "amp",
   replication_id: "ori",
   component_order: defaultOrder,
-  source_fingerprint: "source",
   manifest_revision: 1,
   files: [
     {
@@ -514,7 +509,7 @@ describe("component reordering", () => {
     mounted.rerender(
       <PlasmidRing
         {...props}
-        preview={{ ...preview, source_fingerprint: "changed" }}
+        preview={{ ...preview, manifest_revision: (preview.manifest_revision ?? 0) + 1 }}
       />,
     );
     expect(screen.queryByTestId("ring-drag-ghost")).not.toBeInTheDocument();

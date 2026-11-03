@@ -7,12 +7,13 @@ from typing import Any
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
-from src.config.service_config import get_milvus_config, get_plasmid_collection_name
-from src.runtime.monitor import monitor
+from src.plasmid_selection.config import PLASMID_COLLECTION
+from src.plasmid_selection.milvus_plasmids import _client_from_environment
+from src.plasmid_selection.models import without_audit_hashes
 
 
 # 兼容工具参数默认值；环境变量与默认库名集中在 service_config.py。
-COLLECTION_NAME = get_plasmid_collection_name()
+COLLECTION_NAME = PLASMID_COLLECTION
 
 OUTPUT_FIELDS = [
     "plasmid_id",
@@ -31,7 +32,6 @@ OUTPUT_FIELDS = [
     "insert_name",
     "insert_species",
     "sequence_file",
-    "sequence_sha256",
     "length_bp",
     "topology",
     "features",
@@ -60,9 +60,6 @@ OUTPUT_FIELDS = [
     "has_expression_cargo",
     "requires_cargo_replacement",
     "normalization_applied",
-    "source_file_sha256",
-    "sequence_content_sha256",
-    "canonical_sequence_sha256",
     "source_provenance",
     "host_compatibility",
     "replication_dependencies",
@@ -91,23 +88,8 @@ def _json_error(error: str, **details: Any) -> str:
     return json.dumps({"ok": False, "error": error, **details}, ensure_ascii=False, default=str)
 
 
-def _import_milvus_client():
-    try:
-        from pymilvus import MilvusClient
-    except ImportError as exc:
-        raise RuntimeError("pymilvus is not installed or not importable.") from exc
-    return MilvusClient
-
-
-def _milvus_uri() -> str:
-    return get_milvus_config().uri
-
-
 def _milvus_client():
-    milvus_client = _import_milvus_client()
-    kwargs = get_milvus_config().client_kwargs()
-    kwargs["uri"] = _milvus_uri()
-    return milvus_client(**kwargs)
+    return _client_from_environment()
 
 
 def _escape_expr_string(value: str) -> str:
@@ -155,7 +137,17 @@ def _query_collection(collection_name: str, expr: str) -> list[dict[str, Any]]:
         output_fields=OUTPUT_FIELDS,
         limit=20,
     )
-    return [dict(row) for row in rows]
+    cleaned = []
+    for row in rows:
+        values = dict(row)
+        for key, value in values.items():
+            if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+                try:
+                    values[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
+        cleaned.append(without_audit_hashes(values))
+    return cleaned
 
 
 def _summarize_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -193,16 +185,6 @@ def get_plasmid_template_detail(
     限制：只读；不写 plasmid_selection；找不到唯一模板时返回候选供用户确认。
     """
 
-    tool_name = "get_plasmid_template_detail"
-    monitor.report_start(
-        tool_name,
-        {
-            "plasmid_id": plasmid_id,
-            "addgene_id": addgene_id,
-            "name": name,
-            "collection_name": collection_name,
-        },
-    )
     try:
         expr = _build_expr(plasmid_id, addgene_id, name)
         rows = _query_collection(collection_name, expr)
@@ -218,7 +200,6 @@ def get_plasmid_template_detail(
                 },
                 "collection_name": collection_name,
             }
-            monitor.report_end(tool_name, {"found": False, "candidate_count": 0})
             return json.dumps(result, ensure_ascii=False, default=str)
 
         exact_rows = rows
@@ -242,10 +223,8 @@ def get_plasmid_template_detail(
                 "如果需要检查用户上传或本地序列，可调用 annotate_plasmid_sequence。",
             ],
         }
-        monitor.report_end(tool_name, {"found": True, "candidate_count": len(rows)})
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
-        monitor.report_error(tool_name, exc)
         return _json_error(type(exc).__name__, message=str(exc))
 
 

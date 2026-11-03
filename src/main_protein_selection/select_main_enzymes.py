@@ -8,9 +8,7 @@ from typing import Any
 
 import requests
 
-from src.main_protein_selection.build_main_enzyme_sets import (
-    shortlist_decision_fingerprint,
-)
+from src.main_protein_selection.lifecycle import serialized_main_enzyme_run, require_revision
 from src.main_protein_selection.common import (
     PROTEIN_CANDIDATE_COLUMNS,
     STEP_CANDIDATE_COLUMNS,
@@ -58,7 +56,6 @@ from src.main_protein_selection.retropath_enzyme_selection import (
     RETROPATH_SELENZYME_EVIDENCE_SCHEMA,
     retrieve_manifest_retropath_candidates,
 )
-from src.main_protein_selection.provenance import file_sha256, solution_fingerprint
 from src.main_protein_selection.genome_ec_filter import build_genome_ec_filter, resolve_genome_path
 from src.main_protein_selection.genome_identity import read_genome_identity, resolve_genome_chassis
 from src.main_protein_selection.host_registry import get_host_preset
@@ -260,6 +257,7 @@ def _route_repair_requests_v2(
     return unique
 
 
+@serialized_main_enzyme_run
 def select_main_enzymes(
     *,
     manifest_path: str | Path,
@@ -287,7 +285,13 @@ def select_main_enzymes(
         output_path = Path(output_dir).expanduser().resolve()
         cache_path = Path(cache_dir).expanduser().resolve()
         paths = evidence_paths(output_path)
+        from src.main_protein_selection.lifecycle import invalidate_current
+        from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
+        invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
+        write_json_atomic(paths["main_enzyme_selection_json"], {"status": "running"})
+        write_json_atomic(output_path / "main_enzyme_sets.json", {"status": "stale_input"})
         manifest = read_manifest(manifest_path)
+        source_revision = int(manifest.get("revision", 0))
         solution_id, steps = get_solution_steps(manifest)
         all_requirements = heterologous_requirements(steps)
         retropath_requirements = [
@@ -487,9 +491,6 @@ def select_main_enzymes(
                             "source_status": str(query_result.get("status") or ""),
                             "query_id": str(query_result.get("query_id") or ""),
                             "cache_hit": bool(query_result.get("cache_hit")),
-                            "response_sha256": str(
-                                query_result.get("response_sha256") or ""
-                            ),
                             "kegg_gene_count": len(query_result.get("gene_ids", [])),
                             "uniprot_mapping_count": len(
                                 query_result.get("mappings", [])
@@ -676,9 +677,6 @@ def select_main_enzymes(
                             "app": str(query_result.get("app") or ""),
                             "version": str(query_result.get("version") or ""),
                             "cache_hit": bool(query_result.get("cache_hit")),
-                            "response_sha256": str(
-                                query_result.get("response_sha256") or ""
-                            ),
                             "rows": audit_rows,
                             "error": "",
                             "circuit_open": False,
@@ -826,8 +824,6 @@ def select_main_enzymes(
             ),
             client=direction_client,
         )
-        if genome_identity is not None:
-            genome_identity.assert_current()
         retropath_requirements_path = output_path / "retropath_enzyme_requirements.json"
         retropath_evidence_path = output_path / "retropath_selenzyme_evidence.json"
         if retropath_requirements:
@@ -865,14 +861,14 @@ def select_main_enzymes(
             taxonomy_profile.to_evidence(active_weights),
         )
         write_json_atomic(paths["reaction_evidence_json"], {
-            "schema_version": "reaction_evidence.v1",
+            "schema_version": "reaction_evidence.v2",
             "selected_solution_id": solution_id,
             "evidence": reaction_evidence,
             "query_ids": list(dict.fromkeys(reaction_query_ids)),
         })
         write_json_atomic(paths["direction_evidence_json"], direction_artifact)
         write_json_atomic(paths["ko_evidence_json"], {
-            "schema_version": "ko_evidence.v1",
+            "schema_version": "ko_evidence.v2",
             "selected_solution_id": solution_id,
             "policy": {
                 "scope": "unverified_steps_with_kegg_ko",
@@ -885,7 +881,7 @@ def select_main_enzymes(
             )),
         })
         write_json_atomic(paths["selenzyme_evidence_json"], {
-            "schema_version": "selenzyme_evidence.v4",
+            "schema_version": "selenzyme_evidence.v5",
             "selected_solution_id": solution_id,
             "policy": {
                 "ec_scope": "all_steps_without_verified_ec_rhea_ko_candidate",
@@ -953,9 +949,6 @@ def select_main_enzymes(
             "taxonomy_status": taxonomy_profile.status,
             "taxonomy_source": taxonomy_profile.source,
             "taxonomy_scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
-            "taxonomy_fingerprint": taxonomy_profile.semantic_fingerprint(
-                active_weights
-            ),
             "scoring_weights": active_weights,
             "ec_numbers": all_ecs,
             "complete_ec_query_numbers": ecs,
@@ -1056,24 +1049,17 @@ def select_main_enzymes(
             status=result["status"],
             selected_solution_id=solution_id,
             expansion_depth=expansion_depth,
-            solution_fingerprint=solution_fingerprint(solution_id, steps),
             chassis_key=chassis_key,
             host_taxon_id=taxonomy_profile.taxon_id,
             taxonomy_status=taxonomy_profile.status,
             taxonomy_source=taxonomy_profile.source,
             taxonomy_scoring_policy_version=TAXONOMY_SCORING_POLICY_VERSION,
-            taxonomy_fingerprint=taxonomy_profile.semantic_fingerprint(
-                active_weights
-            ),
             scoring_weights=active_weights,
             parameters=MainEnzymeSelectionParameters(
                 top_n=top_n,
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
                 fetch_proteins=fetch_proteins,
-            ),
-            shortlist_decision_fingerprint=shortlist_decision_fingerprint(
-                selected_step_rows
             ),
             candidates_by_step=candidates_by_step,
             uncovered_step_indexes=result["uncovered_step_indexes"],
@@ -1101,8 +1087,7 @@ def select_main_enzymes(
                 ),
             },
         )
-        if genome_identity is not None:
-            genome_identity.assert_current()
+        require_revision(manifest_path, source_revision)
         write_json_atomic(
             paths["main_enzyme_selection_json"],
             canonical_result.model_dump(mode="json"),

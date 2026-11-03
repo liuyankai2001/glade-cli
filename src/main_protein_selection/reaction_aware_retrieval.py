@@ -91,6 +91,7 @@ class RheaClient:
             if cache_path.exists():
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
                 if isinstance(cached, dict):
+                    cached.pop("response_sha256", None)
                     cached["cache_hit"] = True
                     results[normalized] = cached
                     continue
@@ -172,7 +173,6 @@ class RheaClient:
                 "status": "ok",
                 "records": matched_records,
                 "request": {"url": RHEA_REST_URL, "params": params},
-                "response_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
                 "raw_tsv": raw_text,
                 "cache_hit": False,
             }

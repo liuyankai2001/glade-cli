@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION = "expression_box_designs.v2"
+EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION = "expression_box_designs.v3"
 GROUPING_ALGORITHM_VERSION = "expression_box_grouping.v2"
-EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION = "expression_parts_designs.v4"
+EXPRESSION_PARTS_DESIGNS_SCHEMA_VERSION = "expression_parts_designs.v5"
 PARTS_RECOMMENDATION_ALGORITHM_VERSION = "expression_parts_recommendation.v4.0.1"
 
 EXPRESSION_PARTS_COLLECTION = "expression_parts_v3"

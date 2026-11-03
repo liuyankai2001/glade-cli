@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -20,7 +19,6 @@ from Bio.SeqRecord import SeqRecord
 from src.final_assemble_plan.common import (
     circular_segment,
     enzyme_cut_positions,
-    stable_json_hash,
 )
 from src.final_assemble_plan.config import (
     FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION,
@@ -37,18 +35,6 @@ from src.write_manifest.store import read_design_manifest
 
 
 DNA_ALPHABET = frozenset("ACGT")
-
-
-def sha256_bytes(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    return sha256_bytes(path.read_bytes())
-
-
-def sha256_sequence(sequence: str) -> str:
-    return hashlib.sha256(sequence.upper().encode("ascii")).hexdigest()
 
 
 def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -130,28 +116,7 @@ def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
         raise ValueError("最终组装计划版本无效，请重新运行并写入 assembly --plan")
     if section.get("status") != "selected":
         raise ValueError("请先使用 write --assembly-plan 接受完整组装计划")
-    recorded_selection = str(section.get("selection_fingerprint") or "")
-    unsigned_selection = dict(section)
-    unsigned_selection.pop("selection_fingerprint", None)
-    if recorded_selection != stable_json_hash(unsigned_selection):
-        raise ValueError("final_assembly_plan.selection_fingerprint 无效")
-
     source = _mapping(section.get("source"), "final_assembly_plan.source")
-    expected_source = {
-        "context_input_fingerprint": source_context.input_fingerprint,
-        "parts_selection_fingerprint": source_context.parts_selection_fingerprint,
-        "assembled_constructs_fingerprint": (
-            source_context.assembled_constructs_fingerprint
-        ),
-        "plasmid_selection_fingerprint": (
-            source_context.plasmid_selection_fingerprint
-        ),
-    }
-    for key, expected in expected_source.items():
-        if source.get(key) != expected:
-            raise ValueError(
-                "最终组装计划与当前表达构建或质粒骨架不一致，请重新生成计划"
-            )
 
     raw_plans = section.get("design_plans")
     if not isinstance(raw_plans, list) or not raw_plans:
@@ -168,33 +133,20 @@ def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
         or int(section.get("design_count") or 0) != len(plans)
     ):
         raise ValueError("最终组装计划没有完整且唯一地覆盖全部表达构建")
-    if source.get("plan_set_fingerprint") != stable_json_hash(plans):
-        raise ValueError("final_assembly_plan 的 plan_set_fingerprint 无效")
-
     construct_by_id = {item.design_id: item for item in source_context.constructs}
     for plan in plans:
         design_id = int(plan["parts_design_id"])
         construct = construct_by_id[design_id]
         if plan.get("assembly_method") not in SUPPORTED_METHODS:
             raise ValueError(f"design {design_id} 包含不支持的组装方法")
-        recorded_plan = str(plan.get("plan_fingerprint") or "")
-        unsigned_plan = dict(plan)
-        unsigned_plan.pop("plan_fingerprint", None)
-        if recorded_plan != stable_json_hash(unsigned_plan):
-            raise ValueError(f"design {design_id} 的 plan_fingerprint 无效")
         insert = _mapping(plan.get("insert"), f"design {design_id}.insert")
         backbone = _mapping(plan.get("backbone"), f"design {design_id}.backbone")
         if (
-            insert.get("file_sha256") != construct.file_sha256
-            or insert.get("sequence_sha256") != construct.sequence_sha256
-            or int(insert.get("length_bp") or 0) != construct.length_bp
-            or backbone.get("file_sha256") != source_context.backbone.file_sha256
-            or backbone.get("sequence_content_sha256")
-            != source_context.backbone.sequence_content_sha256
+            int(insert.get("length_bp") or 0) != construct.length_bp
             or int(backbone.get("length_bp") or 0)
             != source_context.backbone.length_bp
         ):
-            raise ValueError(f"design {design_id} 的输入文件指纹与当前文件不一致")
+            raise ValueError(f"design {design_id} 的输入长度与当前文件不一致")
 
     backbone_record, backbone_sequence, _ = read_genbank_strict(
         source_context.backbone.path
@@ -216,7 +168,6 @@ def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
         project_output_path=source_context.project_output_path,
         manifest_revision=revision,
         source_context=source_context,
-        plan_selection_fingerprint=recorded_selection,
         plans=tuple(sorted(plans, key=lambda item: int(item["parts_design_id"]))),
         backbone_record=backbone_record,
         insert_records=insert_records,
@@ -741,7 +692,6 @@ def validate_written_outputs(
         "insert_sequence_matches": True,
         "topology_circular": True,
         "feature_coordinates_valid": True,
-        "sequence_sha256": sha256_sequence(expected_sequence),
     }
 
 
@@ -749,7 +699,6 @@ def file_summary(project_root: Path, path: Path, *, file_format: str) -> dict[st
     return {
         "path": relative_project_path(project_root, path),
         "format": file_format,
-        "file_sha256": sha256_file(path),
     }
 
 
@@ -759,13 +708,9 @@ def inspect_file(project_root: Path, info: Mapping[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         return {"path": str(info.get("path") or ""), "exists": False, "error": str(exc)}
     exists = path.is_file()
-    actual = sha256_file(path) if exists else ""
-    expected = str(info.get("file_sha256") or "")
     return {
         "path": relative_project_path(project_root, path),
         "exists": exists,
-        "file_sha256_matches": bool(exists and expected and actual == expected),
-        "actual_file_sha256": actual,
     }
 
 
@@ -778,9 +723,6 @@ __all__ = [
     "read_genbank_strict",
     "relative_project_path",
     "resolve_project_file",
-    "sha256_file",
-    "sha256_sequence",
-    "stable_json_hash",
     "validate_written_outputs",
     "write_fasta",
     "write_genbank",

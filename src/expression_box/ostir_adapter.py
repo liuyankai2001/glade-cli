@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import warnings
 from importlib.metadata import version
 from typing import Any, Callable
@@ -83,7 +82,6 @@ def predict_rbs_context(
             int(result.get("start_position") or 0) != intended_start_position
             for result in results
         ),
-        context_sha256=hashlib.sha256(sequence.encode("utf-8")).hexdigest(),
     )
 
 

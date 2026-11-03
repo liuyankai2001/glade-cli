@@ -18,7 +18,6 @@ class FinalAssemblyExecutionContext:
     project_output_path: Path
     manifest_revision: int
     source_context: FinalAssemblyContext
-    plan_selection_fingerprint: str
     plans: tuple[dict[str, Any], ...]
     backbone_record: SeqRecord
     insert_records: dict[int, SeqRecord]

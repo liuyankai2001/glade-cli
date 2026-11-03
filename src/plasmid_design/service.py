@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from src.final_assemble_execute.common import resolve_project_file, sha256_file
+from src.final_assemble_execute.common import resolve_project_file
 from src.final_assemble_plan.common import gc_percent
 from src.plasmid_design.catalog import ModuleCatalog
 from src.plasmid_design.errors import DesignError
@@ -26,7 +26,6 @@ from src.plasmid_design.sequence import (
     normalize_component_order,
     resolve_enzymes,
 )
-from src.plasmid_selection.get_plasmid_context import stable_json_hash
 from src.write_manifest.store import (
     manifest_update_lock,
     read_design_manifest,
@@ -69,7 +68,6 @@ class DesignService:
                 "name": self.config.target_name,
                 "host": host_name or "未记录宿主",
                 "manifest_revision": manifest.get("revision", 0),
-                "source_fingerprint": "",
             },
             "ready": False,
             "issues": [],
@@ -92,7 +90,6 @@ class DesignService:
         response["project"].update(
             {
                 "manifest_revision": snapshot.source.manifest_revision,
-                "source_fingerprint": snapshot.fingerprint,
             }
         )
         construct = snapshot.source.constructs[0]
@@ -101,7 +98,6 @@ class DesignService:
             "name": f"完整表达构建 · 方案 {construct.design_id}",
             "length_bp": construct.length_bp,
             "gc_percent": gc_percent(str(snapshot.insert_record.seq)),
-            "sequence_sha256": construct.sequence_sha256,
             "features": feature_payloads(snapshot.insert_record),
         }
         try:
@@ -202,7 +198,6 @@ class DesignService:
         )
         design.preview.update(
             {
-                "source_fingerprint": snapshot.fingerprint,
                 "manifest_revision": snapshot.source.manifest_revision,
             }
         )
@@ -221,6 +216,24 @@ class DesignService:
                 code="design_invalid",
                 issues=design.preview["issues"],
             )
+        # Invalidate registered results before producing a replacement. Historical
+        # generation directories remain available on disk, but are no longer current.
+        sections_to_invalidate = (
+            "plasmid_selection", "final_assembly_plan", "final_assembly", "final_design_report"
+        )
+        with manifest_update_lock(self.config.manifest_output_path):
+            current = read_project(self.config)
+            authenticate_request(current, request)
+            if any(name in current.manifest for name in sections_to_invalidate):
+                updated = update_design_manifest(
+                    self.config.manifest_output_path,
+                    target_compound_id=current.source.target_compound_id,
+                    sections={},
+                    discard_sections=sections_to_invalidate,
+                    expected_revision=current.source.manifest_revision,
+                )
+                request = {**request, "expected_revision": updated["revision"]}
+                snapshot = read_project(self.config)
         project = snapshot.source.project_output_path.resolve()
         generation_id = uuid.uuid4().hex
         parent = project / "plasmid_designs"
@@ -284,24 +297,17 @@ class DesignService:
             manifest.get("final_assembly", {}),
         )
         component = selection.get("component_design", {})
+        if component and (
+            selection.get("schema_version") != "plasmid_selection.v3"
+            or final.get("schema_version") != "final_assembly.v3"
+        ):
+            raise DesignError("已登记结果的版本已过期，请重新生成。", code="artifact_outdated")
         if (
             not component
             or final.get("status") != "complete"
-            or component.get("source_fingerprint") != snapshot.fingerprint
         ):
             return None
-        for section in (selection, final, manifest.get("final_assembly_plan", {})):
-            unsigned = dict(section)
-            recorded = unsigned.pop("selection_fingerprint", None)
-            if recorded != stable_json_hash(unsigned):
-                raise DesignError(
-                    "已登记结果的校验信息发生变化，请重新生成。",
-                    code="artifact_invalid",
-                )
-        if (
-            final.get("source_fingerprints", {}).get("plasmid_selection_fingerprint")
-            != selection["selection_fingerprint"]
-        ):
+        if final.get("generation_id") != component.get("generation_id"):
             return None
         constructs = final.get("constructs", [])
         if len(constructs) != 1:
@@ -351,7 +357,7 @@ class DesignService:
             path = resolve_project_file(
                 snapshot.source.project_output_path, info.get("path")
             )
-            if not path.is_file() or sha256_file(path) != info.get("file_sha256"):
+            if not path.is_file():
                 raise DesignError(
                     "已登记导出文件缺失或被修改，请重新生成。", code="artifact_invalid"
                 )
@@ -364,7 +370,6 @@ class DesignService:
                     "url": f"/api/files/{generation_id}/{file_id}",
                 }
             )
-        sequence = str(constructs[0].get("sequence_sha256", ""))
         final_record = next((i for i in files if i["id"] == "final_genbank"), None)
         if final_record is None:
             raise DesignError("最终质粒 GenBank 未登记。", code="artifact_invalid")
@@ -386,11 +391,9 @@ class DesignService:
             "t1_id": component.get("t1_id"),
             "component_order": order,
             "components": components,
-            "sequence_sha256": sequence,
             "length_bp": constructs[0]["length_bp"],
             "gc_percent": gc_percent(str(record.seq)),
             "manifest_revision": manifest["revision"],
-            "source_fingerprint": snapshot.fingerprint,
             "files": files,
             "warnings": final.get("warnings", []),
         }

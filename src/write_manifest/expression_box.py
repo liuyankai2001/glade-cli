@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,7 +24,7 @@ from src.pathway_analyze.target_id import validate_target_compound_id
 from src.write_manifest.store import read_design_manifest, update_design_manifest
 
 
-EXPRESSION_BOX_SELECTION_SCHEMA_VERSION = "expression_box_selection.v1"
+EXPRESSION_BOX_SELECTION_SCHEMA_VERSION = "expression_box_selection.v2"
 EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS = (
     "expression_cassette_assembly",
     "expression_parts_draft",
@@ -35,17 +34,8 @@ EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS = (
     "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
-
-
-def _stable_json_hash(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _positive_design_id(config: Any) -> int:
@@ -94,7 +84,6 @@ def _protein_payload(protein: ExpressionProtein) -> dict[str, Any]:
         "roles": list(protein.roles),
         "assigned_step_indexes": list(protein.assigned_step_indexes),
         "optimized_cds_length_nt": protein.optimized_cds_length_nt,
-        "optimized_cds_sequence_sha256": protein.optimized_cds_sequence_sha256,
     }
 
 
@@ -139,9 +128,8 @@ def _validate_artifact(
     artifact: Mapping[str, Any],
     *,
     target_compound_id: str,
-    input_fingerprint: str,
-    cds_selection_source_fingerprint: str,
     proteins: tuple[ExpressionProtein, ...],
+    manifest_revision: int,
 ) -> list[dict[str, Any]]:
     if artifact.get("schema_version") != EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION:
         raise ValueError(
@@ -161,20 +149,8 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("表达盒候选方案缺少 source")
-    if source.get("input_fingerprint") != input_fingerprint:
-        raise ValueError(
-            "表达盒候选方案与当前 CDS 不一致，请重新运行 "
-            "expression --design --box"
-        )
-    if (
-        source.get("cds_selection_source_fingerprint")
-        != cds_selection_source_fingerprint
-    ):
-        raise ValueError(
-            "表达盒候选方案的 CDS 来源已经变化，请重新运行 "
-            "expression --design --box"
-        )
-
+    if source.get("manifest_revision") != manifest_revision:
+        raise ValueError("表达盒候选方案的 manifest revision 已变化，请重新计算")
     generation = generate_grouping_designs(proteins)
     expected_designs = [
         _design_payload(design, design_id)
@@ -214,12 +190,6 @@ def _selection_payload(
     artifact: Mapping[str, Any],
 ) -> dict[str, Any]:
     source = artifact["source"]
-    design_fingerprint = _stable_json_hash(
-        {
-            "input_fingerprint": source["input_fingerprint"],
-            "design": selected,
-        }
-    )
     cassettes = [
         {
             "cassette_index": cassette["cassette_index"],
@@ -235,7 +205,6 @@ def _selection_payload(
         "schema_version": EXPRESSION_BOX_SELECTION_SCHEMA_VERSION,
         "selection_status": "user_selected",
         "selected_design_id": selected["design_id"],
-        "selected_design_fingerprint": design_fingerprint,
         "rank": selected["rank"],
         "strategy": selected["strategy"],
         "name": selected["name"],
@@ -245,10 +214,6 @@ def _selection_payload(
             "designs_schema_version": artifact["schema_version"],
             "algorithm_version": artifact["algorithm_version"],
             "artifact_manifest_revision": source.get("manifest_revision"),
-            "cds_selection_source_fingerprint": (
-                source["cds_selection_source_fingerprint"]
-            ),
-            "input_fingerprint": source["input_fingerprint"],
         },
         "summary": {
             "cassette_count": selected["cassette_count"],
@@ -264,13 +229,6 @@ def _custom_selection_payload(
     selected: Mapping[str, Any],
     context: ExpressionGroupingContext,
 ) -> dict[str, Any]:
-    design_fingerprint = _stable_json_hash(
-        {
-            "input_fingerprint": context.input_fingerprint,
-            "selection_mode": "custom_cli",
-            "design": selected,
-        }
-    )
     cassettes = [
         {
             "cassette_index": cassette["cassette_index"],
@@ -286,7 +244,6 @@ def _custom_selection_payload(
         "schema_version": EXPRESSION_BOX_SELECTION_SCHEMA_VERSION,
         "selection_status": "user_selected",
         "selected_design_id": 1,
-        "selected_design_fingerprint": design_fingerprint,
         "rank": 1,
         "strategy": "custom",
         "name": "用户自定义方案",
@@ -294,10 +251,6 @@ def _custom_selection_payload(
         "source": {
             "selection_mode": "custom_cli",
             "artifact_manifest_revision": context.manifest_revision,
-            "cds_selection_source_fingerprint": (
-                context.cds_selection_source_fingerprint
-            ),
-            "input_fingerprint": context.input_fingerprint,
         },
         "summary": {
             "cassette_count": selected["cassette_count"],
@@ -307,6 +260,19 @@ def _custom_selection_payload(
         "cassettes": cassettes,
         "warnings": list(selected["warnings"]),
     }
+
+
+def _selection_update(manifest: Mapping[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+    from src.expression_box.parts_preparation import normalize_parts_draft, stale_parts_designs
+    sections = {"expression_box_selection": payload}
+    discard = EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS
+    raw = manifest.get("expression_parts_draft")
+    if isinstance(raw, Mapping) and (raw.get("source_type") == "user_uploaded" or raw.get("schema_version") == "expression_parts_draft.v1"):
+        draft = normalize_parts_draft(raw)
+        stale_parts_designs(draft["designs"])
+        sections["expression_parts_draft"] = draft
+        discard = tuple(name for name in discard if name != "expression_parts_draft")
+    return sections, discard
 
 
 def write_expression_box_selection(config: Any) -> dict[str, Any]:
@@ -331,11 +297,8 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
     designs = _validate_artifact(
         artifact,
         target_compound_id=target_compound_id,
-        input_fingerprint=context.input_fingerprint,
-        cds_selection_source_fingerprint=(
-            context.cds_selection_source_fingerprint
-        ),
         proteins=context.proteins,
+        manifest_revision=context.manifest_revision,
     )
     selected = _select_design(designs, design_id)
     payload = _selection_payload(selected, artifact)
@@ -345,17 +308,17 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
         isinstance(current, Mapping)
         and current.get("schema_version")
         == EXPRESSION_BOX_SELECTION_SCHEMA_VERSION
-        and current.get("selected_design_fingerprint")
-        == payload["selected_design_fingerprint"]
+        and current == payload
     )
     if unchanged:
         updated_manifest = manifest
     else:
+        sections, discard = _selection_update(manifest, payload)
         updated_manifest = update_design_manifest(
             manifest_path,
             target_compound_id=target_compound_id,
-            sections={"expression_box_selection": payload},
-            discard_sections=EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS,
+            sections=sections,
+            discard_sections=discard,
             expected_revision=context.manifest_revision,
         )
 
@@ -409,17 +372,17 @@ def write_custom_expression_box_selection(config: Any) -> dict[str, Any]:
         isinstance(current, Mapping)
         and current.get("schema_version")
         == EXPRESSION_BOX_SELECTION_SCHEMA_VERSION
-        and current.get("selected_design_fingerprint")
-        == payload["selected_design_fingerprint"]
+        and current == payload
     )
     if unchanged:
         updated_manifest = manifest
     else:
+        sections, discard = _selection_update(manifest, payload)
         updated_manifest = update_design_manifest(
             manifest_path,
             target_compound_id=target_compound_id,
-            sections={"expression_box_selection": payload},
-            discard_sections=EXPRESSION_BOX_SELECTION_DOWNSTREAM_SECTIONS,
+            sections=sections,
+            discard_sections=discard,
             expected_revision=context.manifest_revision,
         )
 

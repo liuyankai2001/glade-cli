@@ -110,11 +110,6 @@ class ModuleCatalog:
         self._replication = MappingProxyType(self._load_type("replication"))
         self._terminator = MappingProxyType(self._load_type("terminator"))
         self._validate_derivations()
-        self._fingerprint = self._compute_fingerprint()
-
-    @property
-    def fingerprint(self) -> str:
-        return self._fingerprint
 
     @property
     def resistance(self) -> Mapping[str, Module]:
@@ -174,10 +169,8 @@ class ModuleCatalog:
             details = provenance.get(key)
             if not isinstance(sequence, str) or not sequence or set(sequence) - _DNA:
                 raise ValueError(f"invalid scaffold sequence: {key}")
-            if not isinstance(details, dict) or hashlib.sha256(
-                sequence.encode()
-            ).hexdigest() != details.get("sha256"):
-                raise ValueError(f"scaffold source hash mismatch: {key}")
+            if not isinstance(details, dict):
+                raise ValueError(f"scaffold source metadata is required: {key}")
             self._validate_provenance(key, sequence, {**provenance, **details})
         return _freeze(scaffold)
 
@@ -226,9 +219,7 @@ class ModuleCatalog:
                 f"invalid {module_type} module row: {module_id or '<missing id>'}"
             )
         snapshot = self._feature_snapshot.get(module_id)
-        if not isinstance(snapshot, dict) or hashlib.sha256(
-            sequence.encode()
-        ).hexdigest() != snapshot.get("sha256"):
+        if not isinstance(snapshot, dict):
             raise ValueError(
                 f"source feature snapshot mismatch for module: {module_id}"
             )
@@ -305,7 +296,7 @@ class ModuleCatalog:
             raise ValueError(
                 f"unknown pinned source for module: {module_id}"
             )  # noqa: TRY004 - invalid persisted JSON data
-        for key, length in (("source_sha256", 64), ("source_version", 40)):
+        for key, length in (("source_version", 40),):
             value = provenance.get(key)
             if (
                 not isinstance(value, str)
@@ -351,15 +342,6 @@ class ModuleCatalog:
                 or prefix.role != "t0"
                 or derivation.get("operation") != "remove_verified_prefix_once"
                 or derivation.get("removed_prefix_bp") != prefix.length_bp
-                or derivation.get("removed_prefix_sha256")
-                != hashlib.sha256(prefix.sequence.encode()).hexdigest()
-                or derivation.get("parent_sha256")
-                != hashlib.sha256(
-                    (
-                        prefix.sequence
-                        + snapshot["gap_extraction"]["original_sequence"]
-                    ).encode()
-                ).hexdigest()
                 or derivation.get("parent_start_1based")
                 != provenance["start_1based"] - prefix.length_bp
                 or derivation.get("parent_end_1based") != provenance["end_1based"]
@@ -373,10 +355,8 @@ class ModuleCatalog:
         if not isinstance(extraction, dict):
             raise ValueError(f"missing gap audit: {module_id}")
         original = extraction.get("original_sequence")
-        if not isinstance(original, str) or hashlib.sha256(
-            original.encode()
-        ).hexdigest() != extraction.get("original_sha256"):
-            raise ValueError(f"invalid original gap audit hash: {module_id}")
+        if not isinstance(original, str) or not original or set(original) - _DNA:
+            raise ValueError(f"invalid original gap sequence: {module_id}")
         features = extraction.get("original_features")
         if not isinstance(features, list):
             raise ValueError(f"invalid original gap features: {module_id}")
@@ -423,17 +403,3 @@ class ModuleCatalog:
                 raise ValueError(f"invalid feature range for module: {module_id}")
             if not 0 <= part["start"] < part["end"] <= len(sequence):
                 raise ValueError(f"feature outside module sequence: {module_id}")
-
-    def _compute_fingerprint(self) -> str:
-        digest = hashlib.sha256()
-        for path in (
-            self.data_dir / "resistance_modules.csv",
-            self.data_dir / "replication_modules.csv",
-            self.data_dir / "terminator_modules.csv",
-            self.data_dir / "gap_modules.csv",
-            Path(__file__).parent / "scaffold.json",
-            Path(__file__).parent / "source_features.json",
-        ):
-            digest.update(path.name.encode())
-            digest.update(path.read_bytes())
-        return digest.hexdigest()

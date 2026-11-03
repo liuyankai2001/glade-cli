@@ -175,7 +175,6 @@ STEP_CANDIDATE_COLUMNS = [
     "keywords",
     "protein_existence",
     "sequence_version",
-    "sequence_sha256",
     "aliases",
     "publication_ids",
     "cross_references",
@@ -241,7 +240,6 @@ PROTEIN_CANDIDATE_COLUMNS = [
     "keywords",
     "protein_existence",
     "sequence_version",
-    "sequence_sha256",
     "subcellular_locations",
     "rhea_ids",
     "warnings",
@@ -281,7 +279,6 @@ class ProteinCandidate:
     keywords: list[str] = field(default_factory=list)
     protein_existence: str = ""
     sequence_version: int | None = None
-    sequence_sha256: str = ""
     aliases: list[str] = field(default_factory=list)
     publication_ids: list[str] = field(default_factory=list)
     cross_references: list[str] = field(default_factory=list)
@@ -987,11 +984,6 @@ def get_sequence_version(entry: dict[str, Any]) -> int | None:
         return None
 
 
-def get_sequence_sha256(entry: dict[str, Any]) -> str:
-    value = get_sequence_value(entry)
-    return hashlib.sha256(value.encode("ascii")).hexdigest() if value else ""
-
-
 def extract_subcellular_locations(entry: dict[str, Any]) -> list[str]:
     locations = []
     for comment in entry.get("comments", []):
@@ -1283,7 +1275,6 @@ def _candidate_from_entry(
         keywords=extract_keywords(entry),
         protein_existence=get_protein_existence(entry),
         sequence_version=get_sequence_version(entry),
-        sequence_sha256=get_sequence_sha256(entry),
         aliases=extract_aliases(entry),
         publication_ids=extract_publication_ids(entry),
         cross_references=extract_cross_references(entry),
@@ -1517,7 +1508,6 @@ def _step_candidate_row(
         "keywords": _join(candidate.keywords),
         "protein_existence": candidate.protein_existence,
         "sequence_version": candidate.sequence_version or "",
-        "sequence_sha256": candidate.sequence_sha256,
         "aliases": _join(candidate.aliases),
         "publication_ids": _join(candidate.publication_ids),
         "cross_references": _join(candidate.cross_references),

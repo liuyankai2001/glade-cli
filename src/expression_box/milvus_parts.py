@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -28,7 +27,6 @@ from src.expression_box.parts_models import (
 
 
 _DNA_RE = re.compile(r"[ACGT]+")
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ROLES = ("promoter", "rbs", "terminator")
 _STRENGTHS = {"low", "medium", "high"}
 _FORWARD_DIRECTIONS = {"forward", "both", "bidirectional"}
@@ -40,7 +38,6 @@ _REQUIRED_FIELDS = {
     "sequence_type",
     "sequence_type_confidence",
     "sequence",
-    "sequence_sha256",
     "sequence_available",
     "length_bp",
     "host",
@@ -69,17 +66,6 @@ _OUTPUT_FIELDS = sorted(_REQUIRED_FIELDS | {"doc_id"})
 
 class MilvusPartsError(RuntimeError):
     """Raised when the authoritative remote parts store cannot be used."""
-
-
-def _stable_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _clean(value: Any) -> str:
@@ -132,7 +118,7 @@ def _client_from_environment():
         ) from exc
 
 
-def _schema_description(client: Any, collection_name: str) -> tuple[dict[str, Any], str]:
+def _schema_description(client: Any, collection_name: str) -> dict[str, Any]:
     try:
         if not client.has_collection(collection_name):
             raise MilvusPartsError(
@@ -159,7 +145,7 @@ def _schema_description(client: Any, collection_name: str) -> tuple[dict[str, An
         raise MilvusPartsError(
             f"Milvus collection {collection_name} is missing fields: {missing}"
         )
-    return description, _stable_hash(fields)
+    return description
 
 
 def _query_role(
@@ -212,10 +198,6 @@ def _rejection_reason(
         return "invalid_length"
     if length_bp != len(sequence):
         return "length_mismatch"
-    recorded_sha = _lower(row.get("sequence_sha256"))
-    computed_sha = hashlib.sha256(sequence.encode("utf-8")).hexdigest()
-    if _SHA256_RE.fullmatch(recorded_sha) is None or recorded_sha != computed_sha:
-        return "sequence_hash_mismatch"
     if candidate_host_match_kind(_list_of_text(row.get("host")), _host_resolution(context)) == "none":
         return "host_mismatch"
     if _lower(row.get("strength")) not in _STRENGTHS:
@@ -265,7 +247,6 @@ def _candidate(row: Mapping[str, Any], context: ExpressionPartsContext) -> PartC
         part_id=_clean(row.get("part_id")),
         role=_lower(row.get("role")),
         sequence=sequence,
-        sequence_sha256=hashlib.sha256(sequence.encode("utf-8")).hexdigest(),
         sequence_type=_lower(row.get("sequence_type")),
         host_match_kind=host_match,
         strength=_lower(row.get("strength")),
@@ -302,7 +283,7 @@ def fetch_expression_part_candidates(
     owned_client = client is None
     milvus = client if client is not None else _client_from_environment()
     try:
-        _, schema_fingerprint = _schema_description(milvus, collection_name)
+        _schema_description(milvus, collection_name)
         raw_by_role = {
             role: _query_role(
                 milvus,
@@ -333,7 +314,7 @@ def fetch_expression_part_candidates(
                 rejected[reason] += 1
                 continue
             accepted.append(_candidate(row, context))
-    accepted.sort(key=lambda item: (item.role, item.part_id, item.sequence_sha256))
+    accepted.sort(key=lambda item: (item.role, item.part_id, item.sequence))
     identities = [(item.role, item.part_id) for item in accepted]
     if len(identities) != len(set(identities)):
         raise MilvusPartsError("Milvus returned duplicate role/part_id candidates")
@@ -344,14 +325,9 @@ def fetch_expression_part_candidates(
             "Milvus has no usable MG1655 candidates for roles: "
             + ", ".join(missing_roles)
         )
-    fingerprint = _stable_hash(
-        [item.fingerprint_payload() for item in accepted]
-    )
     return PartsSnapshot(
         collection_name=collection_name,
         collection_row_count=row_count,
-        schema_fingerprint=schema_fingerprint,
-        candidate_fingerprint=fingerprint,
         candidates=tuple(accepted),
         raw_counts=raw_counts,
         accepted_counts={role: accepted_counts[role] for role in _ROLES},

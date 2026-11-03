@@ -80,10 +80,10 @@ class JobManager:
                 job_id,
                 status="failed",
                 stage="failed",
-                message="生成失败，旧结果已保留。详细原因见命令行。",
+                message="生成失败，历史文件已保留。详细原因见命令行。",
                 error={
                     "code": "generation_failed",
-                    "message": "生成失败，旧结果已保留。请查看命令行后重试。",
+                    "message": "生成失败，历史文件已保留。请查看命令行后重试。",
                 },
             )
         else:

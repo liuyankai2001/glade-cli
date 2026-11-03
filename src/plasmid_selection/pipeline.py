@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from filelock import FileLock
+from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
 
 from src.plasmid_selection.config import (
     BURDEN_COPY_FIT_SCORES,
@@ -26,7 +28,6 @@ from src.plasmid_selection.config import (
 )
 from src.plasmid_selection.get_plasmid_context import (
     load_plasmid_context,
-    stable_json_hash,
 )
 from src.plasmid_selection.milvus_plasmids import fetch_plasmid_snapshot
 from src.plasmid_selection.models import DownloadedSequence, PlasmidContext
@@ -43,10 +44,6 @@ from src.plasmid_selection.sequence_fetch import (
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _sha256_bytes(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -95,132 +92,57 @@ def _parameters(
     }
 
 
-def _request_fingerprint(
-    context: PlasmidContext,
-    *,
-    snapshot_fingerprint: str,
-    schema_fingerprint: str,
-    parameters: Mapping[str, Any],
-) -> str:
-    return stable_json_hash(
-        {
-            "algorithm_version": PLASMID_RECOMMENDATION_ALGORITHM_VERSION,
-            "context_input_fingerprint": context.input_fingerprint,
-            "candidate_snapshot_fingerprint": snapshot_fingerprint,
-            "milvus_schema_fingerprint": schema_fingerprint,
-            "parameters": parameters,
-        }
-    )
-
-
-def _candidate_set_fingerprint(candidates: Sequence[Mapping[str, Any]]) -> str:
-    return stable_json_hash(
-        [
-            {
-                key: value
-                for key, value in candidate.items()
-                if key not in {"system_recommended"}
-            }
-            for candidate in candidates
-        ]
-    )
-
-
-def _resolve_local_candidate_path(
-    project_output: Path,
-    path_value: Any,
-) -> Path | None:
-    text = str(path_value or "").strip()
-    if not text:
-        return None
-    path = Path(text)
-    if not path.is_absolute():
-        path = project_output / path
-    path = path.resolve()
+def _raw_sequence(plasmid_dir: Path, template: Mapping[str, Any], downloader):
+    """Reuse only downloaded source bytes, never a ranked recommendation."""
+    locator = [template.get(k) for k in ("source", "source_record_id", "source_record_version", "sequence_url", "source_url")]
+    key = hashlib.sha256(json.dumps(locator, ensure_ascii=False).encode("utf-8")).hexdigest()
+    cache_path = plasmid_dir / "raw_sequences" / (key + ".gb")
+    if cache_path.is_file():
+        try:
+            return validate_genbank_bytes(cache_path.read_bytes(), template, source_download_url="raw_cache")
+        except (OSError, ValueError, RuntimeError):
+            pass
+    downloaded = downloader(template)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=cache_path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(downloaded.content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
     try:
-        path.relative_to(project_output.resolve())
-    except ValueError:
-        return None
-    return path
+        os.replace(temporary, cache_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return downloaded
 
 
-def _cached_payload(
-    artifact_path: Path,
-    *,
-    context: PlasmidContext,
-    request_fingerprint: str,
-) -> dict[str, Any] | None:
-    if not artifact_path.is_file():
-        return None
+def _seed_old_raw_sequences(plasmid_dir: Path, artifact_path: Path) -> None:
+    """Recover source bytes from old reports without reusing their ranking."""
     try:
         payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    source = payload.get("source")
-    candidates = payload.get("candidates")
-    if (
-        payload.get("schema_version") != PLASMID_CANDIDATES_SCHEMA_VERSION
-        or payload.get("algorithm_version")
-        != PLASMID_RECOMMENDATION_ALGORITHM_VERSION
-        or payload.get("status") not in {"complete", "partial"}
-        or not isinstance(source, Mapping)
-        or source.get("request_fingerprint") != request_fingerprint
-        or not isinstance(candidates, list)
-        or not candidates
-        or payload.get("candidate_count") != len(candidates)
-    ):
-        return None
-    if (
-        any(not isinstance(candidate, Mapping) for candidate in candidates)
-        or payload.get("candidate_set_fingerprint")
-        != _candidate_set_fingerprint(candidates)
-        or [candidate.get("rank") for candidate in candidates]
-        != list(range(1, len(candidates) + 1))
-        or candidates[0].get("system_recommended") is not True
-        or sum(
-            candidate.get("system_recommended") is True
-            for candidate in candidates
-        )
-        != 1
-    ):
-        return None
-    for candidate in candidates:
-        sequence_file = candidate.get("local_sequence_file")
-        template = candidate.get("template")
-        if not isinstance(sequence_file, Mapping) or not isinstance(template, Mapping):
-            return None
-        path = _resolve_local_candidate_path(
-            context.project_output_path,
-            sequence_file.get("path"),
-        )
-        if path is None or not path.is_file():
-            return None
-        try:
+        candidates = payload.get("candidates", [])
+        for candidate in candidates:
+            template = candidate.get("template")
+            info = candidate.get("local_sequence_file")
+            if not isinstance(template, Mapping) or not isinstance(info, Mapping):
+                continue
+            path = Path(str(info.get("path") or ""))
+            if not path.is_absolute():
+                path = plasmid_dir.parent / path
+            path = path.resolve()
+            path.relative_to((plasmid_dir / "candidates").resolve())
             content = path.read_bytes()
-        except OSError:
-            return None
-        if _sha256_bytes(content) != sequence_file.get("file_sha256"):
-            return None
-        try:
-            validated = validate_genbank_bytes(
-                content,
-                template,
-                source_download_url=str(
-                    sequence_file.get("source_download_url") or "cached"
-                ),
+            downloaded = validate_genbank_bytes(
+                content, template, source_download_url=str(info.get("source_download_url") or "old_raw_file")
             )
-        except Exception:
-            return None
-        if (
-            validated.sequence_content_sha256
-            != sequence_file.get("sequence_content_sha256")
-            or validated.canonical_sequence_sha256
-            != sequence_file.get("canonical_sequence_sha256")
-        ):
-            return None
-    return payload
+            _raw_sequence(plasmid_dir, template, lambda _: downloaded)
+    except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
+        # A malformed historical artifact is never a reason to reuse it.
+        return
 
 
 def _strict_diverse_count(ranked: Sequence[dict[str, Any]], count: int) -> int:
@@ -272,9 +194,6 @@ def _candidate_payload(
                 ),
                 "format": "genbank",
                 "length_bp": downloaded.length_bp,
-                "file_sha256": downloaded.file_sha256,
-                "sequence_content_sha256": downloaded.sequence_content_sha256,
-                "canonical_sequence_sha256": downloaded.canonical_sequence_sha256,
                 "source_download_url": downloaded.source_download_url,
             },
         }
@@ -312,8 +231,6 @@ def _commit_artifact(
             downloaded = downloaded_by_id[str(item["plasmid_id"])]
             path = stage_candidates / f"candidate_{rank:03d}.gb"
             path.write_bytes(downloaded.content)
-            if _sha256_bytes(path.read_bytes()) != downloaded.file_sha256:
-                raise OSError(f"failed to verify staged candidate file: {path}")
         stage_artifact = staging / PLASMID_CANDIDATES_FILENAME
         _write_json(stage_artifact, artifact)
 
@@ -392,11 +309,11 @@ def plasmid_recommendation_summary(
         "warnings": payload.get("warnings", []),
         "output_path": str(artifact_path.resolve()),
         "reused_existing": reused_existing,
-        "manifest_modified": False,
+        "manifest_modified": True,
     }
 
 
-def run_plasmid_recommendation(
+def _run_plasmid_recommendation(
     config: Any,
     *,
     client: Any | None = None,
@@ -420,7 +337,6 @@ def run_plasmid_recommendation(
         getattr(config, "exclude_resistance", None),
     )
     context = load_plasmid_context(config)
-    snapshot = fetch_plasmid_snapshot(client=client)
     parameters = _parameters(
         count=count,
         priority=priority,
@@ -428,24 +344,29 @@ def run_plasmid_recommendation(
         excluded_markers=excluded_markers,
         burden_model_version=context.constructs[0].burden.model_version,
     )
-    request_fingerprint = _request_fingerprint(
-        context,
-        snapshot_fingerprint=snapshot.candidate_fingerprint,
-        schema_fingerprint=snapshot.schema_fingerprint,
-        parameters=parameters,
-    )
     plasmid_dir = context.project_output_path / "plasmid_selection"
     artifact_path = plasmid_dir / PLASMID_CANDIDATES_FILENAME
-    cached = _cached_payload(
-        artifact_path,
-        context=context,
-        request_fingerprint=request_fingerprint,
-    )
-    if cached is not None:
-        return plasmid_recommendation_summary(
-            cached, artifact_path, reused_existing=True
-        )
+    with manifest_update_lock(context.manifest_path):
+        manifest = read_design_manifest(context.manifest_path)
+        if manifest.get("revision", 0) != context.manifest_revision:
+            raise ValueError("项目版本已变化，请重试")
+        obsolete = ("plasmid_selection", "final_assembly_plan", "final_assembly", "final_design_report")
+        update_design_manifest(context.manifest_path, target_compound_id=context.target_compound_id,
+                               sections={}, discard_sections=obsolete,
+                               expected_revision=context.manifest_revision)
+        # Move computed reports under the same lock as revision invalidation.
+        if artifact_path.exists():
+            _seed_old_raw_sequences(plasmid_dir, artifact_path)
+            from uuid import uuid4
+            history = plasmid_dir / "history" / uuid4().hex
+            history.mkdir(parents=True)
+            os.replace(artifact_path, history / artifact_path.name)
+            candidates_dir = plasmid_dir / "candidates"
+            if candidates_dir.exists():
+                os.replace(candidates_dir, history / "candidates")
+        context = load_plasmid_context(config)
 
+    snapshot = fetch_plasmid_snapshot(client=client)
     ranked, rejected = rank_templates(
         snapshot.candidates,
         context,
@@ -458,7 +379,7 @@ def run_plasmid_recommendation(
     for item in ranked:
         template = item["template"]
         try:
-            downloaded = downloader(template)
+            downloaded = _raw_sequence(plasmid_dir, template, downloader)
         except Exception as exc:
             rejected.append(
                 {
@@ -504,7 +425,6 @@ def run_plasmid_recommendation(
         )
     if status == "failed":
         warnings.append("No candidate passed both metadata and sequence validation.")
-    candidate_set_fingerprint = _candidate_set_fingerprint(candidates)
     payload: dict[str, Any] = {
         "schema_version": PLASMID_CANDIDATES_SCHEMA_VERSION,
         "algorithm_version": PLASMID_RECOMMENDATION_ALGORITHM_VERSION,
@@ -515,14 +435,8 @@ def run_plasmid_recommendation(
         "source": {
             "manifest_path": str(context.manifest_path),
             "manifest_revision": context.manifest_revision,
-            "context_input_fingerprint": context.input_fingerprint,
-            "parts_selection_fingerprint": context.parts_selection_fingerprint,
-            "assembled_constructs_fingerprint": context.assembled_constructs_fingerprint,
             "milvus_collection": snapshot.collection_name,
             "milvus_row_count": snapshot.collection_row_count,
-            "milvus_schema_fingerprint": snapshot.schema_fingerprint,
-            "candidate_snapshot_fingerprint": snapshot.candidate_fingerprint,
-            "request_fingerprint": request_fingerprint,
         },
         "requirements": {
             "host": {"key": context.host_key, "name": context.host_name},
@@ -550,7 +464,6 @@ def run_plasmid_recommendation(
         },
         "ranking_parameters": parameters,
         "candidate_count": len(candidates),
-        "candidate_set_fingerprint": candidate_set_fingerprint,
         "candidates": candidates,
         "rejected_count": len(rejected),
         "rejected": sorted(
@@ -571,6 +484,14 @@ def run_plasmid_recommendation(
     return plasmid_recommendation_summary(
         payload, artifact_path, reused_existing=False
     )
+
+
+def run_plasmid_recommendation(config: Any, *, client: Any | None = None,
+                               downloader: Callable[[Mapping[str, Any]], DownloadedSequence] = download_and_validate_template) -> dict[str, Any]:
+    directory = Path(config.project_output_path) / "plasmid_selection"
+    directory.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(directory / ".recommendation.lock"), timeout=0):
+        return _run_plasmid_recommendation(config, client=client, downloader=downloader)
 
 
 __all__ = [

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 import os
@@ -31,19 +30,14 @@ class CdsOptimizationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class CdsOptimizationResult:
     accession: str
-    protein_sequence_sha256: str
-    input_fingerprint: str
     host_name: str
     codon_transformer_organism_id: int
     raw_sequence: str
     final_sequence: str
-    raw_sequence_sha256: str
-    final_sequence_sha256: str
     raw_fasta_path: Path
     optimized_fasta_path: Path
     report_path: Path
     report: dict[str, Any]
-    reused_existing: bool
 
 
 def _package_version(name: str) -> str:
@@ -51,16 +45,6 @@ def _package_version(name: str) -> str:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return "not-installed"
-
-
-def _stable_fingerprint(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def normalize_forbidden_motifs(values: Iterable[str]) -> tuple[str, ...]:
@@ -84,12 +68,8 @@ def _model_identity() -> dict[str, Any]:
         raise CdsOptimizationError(
             f"local CodonTransformer model is incomplete: {CODON_TRANSFORMER_MODEL_DIR}"
         )
-    stat = model_path.stat()
     return {
         "directory": str(CODON_TRANSFORMER_MODEL_DIR.resolve()),
-        "model_size": stat.st_size,
-        "model_mtime_ns": stat.st_mtime_ns,
-        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "package_version": _package_version("CodonTransformer"),
     }
 

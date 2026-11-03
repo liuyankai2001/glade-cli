@@ -37,8 +37,7 @@ const context = {
     name: "Demo",
     host: "E. coli",
     manifest_revision: 1,
-    source_fingerprint: "source",
-  },
+    },
   ready: true,
   issues: [],
   construct: {
@@ -46,7 +45,6 @@ const context = {
     name: "Source",
     length_bp: 1000,
     gc_percent: 50,
-    sequence_sha256: "source",
     features: [],
   },
   restriction_enzymes: [],
@@ -74,8 +72,6 @@ function install(warnings = ["未添加 T0", "未添加 T1"], valid = true) {
                   sequence: "ATGC",
                   length_bp: 1008,
                   gc_percent: 50,
-                  sequence_sha256: "preview",
-                  source_fingerprint: "source",
                   manifest_revision: 1,
                   segments: [],
                   features: [],
@@ -245,8 +241,6 @@ it("migrates legacy order around expression and respects explicit terminator seg
     issues: [],
     warnings: [],
     gc_percent: 50,
-    sequence_sha256: "x",
-    source_fingerprint: "source",
     manifest_revision: 1,
     enzymes: [],
   } as Preview;
@@ -297,8 +291,6 @@ it("always labels short independent terminator sectors with external callouts an
     sequence: "",
     length_bp: 1000,
     gc_percent: 50,
-    sequence_sha256: "x",
-    source_fingerprint: "source",
     manifest_revision: 1,
     segments: parts,
     features: [
@@ -494,8 +486,6 @@ it("ignores a late preview from before a manual terminator choice", async () => 
           features: [],
           enzymes: [],
           gc_percent: 50,
-          sequence_sha256: "old",
-          source_fingerprint: "source",
           manifest_revision: 1,
         }),
       ),
@@ -518,8 +508,7 @@ it("closes confirmation on a changed source while preserving manual choices and 
               ...context,
               project: {
                 ...context.project,
-                source_fingerprint: "new-source",
-                manifest_revision: 2,
+                            manifest_revision: 2,
               },
             }),
           ),
@@ -552,7 +541,6 @@ it("closes confirmation on a changed source while preserving manual choices and 
       ),
     ),
   ).toMatchObject({
-    source_fingerprint: "new-source",
     expected_revision: 2,
     components: expect.arrayContaining([
       {

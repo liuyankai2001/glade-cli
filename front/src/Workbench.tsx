@@ -180,9 +180,7 @@ export function Workbench() {
         !previous ||
         previous.ready !== nextContext.ready ||
         previous.project.manifest_revision !==
-          nextContext.project.manifest_revision ||
-        previous.project.source_fingerprint !==
-          nextContext.project.source_fingerprint;
+          nextContext.project.manifest_revision;
       setLibrary({
         ...modules,
         terminator: modules.terminator || [],
@@ -269,7 +267,6 @@ export function Workbench() {
     }
   }, [chosen, componentOrder, context]);
   const revision = context?.project.manifest_revision;
-  const fingerprint = context?.project.source_fingerprint;
   const ready = context?.ready;
   useEffect(() => {
     if (
@@ -289,7 +286,6 @@ export function Workbench() {
         components: chosen,
         assembly_schema_version: 2,
         expected_revision: revision,
-        source_fingerprint: fingerprint,
       }),
     })
       .then((next) => {
@@ -313,7 +309,7 @@ export function Workbench() {
     return () => {
       requestVersion.current += 1;
     };
-  }, [chosen, componentOrder, revision, fingerprint, ready, load, refreshKey]);
+  }, [chosen, componentOrder, revision, ready, load, refreshKey]);
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
     let cancelled = false;
@@ -363,7 +359,6 @@ export function Workbench() {
           components: chosen,
           assembly_schema_version: 2,
           expected_revision: revision,
-          source_fingerprint: fingerprint,
         }),
       });
       if (token !== requestVersion.current) return;
@@ -399,7 +394,7 @@ export function Workbench() {
     );
     setMessage("组件已移除，正在更新预览。");
   };
-  const possibleResult = job?.result || context?.result;
+  const possibleResult = job?.status === "failed" ? null : job?.result || context?.result;
   const currentResult =
     possibleResult &&
     context?.ready &&
@@ -407,7 +402,9 @@ export function Workbench() {
       restoreComponents(possibleResult, library),
       chosen,
     ) &&
-    possibleResult.source_fingerprint === context.project.source_fingerprint
+    (possibleResult.manifest_revision === context.project.manifest_revision ||
+      (job?.status === "succeeded" && possibleResult === job.result &&
+        possibleResult.manifest_revision > context.project.manifest_revision))
       ? possibleResult
       : null;
   const items = (type: Module["type"]) =>
@@ -506,8 +503,8 @@ export function Workbench() {
   const listIdentity = JSON.stringify([
     componentOrder,
     chosen,
-    fingerprint,
-    context?.construct?.sequence_sha256,
+    revision,
+    context?.construct?.id,
     ready,
   ]);
   useEffect(() => {

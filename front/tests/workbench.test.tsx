@@ -18,8 +18,7 @@ const context = {
     name: "Demo construct",
     host: "E. coli",
     manifest_revision: 3,
-    source_fingerprint: "source-a",
-  },
+    },
   ready: true,
   issues: [],
   construct: {
@@ -27,7 +26,6 @@ const context = {
     name: "Source",
     length_bp: 2000,
     gc_percent: 50,
-    sequence_sha256: "abc",
     features: [],
   },
   restriction_enzymes: [
@@ -73,7 +71,6 @@ const preview: Preview = {
   sequence: "ATGC",
   length_bp: 3381,
   gc_percent: 51,
-  sequence_sha256: "next",
   segments: [
     {
       id: "amp",
@@ -94,7 +91,6 @@ const preview: Preview = {
   ],
   features: [],
   enzymes: context.restriction_enzymes,
-  source_fingerprint: "source-a",
   manifest_revision: 3,
 };
 
@@ -198,7 +194,6 @@ describe("Workbench", () => {
           },
         ],
         expected_revision: 3,
-        source_fingerprint: "source-a",
       });
     },
   );
@@ -380,11 +375,9 @@ describe("Workbench", () => {
                 id: "g1",
                 resistance_id: "amp",
                 replication_id: "puc",
-                sequence_sha256: "next",
                 length_bp: 3381,
                 gc_percent: 51,
                 manifest_revision: 3,
-                source_fingerprint: "source-a",
                 files: [
                   {
                     id: "gb",
@@ -463,11 +456,9 @@ describe("Workbench", () => {
         id: "g1",
         resistance_id: "amp",
         replication_id: "puc",
-        sequence_sha256: "next",
         length_bp: 3381,
         gc_percent: 51,
         manifest_revision: 3,
-        source_fingerprint: "source-a",
         files: [
           {
             id: "gb",
@@ -569,11 +560,9 @@ describe("Workbench", () => {
       id: "g2",
       resistance_id: "amp",
       replication_id: "puc",
-      sequence_sha256: "next",
       length_bp: 3381,
       gc_percent: 51,
       manifest_revision: 2,
-      source_fingerprint: "source-a",
       files: [
         {
           id: "gb",
@@ -790,7 +779,6 @@ describe("Workbench", () => {
       id: "g",
       resistance_id: "amp",
       replication_id: "puc",
-      source_fingerprint: "source-a",
       manifest_revision: 2,
       files: [
         {
@@ -897,7 +885,6 @@ describe("Workbench", () => {
         id: "a",
         resistance_id: "amp",
         replication_id: "puc",
-        source_fingerprint: "source-a",
         manifest_revision: 2,
         files: [
           {

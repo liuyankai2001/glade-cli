@@ -163,6 +163,7 @@ SOLUTION_DOWNSTREAM_SECTIONS = (
     "plasmid_selection",
     "final_assembly_plan",
     "final_assembly",
+    "final_design_report",
 )
 
 

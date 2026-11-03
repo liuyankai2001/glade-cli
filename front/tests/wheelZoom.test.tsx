@@ -8,8 +8,7 @@ import type { Preview } from "../src/types";
 
 const preview: Preview = {
   valid: true, issues: [], warnings: [], sequence: "", length_bp: 1000,
-  gc_percent: 50, sequence_sha256: "sequence", source_fingerprint: "source",
-  manifest_revision: 1, enzymes: [],
+  gc_percent: 50, manifest_revision: 1, enzymes: [],
   segments: [
     { id: "amp", label: "AmpR", kind: "resistance", component_type: "resistance", instance_id: "amp", start_bp: 1, end_bp: 400, length_bp: 400 },
     { id: "ori", label: "ori", kind: "replication", component_type: "replication", instance_id: "ori", start_bp: 401, end_bp: 600, length_bp: 200 },

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib.metadata
 import io
 import json
@@ -40,12 +39,12 @@ from src.protein_to_cds.gc_constraints import (
 )
 
 GC_MODE = "dna_chisel_gc_only"
-GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v2"
-GC_REPORT_SCHEMAS = {GC_REPORT_SCHEMA, "protein_to_cds.gc_optimization.v1"}
+GC_REPORT_SCHEMA = "protein_to_cds.gc_optimization.v3"
+GC_REPORT_SCHEMAS = {GC_REPORT_SCHEMA}
 RESTRICTION_MODE = "dna_chisel_restriction_sites"
-RESTRICTION_REPORT_SCHEMA = "protein_to_cds.restriction_optimization.v1"
+RESTRICTION_REPORT_SCHEMA = "protein_to_cds.restriction_optimization.v2"
 HOMOPOLYMER_MODE = "dna_chisel_homopolymer"
-HOMOPOLYMER_REPORT_SCHEMA = "protein_to_cds.homopolymer_optimization.v1"
+HOMOPOLYMER_REPORT_SCHEMA = "protein_to_cds.homopolymer_optimization.v2"
 
 
 def _path(root: Path, value: str) -> Path:
@@ -61,14 +60,10 @@ def _read_record(root: Path, metadata: dict, accession: str, guards: dict) -> tu
     path = _path(root, metadata.get("path"))
     content = path.read_bytes()
     guards[path] = content
-    if metadata.get("file_sha256") and hashlib.sha256(content).hexdigest() != metadata["file_sha256"]:
-        raise ValueError(f"文件内容与来源记录不一致：{path.name}")
     record = SeqIO.read(io.StringIO(content.decode("utf-8")), "fasta")
     if record.id.upper() != accession:
         raise ValueError(f"FASTA 编号与 {accession} 不一致：{path.name}")
     sequence = str(record.seq).upper()
-    if metadata.get("sequence_sha256") and sha256_text(sequence) != metadata["sequence_sha256"]:
-        raise ValueError(f"序列与来源记录不一致：{path.name}")
     length = metadata.get("length_nt", metadata.get("length_aa"))
     if length is not None and len(sequence) != length:
         raise ValueError(f"序列长度与来源记录不一致：{path.name}")
@@ -79,8 +74,6 @@ def _read_report(root: Path, metadata: dict, guards: dict) -> dict:
     path = _path(root, metadata.get("path"))
     content = path.read_bytes()
     guards[path] = content
-    if metadata.get("file_sha256") and hashlib.sha256(content).hexdigest() != metadata["file_sha256"]:
-        raise ValueError(f"报告内容与来源记录不一致：{path.name}")
     report = json.loads(content)
     if not isinstance(report, dict):
         raise ValueError("CDS 报告必须是 JSON 对象")
@@ -132,7 +125,7 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
         raise ValueError(f"{accession} 缺少原始副本或来源报告，请重新运行 protein-to-cds")
     report = _read_report(root, previous["report"], guards)
     raw_meta = raw_cds_metadata(item, report)
-    if not isinstance(raw_meta, dict) or not raw_meta.get("sequence_sha256"):
+    if not isinstance(raw_meta, dict) or not raw_meta.get("path"):
         raise ValueError(f"{accession} 缺少可信 raw CDS，请重新运行 protein-to-cds")
     raw_path, raw = _read_record(root, raw_meta, accession, guards)
     if not raw_path.is_relative_to(root / "protein_to_cds/raw_cds"):
@@ -150,7 +143,7 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
         extras = [v for k, v in report.get("constraints", {}).get("forbidden_motifs", {}).items() if k not in LEGACY_FORBIDDEN_MOTIFS]
     if not isinstance(extras, list) or any(not isinstance(value, str) for value in extras):
         raise ValueError("来源报告中的 motif 配置无效")
-    if report.get("status") != "PASS" or report.get("raw", {}).get("sequence_sha256") != sha256_text(raw):
+    if report.get("status") != "PASS":
         raise ValueError("CDS 来源报告与当前 raw 序列不一致")
     current_path = _path(root, previous.get("path"))
     if not current_path.is_file():
@@ -164,21 +157,19 @@ def _load_edit_input(root: Path, selection: dict, item: dict, guards: dict) -> C
     guards.setdefault(output, output.read_bytes() if output.exists() else None)
     if output.exists() and source_path != output:
         raise ValueError("已有优化文件来源不明，不能覆盖；请检查文件与 manifest")
-    if report.get("final", {}).get("sequence_sha256") != sha256_text(source_sequence):
-        raise ValueError("当前优化文件与来源报告不一致，不能继续编辑")
     edit_reports = {GC_MODE: (GC_REPORT_SCHEMAS, "gc_optimization"),
                     RESTRICTION_MODE: ({RESTRICTION_REPORT_SCHEMA}, "restriction_optimization"),
                     HOMOPOLYMER_MODE: ({HOMOPOLYMER_REPORT_SCHEMA}, "homopolymer_optimization")}
+    if mode == "codon_transformer_only" and report.get("schema_version") != "protein_to_cds.generation.v3":
+        raise ValueError("CDS 生成结果版本已过期，请重新运行 protein-to-cds")
     if mode in edit_reports:
         schemas, suffix = edit_reports[mode]
         if (
             report.get("schema_version") not in schemas
             or _path(root, previous["report"]["path"]) != root / f"protein_to_cds/reports/{accession}.{suffix}.json"
-            or report.get("source", {}).get("raw_sequence_sha256") != sha256_text(raw)
-            or report.get("source", {}).get("cds_selection_source_fingerprint") != selection.get("source_fingerprint")
         ):
             raise ValueError("已有优化文件与当前 raw 来源不一致，不能继续编辑")
-    elif mode not in {None, "codon_transformer_only", "codon_transformer_and_repair"}:
+    elif mode != "codon_transformer_only":
         raise ValueError("不支持当前 CDS 的处理方式")
     if len(source_sequence) != len(raw) or source_sequence[:3] != raw[:3] or source_sequence[-3:] != raw[-3:]:
         raise ValueError("已有优化序列的长度或起止密码子与 raw 不一致")
@@ -246,13 +237,19 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     if manifest.get("target_compound_id") != config.target_name:
         raise ValueError("manifest 目标与当前输入不一致，或尚未生成 CDS")
     selection = manifest.get("cds_selection")
-    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v3":
+    if not isinstance(selection, dict) or selection.get("schema_version") != "protein_to_cds.selection.v4":
         raise ValueError("请先运行 protein-to-cds 生成原始 CDS")
     matches = [item for item in selection.get("proteins", []) if item.get("accession", "").upper() == accession]
     if len(matches) != 1:
         raise ValueError(f"当前 CDS 结果中未找到唯一编号 {accession}")
     item = matches[0]
     guards: dict[Path, bytes | None] = {manifest_path: manifest_path.read_bytes()}
+    from src.main_protein_selection.lifecycle import invalidate_current, retained_uploaded_draft
+    from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
+    previous_manifest = manifest
+    manifest = invalidate_current(manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS),
+                                  expected_revision=int(manifest.get("revision", 0)))
+    guards[manifest_path] = manifest_path.read_bytes()
     source = _load_edit_input(root, selection, item, guards)
     previous, source_report = source.previous, source.source_report
     raw_meta, raw_path, raw, protein = source.raw_meta, source.raw_path, source.raw, source.protein
@@ -279,23 +276,14 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         "scope": "global" if window is None else "local", "gc_settings": settings,
         "raw_sequence_sha256": sha256_text(raw), "protein_sequence_sha256": sha256_text(protein),
         "dnachisel_version": importlib.metadata.version("dnachisel"),
-        "algorithm_version": GC_REPORT_SCHEMA,
+        "algorithm_version": "protein_to_cds.gc_optimization.v2",
     }
     if enzymes:
         request["restriction_enzymes"] = enzymes
     if maximum is not None:
         request["homopolymer_max"] = maximum
-    if (
-        output.exists() and source_report.get("request") == request
-        and input_pass and input_audit["restriction_site_audit"]["passed"]
-        and (maximum is None or input_audit["homopolymer_audit"]["passed"])
-        and source_report.get("raw", {}).get("user_forbidden_site_hits") == raw_audit["user_forbidden_site_hits"]
-        and source_report.get("final", {}).get("user_forbidden_site_hits") == input_audit["user_forbidden_site_hits"]
-        and source_path == output
-        and not any("raw_cds" in row or "raw" in row.get("optimized_cds", {}).get("metrics", {}) for row in selection["proteins"])
-    ):
-        return {"accession": accession, "reused_existing": True, "output_path": str(output)}
     seed = int(sha256_text(json.dumps(request, sort_keys=True) + sha256_text(source_sequence))[:8], 16)
+    request["algorithm_version"] = GC_REPORT_SCHEMA
     options = {}
     if "local" in settings:
         options["local"] = settings["local"]
@@ -326,12 +314,10 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         baseline["gate_status"] = "FAIL" if baseline["failed_checks"] else "PASS"
     report = {
         "schema_version": GC_REPORT_SCHEMA, "processing_mode": GC_MODE, "status": "PASS",
-        "request": request, "deterministic_seed": seed,
+        "request": {k: v for k, v in request.items() if k not in {"raw_sequence_sha256", "protein_sequence_sha256"}}, "deterministic_seed": seed,
         "source": {
-            "raw_path": raw_path.relative_to(root).as_posix(), "raw_sequence_sha256": sha256_text(raw),
-            "cds_selection_source_fingerprint": selection.get("source_fingerprint"),
+            "raw_path": raw_path.relative_to(root).as_posix(),
             "input_path": source_path.relative_to(root).as_posix(),
-            "input_sequence_sha256": sha256_text(source_sequence),
         },
         "additional_forbidden_motifs": extras,
         "gc_settings": settings,
@@ -357,9 +343,9 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         updated["restriction_enzymes"] = enzymes
     updated_item = next(row for row in updated["proteins"] if row["accession"].upper() == accession)
     updated_item["optimized_cds"] = {
-        "path": output_relative, "file_sha256": hashlib.sha256(fasta).hexdigest(),
-        "sequence_sha256": sha256_text(final), "length_nt": length,
-        "report": {"path": report_path.relative_to(root).as_posix(), "file_sha256": hashlib.sha256(report_bytes).hexdigest()},
+        "path": output_relative,
+        "length_nt": length,
+        "report": {"path": report_path.relative_to(root).as_posix()},
         "processing_mode": GC_MODE, "constraint_repair_applied": True,
         "optimization_skipped": False, "enforced_checks": report["enforced_checks"],
         "quality_checks_enforced": False, "gc_settings": settings,
@@ -391,7 +377,6 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
                     legacy_report["raw_cds"] = row["raw_cds"]
                     content = (json.dumps(legacy_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
                     files[_path(root, reference["path"])] = content
-                    reference["file_sha256"] = hashlib.sha256(content).hexdigest()
             path = _path(root, current.get("path"))
             if not path.is_relative_to(root / "protein_to_cds/optimized_cds"):
                 if (
@@ -406,11 +391,12 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
                 guards[working] = None
                 files[working] = guards[path]
                 current["path"] = working.relative_to(root).as_posix()
-                current["file_sha256"] = hashlib.sha256(files[working]).hexdigest()
         row.pop("raw_cds", None)
         current.get("metrics", {}).pop("raw", None)
         current.pop("source_raw_sequence_sha256", None)
-    retained_sections, discard_sections = cds_dependency_update(manifest, updated)
+    retained_sections, discard_sections = cds_dependency_update(previous_manifest, updated)
+    for key, value in retained_uploaded_draft(manifest).items():
+        retained_sections.setdefault(key, value)
     commit_cds_optimization(
         manifest_path=manifest_path, project_root=root, target=config.target_name,
         revision=int(manifest.get("revision", 0)), selection=updated,

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -13,8 +11,6 @@ from src.protein_to_cds.codon_optimization import (
     CdsOptimizationResult,
     _dna_fasta,
     _model_identity,
-    _read_dna_fasta,
-    _stable_fingerprint,
     _write_atomic,
     _write_json_atomic,
     normalize_forbidden_motifs,
@@ -22,10 +18,10 @@ from src.protein_to_cds.codon_optimization import (
 )
 from src.protein_to_cds.config import CDS_CONSTRAINT_CONFIG, HostProfile
 from src.protein_to_cds.search_protein_sequence import ProteinSequenceRecord
-from src.protein_to_cds.sequence_constraints import CdsConstraintError, assess_generated_cds, sha256_text
+from src.protein_to_cds.sequence_constraints import assess_generated_cds
 from src.protein_to_cds.artifacts import ArtifactTransaction
 
-GENERATION_SCHEMA_VERSION = "protein_to_cds.generation.v2"
+GENERATION_SCHEMA_VERSION = "protein_to_cds.generation.v3"
 GENERATION_MODE = "codon_transformer_only"
 GENERATION_VALIDATION_METHOD = "codon_transformer_match_protein"
 
@@ -41,7 +37,7 @@ def generate_protein_cds(
     """Generate an unchanged CDS; quality metrics are advisory, not acceptance gates.
 
     Every successful call resets a separate optimized working file, including
-    calls which reuse the immutable model-generation cache.
+    repeated calls for the same protein.
     """
     if protein.primary_accession != protein.requested_accession:
         raise CdsOptimizationError("UniProt redirected the manifest accession")
@@ -51,112 +47,58 @@ def generate_protein_cds(
         )
     motifs = normalize_forbidden_motifs(additional_forbidden_motifs)
     model_identity = _model_identity()
-    fingerprint = _stable_fingerprint({
-        "schema_version": GENERATION_SCHEMA_VERSION,
-        "processing_mode": GENERATION_MODE,
-        "protein_sequence_sha256": protein.sequence_sha256,
-        "host": host.to_dict(),
-        "assessment_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
-        "additional_forbidden_motifs": motifs,
-        "model": model_identity,
-    })
     root = Path(output_dir).expanduser().resolve()
     raw_path = root / "raw_cds" / f"{protein.primary_accession}.raw.fasta"
     optimized_path = root / "optimized_cds" / f"{protein.primary_accession}.fasta"
     report_path = root / "reports" / f"{protein.primary_accession}.generation.json"
-    report: dict[str, Any] | None = None
-    sequence = ""
-    if raw_path.is_file() and report_path.is_file():
-        try:
-            candidate = json.loads(report_path.read_text(encoding="utf-8"))
-            sequence = _read_dna_fasta(raw_path)
-            audit = assess_generated_cds(
-                sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
-                host_taxon_id=host.taxon_id,
-                verify_translation=False,
-            )
-            if (
-                isinstance(candidate, dict)
-                and candidate.get("schema_version") == GENERATION_SCHEMA_VERSION
-                and candidate.get("processing_mode") == GENERATION_MODE
-                and candidate.get("status") == "PASS"
-                and candidate.get("constraint_repair_applied") is False
-                and candidate.get("quality_checks_enforced") is False
-                and candidate.get("model", {}).get("match_protein") is True
-                and candidate.get("encoding_validation") == GENERATION_VALIDATION_METHOD
-                and candidate.get("independent_translation_performed") is False
-                and candidate.get("input_fingerprint") == fingerprint
-                and candidate.get("changes", {}).get("codon_change_count") == 0
-                and candidate.get("changes", {}).get("nucleotide_change_count") == 0
-                and candidate.get("protein", {}).get("sequence_sha256") == protein.sequence_sha256
-                and candidate.get("host") == host.to_dict()
-                and candidate.get("raw_cds", {}).get("file_sha256")
-                == hashlib.sha256(raw_path.read_bytes()).hexdigest()
-                and all(
-                    candidate.get(stage, {}).get(key) == value
-                    for stage in ("raw", "final") for key, value in audit.items()
-                )
-            ):
-                report = candidate
-        except (OSError, ValueError, TypeError, AttributeError, CdsConstraintError):
-            pass
-
-    reused = report is not None
-    if report is None:
-        try:
-            sequence, device_name = predict_cds_sequence(protein, host, device)
-            audit = assess_generated_cds(
-                sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
-                host_taxon_id=host.taxon_id,
-                verify_translation=False,
-            )
-        except Exception as exc:
-            failure_path = report_path.with_name(f"{protein.primary_accession}.generation.failed.json") if report_path.exists() else report_path
-            _write_json_atomic(failure_path, {
-                "schema_version": GENERATION_SCHEMA_VERSION,
-                "processing_mode": GENERATION_MODE,
-                "status": "FAIL",
-                "input_fingerprint": fingerprint,
-                "protein": {"accession": protein.primary_accession, "sequence_sha256": protein.sequence_sha256},
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            raise CdsOptimizationError(f"CDS generation failed for {protein.primary_accession}: {exc}") from exc
-        metrics = {**audit, "sequence_path": raw_path.relative_to(root).as_posix()}
-        report = {
+    try:
+        sequence, device_name = predict_cds_sequence(protein, host, device)
+        audit = assess_generated_cds(
+            sequence, protein.sequence, host.codon_transformer_organism_id, motifs,
+            host_taxon_id=host.taxon_id,
+            verify_translation=False,
+        )
+    except Exception as exc:
+        failure_path = report_path.with_name(f"{protein.primary_accession}.generation.failed.json") if report_path.exists() else report_path
+        _write_json_atomic(failure_path, {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "processing_mode": GENERATION_MODE,
-            "status": "PASS",
-            "constraint_repair_applied": False,
-            "quality_checks_enforced": False,
-            "encoding_validation": GENERATION_VALIDATION_METHOD,
-            "independent_translation_performed": False,
-            "input_fingerprint": fingerprint,
-            "protein": {
-                "accession": protein.primary_accession,
-                "sequence_sha256": protein.sequence_sha256,
-                "length_aa": protein.length_aa,
-            },
-            "host": host.to_dict(),
-            "model": {
-                **model_identity, "deterministic": True,
-                "match_protein": True, "device": device_name,
-            },
-            "assessment_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
-            "additional_forbidden_motifs": list(motifs),
-            "raw": metrics,
-            "final": dict(metrics),
-            "changes": {
-                "nucleotide_change_count": 0, "nucleotide_change_fraction": 0.0,
-                "codon_change_count": 0, "codon_change_fraction": 0.0,
-            },
-        }
+            "status": "FAIL",
+            "protein": {"accession": protein.primary_accession},
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        raise CdsOptimizationError(f"CDS generation failed for {protein.primary_accession}: {exc}") from exc
+    metrics = {**audit, "sequence_path": raw_path.relative_to(root).as_posix()}
+    report = {
+        "schema_version": GENERATION_SCHEMA_VERSION,
+        "processing_mode": GENERATION_MODE,
+        "status": "PASS",
+        "constraint_repair_applied": False,
+        "quality_checks_enforced": False,
+        "encoding_validation": GENERATION_VALIDATION_METHOD,
+        "independent_translation_performed": False,
+        "protein": {
+            "accession": protein.primary_accession,
+            "length_aa": protein.length_aa,
+        },
+        "host": host.to_dict(),
+        "model": {
+            **model_identity, "deterministic": True,
+            "match_protein": True, "device": device_name,
+        },
+        "assessment_policy_version": CDS_CONSTRAINT_CONFIG.policy_version,
+        "additional_forbidden_motifs": list(motifs),
+        "raw": metrics,
+        "final": dict(metrics),
+        "changes": {
+            "nucleotide_change_count": 0, "nucleotide_change_fraction": 0.0,
+            "codon_change_count": 0, "codon_change_fraction": 0.0,
+        },
+    }
     with ArtifactTransaction((raw_path, optimized_path, report_path)) as transaction:
-        if not reused:
-            _write_atomic(raw_path, _dna_fasta(protein.primary_accession, "codon_transformer_raw", sequence))
+        _write_atomic(raw_path, _dna_fasta(protein.primary_accession, "codon_transformer_raw", sequence))
         report["raw_cds"] = {
             "path": f"protein_to_cds/raw_cds/{protein.primary_accession}.raw.fasta",
-            "file_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
-            "sequence_sha256": sha256_text(sequence),
             "length_nt": len(sequence),
         }
         report["final"]["sequence_path"] = optimized_path.relative_to(root).as_posix()
@@ -165,19 +107,14 @@ def generate_protein_cds(
         transaction.commit()
     return CdsOptimizationResult(
         accession=protein.primary_accession,
-        protein_sequence_sha256=protein.sequence_sha256,
-        input_fingerprint=fingerprint,
         host_name=host.host_name,
         codon_transformer_organism_id=host.codon_transformer_organism_id,
         raw_sequence=sequence,
         final_sequence=sequence,
-        raw_sequence_sha256=sha256_text(sequence),
-        final_sequence_sha256=sha256_text(sequence),
         raw_fasta_path=raw_path,
         optimized_fasta_path=optimized_path,
         report_path=report_path,
         report=report,
-        reused_existing=reused,
     )
 
 

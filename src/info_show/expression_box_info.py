@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
@@ -17,7 +15,6 @@ from src.protein_to_cds.sequence_constraints import HOMOPOLYMER_LIMIT
 from src.write_manifest.store import read_design_manifest
 
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _mapping(value: Any, field: str) -> Mapping[str, Any]:
@@ -43,25 +40,6 @@ def _positive_int(value: Any, field: str) -> int:
     if parsed < 1:
         raise ValueError(f"{field} 必须是正整数")
     return parsed
-
-
-def _stable_json_hash(payload: Any) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _project_file(project_root: Path, path_value: Any, field: str) -> Path:
@@ -97,18 +75,11 @@ def _cds_by_accession(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             optimized.get("length_nt"),
             f"cds_selection.proteins[{index}].optimized_cds.length_nt",
         )
-        sequence_sha256 = _text(
-            optimized.get("sequence_sha256"),
-            f"cds_selection.proteins[{index}].optimized_cds.sequence_sha256",
-        ).lower()
-        if _SHA256_RE.fullmatch(sequence_sha256) is None:
-            raise ValueError(f"{accession} 的 CDS SHA-256 无效")
         roles = item.get("roles")
         if not isinstance(roles, list) or not roles:
             raise ValueError(f"{accession} 的 roles 必须是非空列表")
         result[accession] = {
             "长度_nt": length_nt,
-            "序列SHA256": sequence_sha256,
             "优化已跳过": optimized.get("optimization_skipped") is True,
             "路径": str(optimized.get("path") or ""),
             "角色": [str(role) for role in roles],
@@ -182,12 +153,6 @@ def _part_summary(part: Any, expected_role: str) -> dict[str, Any]:
         raise ValueError(f"表达元件角色不匹配：预期 {expected_role}，实际 {role}")
     part_id = _text(item.get("part_id"), f"{expected_role}.part_id")
     length_bp = _positive_int(item.get("length_bp"), f"{part_id}.length_bp")
-    sequence_sha256 = _text(
-        item.get("sequence_sha256"),
-        f"{part_id}.sequence_sha256",
-    ).lower()
-    if _SHA256_RE.fullmatch(sequence_sha256) is None:
-        raise ValueError(f"{part_id} 的序列 SHA-256 无效")
     sequence_file = item.get("sequence_file")
     if isinstance(sequence_file, Mapping):
         sequence_file = sequence_file.get("path")
@@ -196,7 +161,6 @@ def _part_summary(part: Any, expected_role: str) -> dict[str, Any]:
         "角色": role,
         "来源": str(item.get("source") or item.get("source_type") or "未记录"),
         "长度_bp": length_bp,
-        "序列SHA256": sequence_sha256,
         "序列文件": str(sequence_file or ""),
         "强度": str(item.get("strength") or ""),
         "调控类型": str(item.get("regulation") or ""),
@@ -209,7 +173,7 @@ def _ostir_summary(value: Any, *, stale: bool = False) -> dict[str, Any]:
         return {
             "状态": "需重新评估", "翻译起始率": None,
             "总自由能": None, "预期起始位置": None,
-            "非预期起始位点数": None, "上下文SHA256": "",
+            "非预期起始位点数": None,
         }
     item = _mapping(value, "ostir")
     try:
@@ -224,7 +188,6 @@ def _ostir_summary(value: Any, *, stale: bool = False) -> dict[str, Any]:
         "总自由能": energy,
         "预期起始位置": intended,
         "非预期起始位点数": unintended,
-        "上下文SHA256": str(item.get("context_sha256") or ""),
     }
 
 
@@ -250,9 +213,6 @@ def _read_artifact(project_root: Path, source: Mapping[str, Any]) -> dict[str, A
         raise FileNotFoundError(f"表达元件方案文件不存在：{path}")
     try:
         content = path.read_bytes()
-        expected_hash = source.get("artifact_file_sha256")
-        if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
-            raise ValueError("表达元件方案文件哈希不匹配")
         payload = json.loads(content.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"表达元件方案文件不是有效 JSON：{path}") from exc
@@ -315,8 +275,6 @@ def _overlay_design(
             raw_gene = _mapping(raw_gene_value, "gene")
             if str(raw_gene.get("accession") or "").strip().upper() != gene["蛋白ID"]:
                 raise ValueError(f"表达盒 {cassette_index} 的蛋白顺序不匹配")
-            if raw_gene.get("cds_sequence_sha256") != gene["CDS"]["序列SHA256"]:
-                raise ValueError(f"{gene['蛋白ID']} 的 CDS 已发生变化")
             gene["RBS"] = _part_summary(raw_gene.get("rbs"), "rbs")
             gene["OSTIR"] = _ostir_summary(raw_gene.get("ostir"))
         cassette["状态"] = "表达元件已设置"
@@ -333,20 +291,12 @@ def _construct_summary(
         "状态": "未生成",
         "路径": "",
         "文件存在": False,
-        "文件哈希匹配": False,
         "长度_bp": None,
-        "序列SHA256": "",
-        "文件SHA256": "",
         "序列检查": None,
     }
     assembled = manifest.get("assembled_expression_constructs")
     if not isinstance(assembled, Mapping):
         return empty
-    if assembled.get("source_parts_selection_fingerprint") != selection.get(
-        "selection_fingerprint"
-    ):
-        warnings.append("完整表达构建与当前表达元件选择不一致")
-        return {**empty, "状态": "信息不可用"}
     constructs = assembled.get("constructs")
     if not isinstance(constructs, list):
         warnings.append("assembled_expression_constructs.constructs 无效")
@@ -366,20 +316,13 @@ def _construct_summary(
         warnings.append(str(exc))
         return {**empty, "状态": "信息不可用"}
     exists = path.is_file()
-    expected_hash = str(item.get("file_sha256") or "")
-    hash_matches = exists and bool(expected_hash) and _sha256_file(path) == expected_hash
     if not exists:
         warnings.append(f"完整表达构建文件不存在：{path}")
-    elif not hash_matches:
-        warnings.append(f"完整表达构建文件哈希不匹配：{path}")
     return {
-        "状态": "已生成" if hash_matches else "文件校验失败",
+        "状态": "已生成" if exists else "文件不存在",
         "路径": str(path),
         "文件存在": exists,
-        "文件哈希匹配": hash_matches,
         "长度_bp": item.get("length_bp"),
-        "序列SHA256": str(item.get("sequence_sha256") or ""),
-        "文件SHA256": expected_hash,
         "序列检查": _audit_summary(item.get("sequence_audit")),
     }
 
@@ -409,12 +352,6 @@ def _draft_part_summary(
     )
     if not path.is_file():
         raise FileNotFoundError(f"{label}快照文件不存在：{path}")
-    expected_hash = _text(
-        sequence_file.get("file_sha256"),
-        f"{role}.sequence_file.file_sha256",
-    )
-    if _sha256_file(path) != expected_hash:
-        raise ValueError(f"{label}快照文件哈希不匹配：{path}")
     summary["序列文件"] = str(path)
     return summary
 
@@ -433,10 +370,6 @@ def _apply_draft(
         if str(draft.get("target_compound_id") or "") != result["目标化合物"]:
             raise ValueError("表达元件草稿与当前目标化合物不一致")
         source = _mapping(draft.get("source"), "expression_parts_draft.source")
-        if source.get("expression_box_selection_fingerprint") != result[
-            "表达盒方案"
-        ]["方案Fingerprint"]:
-            raise ValueError("表达元件草稿与当前表达盒方案不一致")
         selected_ids = [d["design_id"] for d in draft["designs"]]
         primary_id = selected_ids[0]
         display_id = requested_design_id if requested_design_id is not None else primary_id
@@ -455,7 +388,7 @@ def _apply_draft(
                 "表达负担": recommendation.get("expression_burden") if recommendation.get("status") == "current" else None,
                 "是否系统推荐": True, "来源": "recommended",
             }
-            result["完整表达构建"] = {"状态": "未生成", "路径": "", "文件哈希匹配": False}
+            result["完整表达构建"] = {"状态": "未生成", "路径": ""}
         raw_cassettes = design["cassettes"]
         if not isinstance(raw_cassettes, list):
             raise ValueError("expression_parts_draft.cassettes 必须是列表")
@@ -549,7 +482,6 @@ def _apply_draft(
             "已上传RBS数": rbs_count,
             "已上传终止子数": terminator_count,
             "表达盒总数": len(result["表达盒列表"]),
-            "草稿Fingerprint": str(draft.get("draft_fingerprint") or ""),
         }
         if promoter_count or rbs_count or terminator_count:
             result["表达元件状态"] = "已设置" if draft["status"] == "ready" else "部分设置"
@@ -600,18 +532,11 @@ def _apply_parts(
     if not isinstance(source, Mapping):
         _parts_unavailable(result, "parts_selection.source 无效")
         return
-    box_fingerprint = result["表达盒方案"]["方案Fingerprint"]
-    if source.get("expression_box_selection_fingerprint") != box_fingerprint:
-        _parts_unavailable(result, "表达元件选择与当前表达盒方案不一致")
-        return
-
     try:
         artifact = _read_artifact(project_root, source)
         if str(artifact.get("target_compound_id") or "") != result["目标化合物"]:
             raise ValueError("表达元件方案文件与当前目标化合物不一致")
         artifact_source = _mapping(artifact.get("source"), "expression-parts artifact.source")
-        if artifact_source.get("expression_box_selection_fingerprint") != box_fingerprint:
-            raise ValueError("表达元件方案文件与当前表达盒方案不一致")
         raw_designs = artifact.get("designs")
         if not isinstance(raw_designs, list):
             raise ValueError("表达元件方案文件缺少 designs")
@@ -623,9 +548,6 @@ def _apply_parts(
         if display_id not in by_id:
             raise ValueError(f"表达元件方案文件中不存在方案 {display_id}")
         design = by_id[display_id]
-        expected_design_hash = str(references[display_id].get("design_fingerprint") or "")
-        if not expected_design_hash or _stable_json_hash(design) != expected_design_hash:
-            raise ValueError(f"表达元件方案 {display_id} 的内容 fingerprint 不匹配")
         _overlay_design(result["表达盒列表"], design)
     except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
         _parts_unavailable(result, str(exc))
@@ -694,14 +616,8 @@ def get_expression_box_info(config: Any) -> dict[str, Any]:
         return result
 
     selection = _mapping(raw_selection, "expression_box_selection")
-    if selection.get("schema_version") != "expression_box_selection.v1":
+    if selection.get("schema_version") != "expression_box_selection.v2":
         raise ValueError("不支持的 expression_box_selection schema_version")
-    fingerprint = _text(
-        selection.get("selected_design_fingerprint"),
-        "expression_box_selection.selected_design_fingerprint",
-    )
-    if _SHA256_RE.fullmatch(fingerprint) is None:
-        raise ValueError("expression_box_selection 的方案 fingerprint 无效")
     cds_by_accession = _cds_by_accession(manifest)
     result["状态"] = "已选择表达盒方案"
     result["表达盒方案"] = {
@@ -710,7 +626,6 @@ def get_expression_box_info(config: Any) -> dict[str, Any]:
         "名称": str(selection.get("name") or ""),
         "策略": str(selection.get("strategy") or ""),
         "是否系统推荐": selection.get("recommended") is True,
-        "方案Fingerprint": fingerprint,
     }
     result["表达盒列表"] = _base_cassettes(selection, cds_by_accession)
     _apply_parts(result, manifest, project_root, requested_design_id)

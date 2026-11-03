@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import unicodedata
@@ -68,8 +67,6 @@ def _raw_view(root: Path, item: Mapping[str, Any], optimized: Mapping[str, Any])
         path = (root / reference["path"]).resolve()
         if path.is_file():
             content = path.read_bytes()
-            if reference.get("file_sha256") and hashlib.sha256(content).hexdigest() != reference["file_sha256"]:
-                raise ValueError("CDS 报告与来源记录不一致")
             report = _mapping(json.loads(content), "CDS 报告")
     metadata = raw_cds_metadata(item, report)
     # Legacy manifests contained baseline metrics rather than report metadata.
@@ -107,7 +104,7 @@ def get_cds_info(config: Any, *, accession: str | None = None) -> dict[str, Any]
     if not target:
         raise ValueError("manifest 缺少 target_compound_id")
     selection = _mapping(manifest["cds_selection"], "cds_selection")
-    if selection.get("schema_version") != "protein_to_cds.selection.v3":
+    if selection.get("schema_version") != "protein_to_cds.selection.v4":
         raise ValueError("不支持的 cds_selection schema_version，请重新运行 protein-to-cds")
     enzymes = normalize_enzymes(selection.get("restriction_enzymes"))
     result["限制酶"] = enzymes

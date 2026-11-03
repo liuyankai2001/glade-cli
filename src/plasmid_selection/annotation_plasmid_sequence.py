@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -137,14 +136,6 @@ def _validate_sequence(sequence: str, vector_id: str) -> dict[str, Any]:
         "length_bp": len(sequence),
         "gc_percent": gc_percent,
     }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _relpath_or_abs(base_dir: Path, path: Path) -> str:
@@ -325,7 +316,6 @@ def annotate_plasmid_sequence(
             "vector_id": resolved_vector_id,
             "input_sequence_file": {
                 "path": _relpath_or_abs(output_root, input_path),
-                "sha256": _sha256_file(input_path),
             },
             "length_bp": sequence_info["length_bp"],
             "gc_percent": sequence_info["gc_percent"],

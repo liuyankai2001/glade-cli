@@ -118,6 +118,7 @@ class KeggKOClient:
                 and cached.get("ko_id") == normalized
                 and cached.get("query_type") == "uniprot_by_kegg_ko"
             ):
+                cached.pop("response_sha256", None)
                 return {**cached, "cache_hit": True}
 
         gene_text = self._get_text(query_url)
@@ -177,9 +178,6 @@ class KeggKOClient:
                 "gene_link_url": query_url,
                 "conversion_urls": conversion_urls,
             },
-            "response_sha256": hashlib.sha256(
-                raw_evidence.encode("utf-8")
-            ).hexdigest(),
             "cache_hit": False,
         }
         _json_atomic(cache_path, result)

@@ -9,7 +9,6 @@ the requested direction is catalysed.
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import re
@@ -69,10 +68,6 @@ def normalize_rhea_ids(value: Any) -> list[str]:
     return _unique(result)
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _split_equation(equation: str, direction: str) -> tuple[list[str], list[str]]:
     parts = re.split(r"\s*(?:<=>|=>|=)\s*", str(equation or ""), maxsplit=1)
     if len(parts) != 2:
@@ -85,7 +80,7 @@ def _split_equation(equation: str, direction: str) -> tuple[list[str], list[str]
 
 
 class DirectionEvidenceClient:
-    """Cache official Rhea and KEGG evidence with content hashes."""
+    """Cache official Rhea and KEGG evidence."""
 
     def __init__(
         self,
@@ -117,7 +112,6 @@ class DirectionEvidenceClient:
             text = cache_path.read_text("utf-8")
             self.source_records[key] = {
                 "url": url,
-                "response_sha256": _sha256(text),
                 "cache_hit": True,
             }
             return text
@@ -132,8 +126,7 @@ class DirectionEvidenceClient:
                 self.source_records[key] = {
                     "url": url,
                     "params": params or {},
-                    "response_sha256": _sha256(text),
-                    "cache_hit": False,
+                        "cache_hit": False,
                 }
                 return text
             except requests.RequestException as exc:

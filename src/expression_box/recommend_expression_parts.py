@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import heapq
 import itertools
 import math
@@ -42,7 +41,6 @@ from src.expression_box.parts_models import (
 )
 from src.protein_to_cds.sequence_constraints import (
     DEFAULT_FORBIDDEN_MOTIFS,
-    DNA_ALPHABET,
     HOMOPOLYMER_LIMIT,
     max_homopolymer_length,
     motif_hits,
@@ -144,7 +142,6 @@ def _part_payload(part: PartCandidate) -> dict[str, Any]:
         "part_id": part.part_id,
         "role": part.role,
         "sequence": part.sequence,
-        "sequence_sha256": part.sequence_sha256,
         "length_bp": len(part.sequence),
         "strength": part.strength,
         "regulation": part.regulation,
@@ -405,7 +402,7 @@ def _cassette_candidates(
                 "promoter": promoter,
                 "genes": [],
                 "sequence": promoter.sequence,
-                "hashes": {promoter.sequence_sha256},
+                "hashes": {promoter.sequence},
             }
         )
     for cds in cassette.cds:
@@ -422,14 +419,14 @@ def _cassette_candidates(
             )
         expanded: list[dict[str, Any]] = []
         for beam, (base_cost, rbs, prediction) in itertools.product(beams, options):
-            repeated = rbs.sequence_sha256 in beam["hashes"]
+            repeated = rbs.sequence in beam["hashes"]
             expanded.append(
                 {
                     **beam,
                     "cost": beam["cost"] + base_cost + (0.25 if repeated else 0.0),
                     "genes": [*beam["genes"], (cds, rbs, prediction)],
                     "sequence": beam["sequence"] + rbs.sequence + cds.sequence,
-                    "hashes": {*beam["hashes"], rbs.sequence_sha256},
+                    "hashes": {*beam["hashes"], rbs.sequence},
                 }
             )
         expanded.sort(
@@ -452,7 +449,7 @@ def _cassette_candidates(
 
     raw_finals: list[tuple[float, dict[str, Any], PartCandidate]] = []
     for beam, (base_cost, terminator) in itertools.product(beams, terminator_options):
-        repeated = terminator.sequence_sha256 in beam["hashes"]
+        repeated = terminator.sequence in beam["hashes"]
         total_cost = beam["cost"] + base_cost + (0.25 if repeated else 0.0)
         raw_finals.append((total_cost, beam, terminator))
     raw_finals.sort(
@@ -479,9 +476,9 @@ def _cassette_candidates(
         if audit["gate_status"] != "PASS":
             continue
         part_hashes = (
-            selected["promoter"].sequence_sha256,
-            *(gene[1].sequence_sha256 for gene in selected["genes"]),
-            terminator.sequence_sha256,
+            selected["promoter"].sequence,
+            *(gene[1].sequence for gene in selected["genes"]),
+            terminator.sequence,
         )
         payload = {
             "cassette_index": cassette.cassette_index,
@@ -489,7 +486,6 @@ def _cassette_candidates(
             "genes": [
                 {
                     "accession": cds.accession,
-                    "cds_sequence_sha256": cds.sequence_sha256,
                     "cds_length_nt": len(cds.sequence),
                     "rbs": _part_payload(rbs),
                     "ostir": {
@@ -499,7 +495,6 @@ def _cassette_candidates(
                             prediction.intended_start_position
                         ),
                         "unintended_start_count": prediction.unintended_start_count,
-                        "context_sha256": prediction.context_sha256,
                     },
                 }
                 for cds, rbs, prediction in selected["genes"]
@@ -508,7 +503,6 @@ def _cassette_candidates(
             "assembled_sequence": {
                 "stored": False,
                 "length_nt": audit["length_nt"],
-                "sequence_sha256": audit["sequence_sha256"],
             },
             "sequence_audit": audit,
         }
@@ -678,7 +672,7 @@ def _score_expression_candidate(
         )
     terminator_factor = sum(terminator_factors) / len(terminator_factors)
 
-    hashes = Counter(str(part["sequence_sha256"]) for part in parts)
+    hashes = Counter(str(part["sequence"]) for part in parts)
     repeated_occurrences = sum(count - 1 for count in hashes.values() if count > 1)
     assembly_factor = 1.0 - repeated_occurrences / len(parts)
     expression_burden = calculate_expression_burden(
@@ -736,12 +730,12 @@ def _design_warnings(cassettes: list[dict[str, Any]], burden: str) -> list[str]:
         selected_parts.extend(gene["rbs"] for gene in cassette["genes"])
         selected_parts.append(cassette["terminator"])
     warnings: list[str] = []
-    hashes = Counter(item["sequence_sha256"] for item in selected_parts)
+    hashes = Counter(item["sequence"] for item in selected_parts)
     repeated_ids = sorted(
         {
             item["part_id"]
             for item in selected_parts
-            if hashes[item["sequence_sha256"]] > 1
+            if hashes[item["sequence"]] > 1
         }
     )
     if repeated_ids:

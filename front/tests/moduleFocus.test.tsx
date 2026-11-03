@@ -30,8 +30,6 @@ const preview: Preview = {
   sequence: "",
   length_bp: 1000,
   gc_percent: 50,
-  sequence_sha256: "sequence",
-  source_fingerprint: "source",
   manifest_revision: 1,
   segments: [
     segment("amp-a", "amp", "resistance", 101, 300),
@@ -217,7 +215,6 @@ describe("module reference-strand focus", () => {
   it("keeps expression selected when provisional and validated payload IDs differ", () => {
     const provisional = {
       ...preview,
-      source_fingerprint: "",
       segments: preview.segments
         .filter((p) => p.kind !== "restriction")
         .map((p) => p.kind === "expression" ? { ...p, id: "1", start_bp: 701, end_bp: 900 } : p),
@@ -250,7 +247,7 @@ describe("module reference-strand focus", () => {
     click(part("amp-a"));
     expect(screen.getByTestId("module-direction")).toBeInTheDocument();
     const changed = reason === "source"
-      ? { ...preview, source_fingerprint: "new-source" }
+      ? { ...preview, manifest_revision: (preview.manifest_revision ?? 0) + 1 }
       : { ...preview, segments: preview.segments.flatMap((p) => p.instance_id !== "amp-a" ? [p] : reason === "delete" ? [] : [{ ...p, id: "kan" }]) };
     rerender(<PlasmidRing {...props} preview={changed} />);
     expect(screen.queryByTestId("module-direction")).not.toBeInTheDocument();
@@ -260,7 +257,7 @@ describe("module reference-strand focus", () => {
 
   it("can focus a single full-circle construct without a reorder callback", () => {
     const { container } = render(<PlasmidRing preview={null} construct={{
-      id: 1, name: "Source", length_bp: 1000, gc_percent: 50, sequence_sha256: "source", features: [],
+      id: 1, name: "Source", length_bp: 1000, gc_percent: 50, features: [],
     }} enzymes={[]} />);
     const circle = screen.getByTestId("full-segment");
     const before = Number(circle.getAttribute("r"));

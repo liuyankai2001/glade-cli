@@ -62,9 +62,9 @@ from src.pathway_analyze.retropath_mnxref import (
     MnxrefReactionTemplate,
 )
 
-RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v3"
-RETROPATH_ENZYME_REQUIREMENTS_SCHEMA = "retropath_enzyme_requirements.v2"
-RETROPATH_SELENZYME_EVIDENCE_SCHEMA = "retropath_selenzyme_evidence.v1"
+RETROPATH_ENZYME_SELECTION_SCHEMA = "retropath_enzyme_selection.v4"
+RETROPATH_ENZYME_REQUIREMENTS_SCHEMA = "retropath_enzyme_requirements.v3"
+RETROPATH_SELENZYME_EVIDENCE_SCHEMA = "retropath_selenzyme_evidence.v2"
 
 ENZYME_SELECTION_DIR_NAME = "enzyme_selection"
 ENZYME_REQUIREMENTS_FILE_NAME = "retropath_enzyme_requirements.json"
@@ -104,7 +104,6 @@ ENZYME_CANDIDATE_COLUMNS = (
     "fit_status",
     "manual_review_required",
     "selection_status",
-    "reaction_signature_sha256",
     "reaction_id",
     "source_mnxr_id",
     "rule_id",
@@ -128,7 +127,6 @@ ENZYME_CANDIDATE_COLUMNS = (
     "taxonomic_fit_score",
     "taxonomy_evidence_source",
     "taxonomic_distance",
-    "sequence_sha256",
     "sequence",
     "sequence_version",
     "score_breakdown",
@@ -175,7 +173,7 @@ class RetropathEnzymeRequirement:
     enzyme_required: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {key: value for key, value in asdict(self).items() if key != "reaction_signature_sha256"}
 
 
 @dataclass
@@ -815,7 +813,6 @@ def _candidate_record(
             if candidate.selenzyme_taxonomic_distance is None
             else candidate.selenzyme_taxonomic_distance
         ),
-        "sequence_sha256": candidate.sequence_sha256,
         "sequence": candidate.sequence,
         "sequence_version": candidate.sequence_version or "",
         "score_breakdown": json.dumps(
@@ -1279,13 +1276,11 @@ def _search_requirement(
                     "query_id": query_result.get("query_id", ""),
                     "query_type": query_result.get("query_type", ""),
                     "query_kind": query_result.get("query_kind", query_kind),
-                    "query_sha256": query_result.get("query_sha256", ""),
                     "query_value": query_result.get("query_value", structural_query),
                     "status": query_result.get("status", ""),
                     "app": query_result.get("app", ""),
                     "version": query_result.get("version", ""),
                     "cache_hit": bool(query_result.get("cache_hit")),
-                    "response_sha256": query_result.get("response_sha256", ""),
                     "rows": raw_audit,
                     "errors": errors,
                 })
@@ -1324,8 +1319,8 @@ def _search_requirement(
 
 def _search_key(requirement: RetropathEnzymeRequirement) -> str:
     return _canonical_sha256({
-        "step_source": requirement.step_source,
         "reaction_signature_sha256": requirement.reaction_signature_sha256,
+        "step_source": requirement.step_source,
         "source_ec_numbers": requirement.source_ec_numbers,
         "source_uniprot_ids": requirement.source_uniprot_ids,
         "source_rhea_ids": requirement.source_rhea_ids,
@@ -1353,7 +1348,6 @@ def _bind_candidate(
         "step_id": requirement.step_id,
         "step_source": requirement.step_source,
         "hypothesis_id": requirement.hypothesis_id,
-        "reaction_signature_sha256": requirement.reaction_signature_sha256,
         "reaction_id": reaction_id,
         "source_mnxr_id": requirement.source_mnxr_id,
         "rule_id": requirement.rule_id,
@@ -1563,7 +1557,6 @@ def _standard_candidate_row(
         "cofactors": row.get("cofactors", ""),
         "function_comments": row.get("function_comments", ""),
         "sequence_version": row.get("sequence_version", ""),
-        "sequence_sha256": row.get("sequence_sha256", ""),
         "sequence": row.get("sequence", ""),
         "warnings": row.get("warnings", ""),
         "reasons": " | ".join(filter(None, (
@@ -1613,7 +1606,7 @@ def _merge_manifest_step_candidates(
 
     merged_by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for (step_index, accession), matches in groups.items():
-        for field in ("sequence", "sequence_sha256"):
+        for field in ("sequence",):
             values = {str(row.get(field) or "").strip() for row in matches
                       if str(row.get(field) or "").strip()}
             if len(values) > 1:

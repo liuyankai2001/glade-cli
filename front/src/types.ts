@@ -44,7 +44,6 @@ export type Context = {
     name: string;
     host: string;
     manifest_revision: number;
-    source_fingerprint: string;
   };
   ready: boolean;
   issues: Issue[];
@@ -53,7 +52,6 @@ export type Context = {
     name: string;
     length_bp: number;
     gc_percent: number;
-    sequence_sha256: string;
     features: Feature[];
   } | null;
   restriction_enzymes: Enzyme[];
@@ -90,7 +88,6 @@ export type Preview = {
   sequence: string;
   length_bp: number;
   gc_percent: number;
-  sequence_sha256: string;
   segments: {
     id: string;
     label: string;
@@ -103,8 +100,7 @@ export type Preview = {
   }[];
   features: Feature[];
   enzymes: Enzyme[];
-  source_fingerprint: string;
-  manifest_revision: number;
+  manifest_revision?: number;
 };
 export type Result = {
   assembly_schema_version?: number;
@@ -115,11 +111,9 @@ export type Result = {
   id: string;
   resistance_id: string;
   replication_id: string;
-  sequence_sha256: string;
   length_bp: number;
   gc_percent: number;
   manifest_revision: number;
-  source_fingerprint: string;
   files: {
     id: string;
     label: string;

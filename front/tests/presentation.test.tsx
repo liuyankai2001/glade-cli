@@ -15,9 +15,7 @@ describe("reference-style plasmid overview", () => {
       sequence: "ACGT",
       length_bp: 1000,
       gc_percent: 50,
-      sequence_sha256: "sequence",
       manifest_revision: 1,
-      source_fingerprint: "source",
       segments: [
         {
           id: "basic_seva_ap",

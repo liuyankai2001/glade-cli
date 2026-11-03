@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -88,34 +87,7 @@ class ChassisTaxonomyProfile:
             "root_only_score": ROOT_ONLY_SCORE,
             "unknown_score": UNKNOWN_TAXONOMY_SCORE,
             "scoring_weights": active_weights,
-            "taxonomy_fingerprint": self.semantic_fingerprint(active_weights),
         }
-
-    def semantic_fingerprint(
-        self,
-        scoring_weights: Mapping[str, Any] | None = None,
-    ) -> str:
-        active_weights = normalize_scoring_weights(scoring_weights)
-        payload = {
-            "scoring_policy_version": TAXONOMY_SCORING_POLICY_VERSION,
-            "chassis_key": self.chassis_key,
-            "host_taxon_id": self.taxon_id,
-            "host_scientific_name": self.scientific_name,
-            "host_rank": self.rank,
-            "status": self.status,
-            "lineage": [asdict(node) for node in self.full_lineage],
-            "rank_scores": dict(RANK_SCORES),
-            "root_only_score": ROOT_ONLY_SCORE,
-            "unknown_score": UNKNOWN_TAXONOMY_SCORE,
-            "scoring_weights": active_weights,
-        }
-        canonical = json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def normalize_scoring_weights(

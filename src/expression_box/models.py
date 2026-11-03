@@ -12,7 +12,6 @@ class ExpressionProtein:
     roles: tuple[str, ...]
     assigned_step_indexes: tuple[int, ...]
     optimized_cds_length_nt: int
-    optimized_cds_sequence_sha256: str
 
     @property
     def is_main_enzyme(self) -> bool:
@@ -29,8 +28,6 @@ class ExpressionGroupingContext:
     manifest_path: Path
     manifest_revision: int
     target_compound_id: str
-    cds_selection_source_fingerprint: str
-    input_fingerprint: str
     proteins: tuple[ExpressionProtein, ...]
 
 
