@@ -44,10 +44,8 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
     manifest_path = Path(path)
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
-    value = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"Manifest root must be an object: {manifest_path}")
-    return value
+    from src.write_manifest.store import read_design_manifest
+    return read_design_manifest(manifest_path)
 
 
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:

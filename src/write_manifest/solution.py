@@ -633,6 +633,29 @@ def _select_retropath_materialization_validation(
     return normalized, mapping
 
 
+def _retropath_validation_files(commit: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Path]:
+    """Find actual P8 artifacts using both current and legacy commit records."""
+    state = mapping.get("validation") or {}
+    overlay, inputs = commit.get("validation_overlay") or {}, commit.get("inputs") or {}
+    value = state.get("manifest_path") or overlay.get("path") or inputs.get("p8_validation_manifest") or inputs.get("validation_manifest")
+    if isinstance(value, dict):
+        value = value.get("path")
+    if not value:
+        return {}
+    p8_path = Path(str(value)).expanduser().resolve()
+    if not p8_path.is_file():
+        return {}
+    p8 = json.loads(p8_path.read_text(encoding="utf-8-sig"))
+    result = {"manifest_file": p8_path}
+    for key, filename in (("summary_file", "gem_validation_summary.csv"),
+                          ("route_fluxes_file", "gem_validation_route_fluxes.csv")):
+        record = p8.get("artifacts", {}).get(filename) or {}
+        if record.get("path"):
+            candidate = Path(str(record["path"])).expanduser()
+            result[key] = candidate if candidate.is_absolute() else p8_path.parent / candidate
+    return result
+
+
 def write_solution(config: Any) -> dict[str, Any]:
     """将一条 KEGG 或可选验证的 RetroPath 路线写入 design manifest。"""
 
@@ -828,6 +851,18 @@ def write_solution(config: Any) -> dict[str, Any]:
                 ).resolve()
             ),
         }
+
+    validation_files = {
+        "summary_file": validation_dir / "gem_validation_summary.csv",
+        "route_fluxes_file": validation_dir / "gem_validation_route_fluxes.csv",
+    }
+    if solution_source == "retropath":
+        validation_files = _retropath_validation_files(materialization or promotion or {}, promotion_mapping or {})
+    from src.write_manifest.solution_format import compact_solution
+    solution_payload = compact_solution(
+        solution_payload, manifest_path=manifest_path,
+        target_compound_id=target_compound, validation_files=validation_files,
+    )
 
     update_design_manifest(
         manifest_path,

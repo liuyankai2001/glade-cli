@@ -9,6 +9,8 @@ from typing import Any
 
 from filelock import FileLock
 
+from src.write_manifest.solution_format import manifest_for_runtime, manifest_for_storage
+
 SCHEMA_VERSION = "design_manifest.v1"
 
 # Compatibility only: discard obsolete write counters without interpreting them.
@@ -71,7 +73,7 @@ def _read_existing_manifest(manifest_path: Path) -> dict[str, Any]:
             f"当前仅支持 {SCHEMA_VERSION}"
         )
     manifest["schema_version"] = SCHEMA_VERSION
-    return _without_legacy_write_metadata(manifest)
+    return manifest_for_runtime(_without_legacy_write_metadata(manifest), manifest_path)
 
 
 def _write_json_atomic(path: Path, data: Mapping[str, Any]) -> None:
@@ -136,6 +138,7 @@ def _update_locked(
     manifest["target_compound_id"] = target_compound_id
     manifest.update(sections)
     manifest = _without_legacy_write_metadata(manifest)
+    manifest = manifest_for_storage(manifest, manifest_path)
     _write_json_atomic(manifest_path, manifest)
     return manifest
 
