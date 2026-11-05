@@ -36,7 +36,7 @@ def hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def wrapper_environment() -> dict[str, str]:
+def wrapper_environment(*, scheduler_output_dir: Path | None = None) -> dict[str, str]:
     environment = os.environ.copy()
     # retropath2_wrapper appends an old CentOS 7 sysroot whenever
     # CONDA_PREFIX is present. That makes KNIME load an ATK 2.28 library ahead
@@ -44,7 +44,29 @@ def wrapper_environment() -> dict[str, str]:
     # are already absolute/in LD_LIBRARY_PATH, so the wrapper does not need
     # CONDA_PREFIX at runtime.
     environment.pop("CONDA_PREFIX", None)
+    if scheduler_output_dir is not None:
+        environment["GLADE_SCHEDULER_OUTPUT_DIR"] = str(scheduler_output_dir)
     return environment
+
+
+def scheduler_completion(raw_dir: Path, status: str) -> dict[str, object]:
+    """A wrapper exit code cannot turn an unfinished KNIME graph into no_solution."""
+    path = raw_dir / "scheduler" / "checkpoint.json"
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+        stage = checkpoint["stage"]
+        pending = int(checkpoint["pending_count"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"search_complete": status == "source_in_sink", "error": (
+            f"Missing/invalid scheduler checkpoint: {exc}" if status in {"succeeded", "no_solution"} else None
+        ), "stage": None, "pending_count": None}
+    error = None
+    if status in {"succeeded", "no_solution"} and (
+        stage not in {"finished", "target_closed"} or (status == "no_solution" and pending)
+    ):
+        error = f"KNIME scheduler did not finish: stage={stage}, pending={pending}"
+    return {"search_complete": status in {"succeeded", "no_solution", "source_in_sink"} and not pending and error is None,
+            "error": error, "stage": stage, "pending_count": pending}
 
 
 class RetroPathRunner:
@@ -116,7 +138,7 @@ class RetroPathRunner:
             process = subprocess.Popen(
                 command,
                 cwd=job_dir,
-                env=wrapper_environment(),
+                env=wrapper_environment(scheduler_output_dir=raw_dir / "scheduler"),
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,
@@ -183,6 +205,14 @@ class RetroPathRunner:
                     failure_code = "knime_execution_failed"
                     error = f"retropath2_wrapper exited with code {return_code}"
 
+        scheduler_summary = None
+        if self.settings.workflow_version == "r20261104_scheduler1":
+            scheduler_summary = scheduler_completion(raw_dir, status)
+            if scheduler_summary["error"]:
+                status = "failed"
+                failure_code = "knime_execution_failed"
+                error = str(scheduler_summary["error"])
+
         wall_seconds = round(time.monotonic() - started_monotonic, 6)
 
         artifacts = self._discover_artifacts(job_dir)
@@ -207,6 +237,10 @@ class RetroPathRunner:
                 "rules": self.settings.rules_version,
             },
             "rules_sha256": self.runtime.rules_sha256,
+            "workflow_sha256": self.runtime.workflow_sha256,
+            "scheduler_patch": self.runtime.scheduler_patch,
+            "scheduler": scheduler_summary,
+            "search_complete": scheduler_summary["search_complete"] if scheduler_summary else status in {"succeeded", "no_solution", "source_in_sink"},
             "input_sha256": {
                 "source.csv": hash_bytes(source_path.read_bytes()),
                 "sink.csv": hash_bytes(sink_path.read_bytes()),

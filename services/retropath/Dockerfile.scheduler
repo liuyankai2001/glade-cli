@@ -1,0 +1,9 @@
+# Focused rebuild over the deployed, chemically validated memory-fix image.
+ARG BASE_IMAGE=glade-retropath:3.9.1-r20260212-memoryfix2-cpu2
+FROM ${BASE_IMAGE}
+COPY --chown=57439:57439 services/retropath/app /opt/service/app
+COPY --chown=57439:57439 services/retropath/tests /opt/service/tests
+COPY --chown=57439:57439 services/retropath/scheduler /opt/retropath/scheduler
+RUN /opt/conda/bin/python -B /opt/retropath/scheduler/build.py
+ENV RETROPATH_WORKFLOW_VERSION=r20261104_scheduler1
+LABEL org.opencontainers.image.version="3.9.1-r20261104-scheduler1-memoryfix2-cpu2"

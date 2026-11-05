@@ -13,6 +13,7 @@ RULES = b"Rule ID,Rule,Score\nrule-1,[#6:1]>>[#6:1],1\n"
 
 
 def test_health_and_source_in_sink_job(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RETROPATH_WORKFLOW_VERSION", "r20260212")
     rules_path = tmp_path / "rules.csv"
     rules_path.write_bytes(RULES)
     knime_dir = tmp_path / "knime"

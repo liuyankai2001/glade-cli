@@ -1,6 +1,6 @@
 import pytest
 
-from app.runner import RetroPathRunner, status_for_return_code, wrapper_environment
+from app.runner import RetroPathRunner, status_for_return_code, wrapper_environment, scheduler_completion
 
 
 @pytest.mark.parametrize(
@@ -26,6 +26,30 @@ def test_wrapper_environment_removes_conda_prefix(monkeypatch):
     environment = wrapper_environment()
     assert "CONDA_PREFIX" not in environment
     assert environment["LD_LIBRARY_PATH"] == "/compat:/opt/conda/lib"
+
+
+def test_wrapper_environment_isolates_scheduler_checkpoints(tmp_path):
+    environment = wrapper_environment(scheduler_output_dir=tmp_path / "raw" / "scheduler")
+    assert environment["GLADE_SCHEDULER_OUTPUT_DIR"] == str(tmp_path / "raw" / "scheduler")
+
+
+def test_scheduler_missing_or_unfinished_checkpoint_cannot_be_no_solution(tmp_path):
+    import json
+    assert scheduler_completion(tmp_path, "no_solution")["error"]
+    (tmp_path / "scheduler").mkdir()
+    checkpoint=tmp_path / "scheduler" / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"stage":"before_attempt","pending_count":2}),encoding="utf-8")
+    assert scheduler_completion(tmp_path,"no_solution")["error"]
+    checkpoint.write_text(json.dumps({"stage":"finished","pending_count":0}),encoding="utf-8")
+    assert scheduler_completion(tmp_path,"no_solution")=={"search_complete":True,"error":None,"stage":"finished","pending_count":0}
+
+
+def test_found_scope_with_remaining_queue_is_still_partial(tmp_path):
+    import json
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "checkpoint.json").write_text(json.dumps({"stage":"target_closed","pending_count":7}),encoding="utf-8")
+    summary=scheduler_completion(tmp_path,"succeeded")
+    assert summary["error"] is None and summary["search_complete"] is False
 
 
 def test_cgroup_memory_reader_is_fail_closed_for_invalid_samples(tmp_path):

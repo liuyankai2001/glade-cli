@@ -50,6 +50,16 @@ RETROPATH_PIPELINE_SCHEMA = "retropath_pipeline_result.v4"
 PIPELINE_RESULT_FILE_NAME = "pipeline_result.json"
 
 
+def _service_search_is_complete(raw_dir: Path, interrupted: bool) -> bool:
+    if interrupted:
+        return False
+    manifest = raw_dir / "service_run_manifest.json"
+    if not manifest.is_file():
+        return True  # Legacy/mock clients; real clients validate this artifact first.
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    return payload.get("search_complete", True) is True
+
+
 class RetroPathPipelineError(RuntimeError):
     """Stable user-facing failure from one RetroPath pipeline stage."""
 
@@ -611,6 +621,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
                 recovery_hint=recovery_hint,
             )
 
+    search_complete = _service_search_is_complete(client_run.raw_dir, interrupted_recovery)
     try:
         enumeration_result = parse_and_enumerate_retropath(
             client_run,
@@ -710,7 +721,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
     if candidate_artifacts.candidate_count:
         status = (
             "retropath_partial_candidates_found"
-            if interrupted_recovery
+            if not search_complete
             else "retropath_candidates_found"
         )
     elif interrupted_recovery:
@@ -778,7 +789,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "pipeline_result_file": str(result_path),
         "job_id": client_run.result.job_id,
         "service_status": service_status,
-        "search_complete": not interrupted_recovery,
+        "search_complete": search_complete,
         "interrupted_result_recovered": interrupted_recovery,
         "return_code": client_run.result.return_code,
         "failure_code": getattr(client_run.result, "failure_code", None),
@@ -792,7 +803,7 @@ def run_retropath_pipeline(config: Any) -> dict[str, Any]:
         "materialized_solution_ids": materialization["solution_ids"],
         "rejection_count": candidate_artifacts.rejection_count,
         "upstream_enumeration_truncated": (
-            enumeration_result.truncated or interrupted_recovery
+            enumeration_result.truncated or not search_complete
         ),
         "candidate_top_k_truncated": candidate_artifacts.merge_result.truncated,
         "input_summary": {

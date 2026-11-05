@@ -137,6 +137,8 @@ class RuntimeInfo:
     rules_sha256: str | None
     errors: tuple[str, ...]
     knime_heap_max_mb: int | None = None
+    workflow_sha256: str | None = None
+    scheduler_patch: dict[str, object] | None = None
 
     @property
     def ready(self) -> bool:
@@ -148,6 +150,8 @@ class RuntimeInfo:
             "wrapper_version": self.wrapper_version,
             "wrapper_reported_version": self.wrapper_reported_version,
             "workflow_version": settings.workflow_version,
+            "workflow_sha256": self.workflow_sha256,
+            "scheduler_patch": self.scheduler_patch,
             "knime_version": settings.knime_version,
             "rdkit_plugin_version": settings.rdkit_plugin_version,
             "rules_version": settings.rules_version,
@@ -208,6 +212,19 @@ def inspect_runtime(settings: Settings) -> RuntimeInfo:
     workflow = workflow_path(settings.workflow_version)
     if not workflow.is_file():
         errors.append(f"workflow is missing: {workflow}")
+    workflow_sha256 = sha256_file(workflow) if workflow.is_file() else None
+    scheduler_patch = None
+    if settings.workflow_version == "r20261104_scheduler1":
+        try:
+            patch_path = Path("/opt/retropath/scheduler/patch_manifest.json")
+            scheduler_patch = json.loads(patch_path.read_text(encoding="utf-8"))
+            if scheduler_patch["workflow_version"] != settings.workflow_version or scheduler_patch["patched_sha256"] != workflow_sha256:
+                errors.append("Scheduler workflow provenance mismatch")
+            plugin = Path(scheduler_patch["plugin_path"])
+            if not plugin.is_file() or sha256_file(plugin) != scheduler_patch["plugin_sha256"]:
+                errors.append("Scheduler control plugin provenance mismatch")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"Scheduler patch manifest invalid: {exc}")
 
     knime_executable = find_knime_executable(settings.knime_dir)
     knime_heap_max_mb = _knime_heap_max_mb(knime_executable)
@@ -254,4 +271,6 @@ def inspect_runtime(settings: Settings) -> RuntimeInfo:
         rules_sha256=rules_sha256,
         errors=tuple(errors),
         knime_heap_max_mb=knime_heap_max_mb,
+        workflow_sha256=workflow_sha256,
+        scheduler_patch=scheduler_patch,
     )
