@@ -21,7 +21,6 @@ def get_final_assembly_result(config: Any) -> dict[str, Any]:
             "ok": True,
             "available": False,
             "manifest_path": str(manifest_path),
-            "manifest_revision": manifest.get("revision"),
         }
     if section.get("schema_version") != FINAL_ASSEMBLY_SCHEMA_VERSION:
         raise ValueError("manifest 中的 final_assembly 版本已过期")
@@ -81,7 +80,6 @@ def get_final_assembly_result(config: Any) -> dict[str, Any]:
         "failures": section.get("failures"),
         "warnings": section.get("warnings"),
         "manifest_path": str(manifest_path),
-        "manifest_revision": manifest.get("revision"),
     }
 
 

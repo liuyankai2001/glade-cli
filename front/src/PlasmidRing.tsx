@@ -127,17 +127,15 @@ export function PlasmidRing({
   const focused = outer.find(
     (part) => selectable(part) && selectionKey(part) === selected,
   );
-  const sourceRevision = useRef(preview?.manifest_revision);
+  const sourceContents = JSON.stringify([construct, preview?.sequence]);
+  const previousSource = useRef(sourceContents);
   useEffect(() => {
     if (selected && !focused) setSelected(null);
   }, [selected, !!focused]);
   useEffect(() => {
-    const next = preview?.manifest_revision;
-    if (next != null && sourceRevision.current != null && next !== sourceRevision.current) {
-      setSelected(null);
-    }
-    if (next != null) sourceRevision.current = next;
-  }, [preview?.manifest_revision]);
+    if (previousSource.current !== sourceContents) setSelected(null);
+    previousSource.current = sourceContents;
+  }, [sourceContents]);
   useEffect(() => setSelected(null), [construct?.id]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -156,7 +154,7 @@ export function PlasmidRing({
     length,
     componentOrder,
     zoom,
-    preview?.manifest_revision ?? construct?.id,
+    sourceContents,
     outer.map((part) => [
       part.id,
       part.kind,

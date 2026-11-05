@@ -22,7 +22,6 @@ class ExpressionPartsCassette:
 @dataclass(frozen=True, slots=True)
 class ExpressionPartsContext:
     manifest_path: Path
-    manifest_revision: int
     project_root: Path
     target_compound_id: str
     host_name: str

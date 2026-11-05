@@ -254,15 +254,6 @@ def _write_cds_selection_to_manifest(
     project_root = Path(project_output_path).expanduser().resolve()
     summary_path = Path(run_summary_path).expanduser().resolve()
     manifest = read_design_manifest(context.manifest_path)
-    try:
-        current_revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision must be an integer") from exc
-    if current_revision != context.manifest_revision:
-        raise ValueError(
-            "manifest changed during protein-to-CDS processing: "
-            f"expected revision {context.manifest_revision}, current {current_revision}"
-        )
     if not summary_path.is_file():
         raise FileNotFoundError(summary_path)
 
@@ -295,7 +286,6 @@ def _write_cds_selection_to_manifest(
         "schema_version": CDS_SELECTION_SCHEMA_VERSION,
         "status": status,
         "generated_at": _utc_now(),
-        "source_manifest_revision": context.manifest_revision,
         "restriction_enzymes": manifest.get("cds_selection", {}).get("restriction_enzymes", []),
         "homopolymer_max": manifest.get("cds_selection", {}).get("homopolymer_max"),
         "source_selection": {
@@ -319,16 +309,14 @@ def _write_cds_selection_to_manifest(
     from src.main_protein_selection.lifecycle import retained_uploaded_draft
     for key, value in retained_uploaded_draft(manifest).items():
         retained_sections.setdefault(key, value)
-    updated = update_design_manifest(
+    update_design_manifest(
         context.manifest_path,
         target_compound_id=context.target_compound_id,
         sections={"cds_selection": payload, **retained_sections},
         discard_sections=discard_sections,
-        expected_revision=context.manifest_revision,
     )
     return {
         "manifest_path": str(context.manifest_path),
-        "manifest_revision": updated["revision"],
         "cds_selection": payload,
     }
 

@@ -26,7 +26,6 @@ class ExpressionProtein:
 @dataclass(frozen=True, slots=True)
 class ExpressionGroupingContext:
     manifest_path: Path
-    manifest_revision: int
     target_compound_id: str
     proteins: tuple[ExpressionProtein, ...]
 

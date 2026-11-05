@@ -129,7 +129,6 @@ def _validate_artifact(
     *,
     target_compound_id: str,
     proteins: tuple[ExpressionProtein, ...],
-    manifest_revision: int,
 ) -> list[dict[str, Any]]:
     if artifact.get("schema_version") != EXPRESSION_BOX_DESIGNS_SCHEMA_VERSION:
         raise ValueError(
@@ -149,8 +148,6 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("表达盒候选方案缺少 source")
-    if source.get("manifest_revision") != manifest_revision:
-        raise ValueError("表达盒候选方案的 manifest revision 已变化，请重新计算")
     generation = generate_grouping_designs(proteins)
     expected_designs = [
         _design_payload(design, design_id)
@@ -189,7 +186,6 @@ def _selection_payload(
     selected: Mapping[str, Any],
     artifact: Mapping[str, Any],
 ) -> dict[str, Any]:
-    source = artifact["source"]
     cassettes = [
         {
             "cassette_index": cassette["cassette_index"],
@@ -213,7 +209,6 @@ def _selection_payload(
             "artifact": "expression_box/expression_box_designs.json",
             "designs_schema_version": artifact["schema_version"],
             "algorithm_version": artifact["algorithm_version"],
-            "artifact_manifest_revision": source.get("manifest_revision"),
         },
         "summary": {
             "cassette_count": selected["cassette_count"],
@@ -250,7 +245,6 @@ def _custom_selection_payload(
         "recommended": False,
         "source": {
             "selection_mode": "custom_cli",
-            "artifact_manifest_revision": context.manifest_revision,
         },
         "summary": {
             "cassette_count": selected["cassette_count"],
@@ -298,7 +292,6 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
         artifact,
         target_compound_id=target_compound_id,
         proteins=context.proteins,
-        manifest_revision=context.manifest_revision,
     )
     selected = _select_design(designs, design_id)
     payload = _selection_payload(selected, artifact)
@@ -310,16 +303,13 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
         == EXPRESSION_BOX_SELECTION_SCHEMA_VERSION
         and current == payload
     )
-    if unchanged:
-        updated_manifest = manifest
-    else:
+    if not unchanged:
         sections, discard = _selection_update(manifest, payload)
-        updated_manifest = update_design_manifest(
+        update_design_manifest(
             manifest_path,
             target_compound_id=target_compound_id,
             sections=sections,
             discard_sections=discard,
-            expected_revision=context.manifest_revision,
         )
 
     return {
@@ -340,7 +330,6 @@ def write_expression_box_selection(config: Any) -> dict[str, Any]:
         ],
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path),
-        "清单版本": updated_manifest["revision"],
     }
 
 
@@ -374,16 +363,13 @@ def write_custom_expression_box_selection(config: Any) -> dict[str, Any]:
         == EXPRESSION_BOX_SELECTION_SCHEMA_VERSION
         and current == payload
     )
-    if unchanged:
-        updated_manifest = manifest
-    else:
+    if not unchanged:
         sections, discard = _selection_update(manifest, payload)
-        updated_manifest = update_design_manifest(
+        update_design_manifest(
             manifest_path,
             target_compound_id=target_compound_id,
             sections=sections,
             discard_sections=discard,
-            expected_revision=context.manifest_revision,
         )
 
     return {
@@ -404,7 +390,6 @@ def write_custom_expression_box_selection(config: Any) -> dict[str, Any]:
         ],
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path),
-        "清单版本": updated_manifest["revision"],
     }
 
 

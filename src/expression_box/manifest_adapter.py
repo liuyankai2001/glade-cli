@@ -117,13 +117,8 @@ def load_expression_grouping_context(
     selected = get_proteins_for_cds(path)
     if set(accessions) != {item.accession for item in selected.proteins}:
         raise ValueError("CDS 与当前已选主酶不一致，请重新运行 protein-to-cds")
-    try:
-        revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision must be an integer") from exc
     return ExpressionGroupingContext(
         manifest_path=path,
-        manifest_revision=revision,
         target_compound_id=target_compound_id,
         proteins=proteins,
     )

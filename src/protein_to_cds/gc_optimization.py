@@ -247,8 +247,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
     from src.main_protein_selection.lifecycle import invalidate_current, retained_uploaded_draft
     from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
     previous_manifest = manifest
-    manifest = invalidate_current(manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS),
-                                  expected_revision=int(manifest.get("revision", 0)))
+    manifest = invalidate_current(manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS))
     guards[manifest_path] = manifest_path.read_bytes()
     source = _load_edit_input(root, selection, item, guards)
     previous, source_report = source.previous, source.source_report
@@ -399,7 +398,7 @@ def optimize_cds_gc(config: Any) -> dict[str, Any]:
         retained_sections.setdefault(key, value)
     commit_cds_optimization(
         manifest_path=manifest_path, project_root=root, target=config.target_name,
-        revision=int(manifest.get("revision", 0)), selection=updated,
+        selection=updated,
         discard_sections=discard_sections, dependent_sections=retained_sections,
         files=files, guards=guards,
     )

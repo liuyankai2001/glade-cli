@@ -228,8 +228,6 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("表达元件候选方案缺少 source")
-    if source.get("manifest_revision") != context.manifest_revision:
-        raise ValueError("表达元件候选方案的 manifest revision 已变化，请重新计算")
     ranking = artifact.get("ranking")
     if not isinstance(ranking, Mapping):
         raise ValueError("表达元件候选方案缺少 ranking")
@@ -329,8 +327,6 @@ def _write_prepared_selection(config):
     original_manifest = path.read_bytes()
     if manifest.get("target_compound_id") != target:
         raise ValueError("manifest 与当前目标化合物不一致")
-    if int(manifest["revision"]) != context.manifest_revision:
-        raise ValueError("manifest revision 已变化，请重试")
     artifact_path = _artifact_path(config)
     artifact_bytes = artifact_path.read_bytes() if artifact_path.is_file() else None
     artifact = _read_artifact(artifact_path)
@@ -346,10 +342,11 @@ def _write_prepared_selection(config):
                 write_bytes_atomic(snapshot, content)
         if path.read_bytes() != original_manifest or artifact_path.read_bytes() != artifact_bytes:
             raise ValueError("manifest 或推荐候选文件在确认时发生变化，请重试")
-        updated = update_design_manifest(
-            path, target_compound_id=target, sections={"expression_parts_draft": draft},
-            discard_sections=discard, expected_revision=context.manifest_revision,
-        ) if changed else manifest
+        if changed:
+            update_design_manifest(
+                path, target_compound_id=target, sections={"expression_parts_draft": draft},
+                discard_sections=discard,
+            )
         transaction.commit()
     return {
         "运行成功": True, "目标化合物": target,
@@ -357,7 +354,7 @@ def _write_prepared_selection(config):
         "主方案编号": draft["designs"][0]["design_id"], "方案数量": len(selected),
         "元件来源": "recommended", "准备状态": draft["status"],
         "完整表达构建数量": 0, "清单是否更新": changed,
-        "清单文件": str(path), "清单版本": updated["revision"],
+        "清单文件": str(path),
         "下一步": "expression --assemble -i <输入文件>",
         "警告": list(dict.fromkeys(w for d in selected for w in d.get("warnings", []))),
     }

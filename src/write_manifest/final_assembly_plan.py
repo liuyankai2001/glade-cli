@@ -135,8 +135,6 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("最终组装计划缺少 source")
-    if source.get("manifest_revision") != context.manifest_revision:
-        raise ValueError("最终组装计划与当前项目版本不一致，请重新运行 assembly --plan")
     raw_plans = artifact.get("plans")
     if not isinstance(raw_plans, list) or not raw_plans:
         raise ValueError("最终组装计划 plans 为空")
@@ -207,12 +205,11 @@ def write_final_assembly_plan(config: Any) -> dict[str, Any]:
     artifact = _read_artifact(artifact_path)
     plans = _validate_artifact(artifact, context=context)
     payload = _selection_payload(artifact, plans, context=context)
-    updated = update_design_manifest(
+    update_design_manifest(
         context.manifest_path,
         target_compound_id=context.target_compound_id,
         sections={"final_assembly_plan": payload},
         discard_sections=FINAL_ASSEMBLY_PLAN_DOWNSTREAM_SECTIONS,
-        expected_revision=context.manifest_revision,
     )
     return {
         "ok": True,
@@ -233,7 +230,6 @@ def write_final_assembly_plan(config: Any) -> dict[str, Any]:
             )
         ),
         "manifest_path": str(context.manifest_path.resolve()),
-        "manifest_revision": updated["revision"],
         "manifest_modified": True,
     }
 

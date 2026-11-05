@@ -36,7 +36,6 @@ class FinalAssemblyContext:
     target_compound_id: str
     manifest_path: Path
     project_output_path: Path
-    manifest_revision: int
     constructs: tuple[AssemblyConstruct, ...]
     backbone: AssemblyBackbone
 

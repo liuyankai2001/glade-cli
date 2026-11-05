@@ -829,7 +829,7 @@ def write_solution(config: Any) -> dict[str, Any]:
             ),
         }
 
-    manifest = update_design_manifest(
+    update_design_manifest(
         manifest_path,
         target_compound_id=target_compound,
         sections={
@@ -847,7 +847,6 @@ def write_solution(config: Any) -> dict[str, Any]:
         "通量验证状态": validation.get("validation_status"),
         "辅因子模式": validation.get("cofactor_mode"),
         "清单文件": str(manifest_path.resolve()),
-        "清单版本": manifest["revision"],
     }
 
 

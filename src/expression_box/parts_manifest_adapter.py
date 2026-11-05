@@ -181,15 +181,10 @@ def load_expression_parts_context(
     cds_map = _cds_by_accession(cds_selection, project_root)
     cassettes = _cassettes(selection, cds_map)
     host = resolve_expression_host(dict(manifest))
-    try:
-        revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision must be an integer") from exc
     enzymes = normalize_enzymes(cds_selection.get("restriction_enzymes"))
     maximum = saved_homopolymer_max(cds_selection)
     return ExpressionPartsContext(
         manifest_path=path,
-        manifest_revision=revision,
         project_root=project_root,
         target_compound_id=target,
         host_name=host.query_name,

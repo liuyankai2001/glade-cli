@@ -17,7 +17,7 @@ from src.plasmid_design.components import (
     legacy_components,
     normalize_components,
 )
-from src.plasmid_design.project import authenticate_request, read_project
+from src.plasmid_design.project import read_project
 from src.plasmid_design.registration import committed_files, export_design
 from src.plasmid_design.sequence import (
     DEFAULT_COMPONENT_ORDER,
@@ -67,7 +67,6 @@ class DesignService:
                 "target": self.config.target_name,
                 "name": self.config.target_name,
                 "host": host_name or "未记录宿主",
-                "manifest_revision": manifest.get("revision", 0),
             },
             "ready": False,
             "issues": [],
@@ -87,15 +86,11 @@ class DesignService:
                 {"code": getattr(exc, "code", "project_not_ready"), "message": str(exc)}
             )
             return response
-        response["project"].update(
-            {
-                "manifest_revision": snapshot.source.manifest_revision,
-            }
-        )
         construct = snapshot.source.constructs[0]
         response["construct"] = {
             "id": construct.design_id,
             "name": f"完整表达构建 · 方案 {construct.design_id}",
+            "sequence": str(snapshot.insert_record.seq),
             "length_bp": construct.length_bp,
             "gc_percent": gc_percent(str(snapshot.insert_record.seq)),
             "features": feature_payloads(snapshot.insert_record),
@@ -178,7 +173,6 @@ class DesignService:
                 "组件列表不能与旧的单选参数混用。", code="invalid_components"
             )
         snapshot = read_project(self.config)
-        authenticate_request(snapshot, request)
         design = build_design(
             snapshot.catalog,
             snapshot.insert_record,
@@ -195,11 +189,6 @@ class DesignService:
                 else None
             ),
             assembly_schema_version=request.get("assembly_schema_version", 1),
-        )
-        design.preview.update(
-            {
-                "manifest_revision": snapshot.source.manifest_revision,
-            }
         )
         return snapshot, design
 
@@ -223,16 +212,13 @@ class DesignService:
         )
         with manifest_update_lock(self.config.manifest_output_path):
             current = read_project(self.config)
-            authenticate_request(current, request)
             if any(name in current.manifest for name in sections_to_invalidate):
-                updated = update_design_manifest(
+                update_design_manifest(
                     self.config.manifest_output_path,
                     target_compound_id=current.source.target_compound_id,
                     sections={},
                     discard_sections=sections_to_invalidate,
-                    expected_revision=current.source.manifest_revision,
                 )
-                request = {**request, "expected_revision": updated["revision"]}
                 snapshot = read_project(self.config)
         project = snapshot.source.project_output_path.resolve()
         generation_id = uuid.uuid4().hex
@@ -246,7 +232,6 @@ class DesignService:
             sections = export_design(snapshot, design, directory, generation_id)
             candidate = dict(snapshot.manifest)
             candidate.update(sections)
-            candidate["revision"] = snapshot.source.manifest_revision + 1
             snapshot.manifest = candidate
             result = self._result(snapshot)
             if result is None:
@@ -255,16 +240,13 @@ class DesignService:
                 )
             progress("registering", "正在核对源文件并登记 manifest")
             with manifest_update_lock(self.config.manifest_output_path):
-                current = read_project(self.config)
-                authenticate_request(current, request)
-                updated = update_design_manifest(
+                read_project(self.config)
+                update_design_manifest(
                     self.config.manifest_output_path,
                     target_compound_id=snapshot.source.target_compound_id,
                     sections=sections,
-                    expected_revision=snapshot.source.manifest_revision,
                 )
                 committed = True
-            result["manifest_revision"] = updated["revision"]
             return result
         finally:
             if not committed:
@@ -393,7 +375,6 @@ class DesignService:
             "components": components,
             "length_bp": constructs[0]["length_bp"],
             "gc_percent": gc_percent(str(record.seq)),
-            "manifest_revision": manifest["revision"],
             "files": files,
             "warnings": final.get("warnings", []),
         }

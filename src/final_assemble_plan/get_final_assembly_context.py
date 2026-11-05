@@ -31,8 +31,6 @@ def load_final_assembly_context(config: Any) -> FinalAssemblyContext:
 
     plasmid_context = load_plasmid_context(config)
     manifest = read_design_manifest(plasmid_context.manifest_path)
-    if int(manifest.get("revision") or 0) != plasmid_context.manifest_revision:
-        raise ValueError("manifest revision 在读取最终组装上下文时发生变化，请重试")
 
     return build_final_assembly_context(plasmid_context, manifest.get("plasmid_selection"))
 
@@ -120,7 +118,6 @@ def build_final_assembly_context(plasmid_context: Any, selection: Any) -> FinalA
         target_compound_id=plasmid_context.target_compound_id,
         manifest_path=plasmid_context.manifest_path,
         project_output_path=plasmid_context.project_output_path,
-        manifest_revision=plasmid_context.manifest_revision,
         constructs=constructs,
         backbone=backbone,
     )
@@ -130,7 +127,6 @@ def final_assembly_context_summary(config: Any) -> dict[str, Any]:
     context = load_final_assembly_context(config)
     return {
         "target_compound_id": context.target_compound_id,
-        "manifest_revision": context.manifest_revision,
         "construct_count": len(context.constructs),
         "parts_design_ids": [item.design_id for item in context.constructs],
         "backbone": {

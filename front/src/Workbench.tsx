@@ -59,6 +59,14 @@ function IssueList({ issues }: { issues: Issue[] }) {
   );
 }
 
+function sameBusinessContext(left: Context, right: Context) {
+  const contents = (value: Context) => [
+    value.project, value.ready, value.construct, value.restriction_enzymes,
+    value.issues, value.selection, value.result,
+  ];
+  return JSON.stringify(contents(left)) === JSON.stringify(contents(right));
+}
+
 export function Workbench() {
   const [library, setLibrary] = useState<{
     resistance: Module[];
@@ -176,11 +184,7 @@ export function Workbench() {
       ]);
       if (token !== loadVersion.current) return;
       const previous = contextRef.current;
-      const changed =
-        !previous ||
-        previous.ready !== nextContext.ready ||
-        previous.project.manifest_revision !==
-          nextContext.project.manifest_revision;
+      const changed = !previous || !sameBusinessContext(previous, nextContext);
       setLibrary({
         ...modules,
         terminator: modules.terminator || [],
@@ -193,9 +197,7 @@ export function Workbench() {
         setGeometry(null);
       }
       contextRef.current = nextContext;
-      setContext((current) =>
-        changed ? nextContext : { ...nextContext, project: current!.project },
-      );
+      setContext((current) => changed ? nextContext : current);
       if (!preserve) {
         let saved: unknown = null;
         try {
@@ -221,14 +223,12 @@ export function Workbench() {
             !ignoredJobs.current.has(nextContext.active_job.id)
           )
             return nextContext.active_job;
-          // A completed response is provisional until context reaches its commit.
-          // Thereafter context owns both replacement artifacts and invalidation.
-          if (
-            current?.status === "succeeded" &&
-            current.result &&
-            nextContext.project.manifest_revision >=
-              current.result.manifest_revision
-          ) {
+          if (current && ["queued", "running"].includes(current.status)) {
+            ignoredJobs.current.add(current.id);
+            return null;
+          }
+          // A fresh context read owns registration, replacement and invalidation.
+          if (current?.status === "succeeded") {
             return { ...current, result: nextContext.result || undefined };
           }
           return current;
@@ -266,7 +266,6 @@ export function Workbench() {
       }
     }
   }, [chosen, componentOrder, context]);
-  const revision = context?.project.manifest_revision;
   const ready = context?.ready;
   useEffect(() => {
     if (
@@ -285,7 +284,6 @@ export function Workbench() {
       body: JSON.stringify({
         components: chosen,
         assembly_schema_version: 2,
-        expected_revision: revision,
       }),
     })
       .then((next) => {
@@ -309,14 +307,15 @@ export function Workbench() {
     return () => {
       requestVersion.current += 1;
     };
-  }, [chosen, componentOrder, revision, ready, load, refreshKey]);
+  }, [chosen, componentOrder, context, ready, load, refreshKey]);
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
     let cancelled = false;
+    const token = requestVersion.current;
     const timer = window.setTimeout(async () => {
       try {
         const next = await api<Job>(`/api/jobs/${job.id}`);
-        if (cancelled) return;
+        if (cancelled || ignoredJobs.current.has(job.id) || token !== requestVersion.current) return;
         setJob(next);
         if (next.status === "succeeded") {
           setMessage("设计已完成，可以下载实际产物。");
@@ -325,7 +324,7 @@ export function Workbench() {
         if (next.status === "failed")
           setMessage(`生成失败：${next.error?.message || next.message}`);
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && !ignoredJobs.current.has(job.id) && token === requestVersion.current) {
           setMessage(`任务状态读取失败：${(error as Error).message}`);
           setJob({ ...job });
         }
@@ -358,7 +357,6 @@ export function Workbench() {
         body: JSON.stringify({
           components: chosen,
           assembly_schema_version: 2,
-          expected_revision: revision,
         }),
       });
       if (token !== requestVersion.current) return;
@@ -401,10 +399,7 @@ export function Workbench() {
     sameComponents(
       restoreComponents(possibleResult, library),
       chosen,
-    ) &&
-    (possibleResult.manifest_revision === context.project.manifest_revision ||
-      (job?.status === "succeeded" && possibleResult === job.result &&
-        possibleResult.manifest_revision > context.project.manifest_revision))
+    )
       ? possibleResult
       : null;
   const items = (type: Module["type"]) =>
@@ -503,8 +498,7 @@ export function Workbench() {
   const listIdentity = JSON.stringify([
     componentOrder,
     chosen,
-    revision,
-    context?.construct?.id,
+    context?.construct,
     ready,
   ]);
   useEffect(() => {

@@ -16,7 +16,6 @@ class FinalAssemblyExecutionContext:
     manifest: dict[str, Any]
     manifest_path: Path
     project_output_path: Path
-    manifest_revision: int
     source_context: FinalAssemblyContext
     plans: tuple[dict[str, Any], ...]
     backbone_record: SeqRecord

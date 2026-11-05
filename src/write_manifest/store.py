@@ -11,6 +11,24 @@ from filelock import FileLock
 
 SCHEMA_VERSION = "design_manifest.v1"
 
+# Compatibility only: discard obsolete write counters without interpreting them.
+_LEGACY_WRITE_METADATA = frozenset({
+    "revision", "expected_revision", "manifest_revision",
+    "source_manifest_revision", "artifact_manifest_revision",
+})
+
+
+def _without_legacy_write_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _without_legacy_write_metadata(child)
+            for key, child in value.items()
+            if key not in _LEGACY_WRITE_METADATA
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_legacy_write_metadata(child) for child in value]
+    return value
+
 
 @cache
 def _manifest_lock(path: Path) -> FileLock:
@@ -18,7 +36,7 @@ def _manifest_lock(path: Path) -> FileLock:
 
 
 def manifest_update_lock(path: str | Path) -> FileLock:
-    """Serialize revision checks and writes across CLI/API processes."""
+    """Serialize manifest writes across CLI/API processes."""
     resolved = Path(path).expanduser().resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True)
     return _manifest_lock(resolved)
@@ -31,7 +49,6 @@ def read_design_manifest(path: str | Path) -> dict[str, Any]:
     if not manifest_path.exists():
         return {
             "schema_version": SCHEMA_VERSION,
-            "revision": 0,
         }
 
     # Windows readers must close the file before an atomic replacement begins.
@@ -54,8 +71,7 @@ def _read_existing_manifest(manifest_path: Path) -> dict[str, Any]:
             f"当前仅支持 {SCHEMA_VERSION}"
         )
     manifest["schema_version"] = SCHEMA_VERSION
-    manifest.setdefault("revision", 0)
-    return manifest
+    return _without_legacy_write_metadata(manifest)
 
 
 def _write_json_atomic(path: Path, data: Mapping[str, Any]) -> None:
@@ -84,9 +100,8 @@ def update_design_manifest(
     target_compound_id: str,
     sections: Mapping[str, Any],
     discard_sections: tuple[str, ...] = (),
-    expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """原子更新 manifest 的指定区段并自动递增 revision。"""
+    """原子更新 manifest 的指定区段。"""
 
     with manifest_update_lock(path):
         return _update_locked(
@@ -94,7 +109,6 @@ def update_design_manifest(
             target_compound_id=target_compound_id,
             sections=sections,
             discard_sections=discard_sections,
-            expected_revision=expected_revision,
         )
 
 
@@ -104,7 +118,6 @@ def _update_locked(
     target_compound_id: str,
     sections: Mapping[str, Any],
     discard_sections: tuple[str, ...],
-    expected_revision: int | None,
 ) -> dict[str, Any]:
 
     manifest_path = Path(path).expanduser()
@@ -115,19 +128,6 @@ def _update_locked(
             f"manifest 目标化合物为 {recorded_target}，"
             f"不能写入目标 {target_compound_id} 的结果"
         )
-    try:
-        current_revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"manifest revision 无效：{manifest.get('revision')!r}"
-        ) from exc
-    if current_revision < 0:
-        raise ValueError(f"manifest revision 不能为负数：{current_revision}")
-    if expected_revision is not None and current_revision != expected_revision:
-        raise ValueError(
-            "manifest revision 已变化："
-            f"预期 {expected_revision}，当前 {current_revision}"
-        )
 
     for section_name in discard_sections:
         if section_name not in sections:
@@ -135,7 +135,7 @@ def _update_locked(
     manifest["schema_version"] = SCHEMA_VERSION
     manifest["target_compound_id"] = target_compound_id
     manifest.update(sections)
-    manifest["revision"] = current_revision + 1
+    manifest = _without_legacy_write_metadata(manifest)
     _write_json_atomic(manifest_path, manifest)
     return manifest
 

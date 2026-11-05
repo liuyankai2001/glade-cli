@@ -30,7 +30,7 @@ const context = {
     target: "copies",
     name: "Copies",
     host: "E. coli",
-    manifest_revision: 1,
+
     },
   ready: true,
   issues: [],
@@ -59,7 +59,7 @@ function install() {
         warnings: [],
         terminator_warnings: [],
         sequence: "",
-        manifest_revision: 1,
+
         gc_percent: 50,
         features: [],
         enzymes: [],

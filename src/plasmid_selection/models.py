@@ -69,7 +69,6 @@ class PlasmidContext:
     target_compound_id: str
     manifest_path: Path
     project_output_path: Path
-    manifest_revision: int
     host_key: str
     host_name: str
     selected_design_ids: tuple[int, ...]

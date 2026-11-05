@@ -107,9 +107,6 @@ def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
 
     source_context = load_final_assembly_context(config)
     manifest = read_design_manifest(source_context.manifest_path)
-    revision = int(manifest.get("revision") or 0)
-    if revision != source_context.manifest_revision:
-        raise ValueError("manifest revision 在读取执行上下文时发生变化，请重试")
 
     section = _mapping(manifest.get("final_assembly_plan"), "final_assembly_plan")
     if section.get("schema_version") != FINAL_ASSEMBLY_PLAN_SCHEMA_VERSION:
@@ -166,7 +163,6 @@ def load_execution_context(config: Any) -> FinalAssemblyExecutionContext:
         manifest=manifest,
         manifest_path=source_context.manifest_path,
         project_output_path=source_context.project_output_path,
-        manifest_revision=revision,
         source_context=source_context,
         plans=tuple(sorted(plans, key=lambda item: int(item["parts_design_id"]))),
         backbone_record=backbone_record,

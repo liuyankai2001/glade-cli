@@ -355,7 +355,6 @@ def _commit_uploaded_part(
     *,
     manifest_path: Path,
     manifest: Mapping[str, Any],
-    current_revision: int,
     project_root: Path,
     target_compound_id: str,
     cassettes: list[dict[str, Any]],
@@ -453,15 +452,12 @@ def _commit_uploaded_part(
         _write_bytes_atomic(snapshot_path, fasta_bytes)
     try:
         if manifest_changed:
-            updated = update_design_manifest(
+            update_design_manifest(
                 manifest_path,
                 target_compound_id=target_compound_id,
                 sections={"expression_parts_draft": payload},
                 discard_sections=EXPRESSION_PART_UPLOAD_DOWNSTREAM_SECTIONS,
-                expected_revision=current_revision,
             )
-        else:
-            updated = dict(manifest)
     except Exception:
         if not snapshot_existed:
             snapshot_path.unlink(missing_ok=True)
@@ -491,7 +487,6 @@ def _commit_uploaded_part(
         "已上传终止子数": payload["summary"]["terminator_count"],
         "表达盒总数": payload["summary"]["required_promoter_count"],
         "清单是否更新": manifest_changed,
-        "清单版本": updated["revision"],
         "清单文件": str(manifest_path),
     }
     if accession is not None:
@@ -535,10 +530,6 @@ def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
             f"manifest 目标化合物为 {recorded_target or '空'}，"
             f"与当前输入目标 {target_compound_id} 不一致"
         )
-    try:
-        current_revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision 必须是整数") from exc
     cassettes = _current_expression_box(manifest)
     if cassette_index > len(cassettes):
         raise ValueError(
@@ -552,7 +543,6 @@ def _upload_expression_boundary_part(config: Any, role: str) -> dict[str, Any]:
     return _commit_uploaded_part(
         manifest_path=manifest_path,
         manifest=manifest,
-        current_revision=current_revision,
         project_root=project_root,
         target_compound_id=target_compound_id,
         cassettes=cassettes,
@@ -677,16 +667,11 @@ def _upload_expression_rbs(
             f"manifest 目标化合物为 {recorded_target or '空'}，"
             f"与当前输入目标 {target_compound_id} 不一致"
         )
-    try:
-        current_revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision 必须是整数") from exc
     cassettes = _current_expression_box(manifest)
     cassette_index, cds_index = _rbs_location(cassettes, accession)
     from src.expression_box.pipeline import _invalidate_calculation
     _invalidate_calculation(manifest_path, grouping=False, preserve_draft=True)
     manifest = read_design_manifest(manifest_path)
-    current_revision = int(manifest["revision"])
     cassettes = _current_expression_box(manifest)
     _merge_existing_draft(
         manifest,
@@ -705,7 +690,6 @@ def _upload_expression_rbs(
     return _commit_uploaded_part(
         manifest_path=manifest_path,
         manifest=manifest,
-        current_revision=current_revision,
         project_root=project_root,
         target_compound_id=target_compound_id,
         cassettes=cassettes,

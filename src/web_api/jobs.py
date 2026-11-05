@@ -37,7 +37,7 @@ class JobManager:
             self._jobs[job_id] = job
             self._active_id = job_id
         try:
-            # Validate IDs/revision before accepting; worker checks again before commit.
+            # Validate the selected components before accepting the task.
             preview = self.service.preview(request)
             if not preview["valid"]:
                 raise DesignError(

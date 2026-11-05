@@ -57,7 +57,7 @@ const context = {
     target: "drag-demo",
     name: "Demo",
     host: "E. coli",
-    manifest_revision: 1,
+
     },
   ready: true,
   issues: [],
@@ -106,7 +106,7 @@ const preview: Preview = {
   sequence: "",
   length_bp: 112,
   gc_percent: 50,
-  manifest_revision: 1,
+
   segments,
   features: [
     {
@@ -125,7 +125,7 @@ const result = {
   resistance_id: "amp",
   replication_id: "ori",
   component_order: defaultOrder,
-  manifest_revision: 1,
+
   files: [
     {
       id: "final_genbank",
@@ -509,7 +509,7 @@ describe("component reordering", () => {
     mounted.rerender(
       <PlasmidRing
         {...props}
-        preview={{ ...preview, manifest_revision: (preview.manifest_revision ?? 0) + 1 }}
+        preview={{ ...preview, sequence: preview.sequence + "A" }}
       />,
     );
     expect(screen.queryByTestId("ring-drag-ghost")).not.toBeInTheDocument();

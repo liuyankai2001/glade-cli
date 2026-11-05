@@ -7,7 +7,6 @@ import os
 import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -131,9 +130,7 @@ def run_protein_to_cds(
         from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
         from src.write_manifest.store import read_design_manifest
         previous_manifest = read_design_manifest(context.manifest_path)
-        current = invalidate_current(context.manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS),
-                                     expected_revision=context.manifest_revision)
-        context = replace(context, manifest_revision=int(current.get("revision", 0)))
+        invalidate_current(context.manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS))
         return _run_batch(context, host, project_root, requested_device, motifs, transaction, previous_manifest)
 
 
@@ -195,7 +192,6 @@ def _run_batch(
         "generated_at": _utc_now(),
         "target_compound_id": context.target_compound_id,
         "source_manifest": str(context.manifest_path),
-        "source_manifest_revision": context.manifest_revision,
         "host": host.to_dict(),
         "device_request": requested_device,
         "additional_forbidden_motifs": list(motifs),
@@ -240,7 +236,7 @@ def _run_batch(
     _write_json_atomic(summary_path, summary)
 
     try:
-        manifest_result = write_cds_selection_to_manifest(
+        write_cds_selection_to_manifest(
             context=context,
             host=host,
             project_output_path=project_root,
@@ -260,7 +256,6 @@ def _run_batch(
 
     transaction.commit()
     summary["manifest_written"] = True
-    summary["manifest_revision"] = manifest_result["manifest_revision"]
     _write_json_atomic(summary_path, summary)
     return {
         "ok": status == "complete",
@@ -274,7 +269,6 @@ def _run_batch(
         "output_dir": str(output_root),
         "run_summary": str(summary_path),
         "manifest_path": str(context.manifest_path),
-        "manifest_revision": manifest_result["manifest_revision"],
     }
 
 

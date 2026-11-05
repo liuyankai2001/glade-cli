@@ -30,7 +30,7 @@ const preview: Preview = {
   sequence: "",
   length_bp: 1000,
   gc_percent: 50,
-  manifest_revision: 1,
+
   segments: [
     segment("amp-a", "amp", "resistance", 101, 300),
     segment("amp-b", "amp", "resistance", 301, 500),
@@ -247,7 +247,7 @@ describe("module reference-strand focus", () => {
     click(part("amp-a"));
     expect(screen.getByTestId("module-direction")).toBeInTheDocument();
     const changed = reason === "source"
-      ? { ...preview, manifest_revision: (preview.manifest_revision ?? 0) + 1 }
+      ? { ...preview, sequence: preview.sequence + "A" }
       : { ...preview, segments: preview.segments.flatMap((p) => p.instance_id !== "amp-a" ? [p] : reason === "delete" ? [] : [{ ...p, id: "kan" }]) };
     rerender(<PlasmidRing {...props} preview={changed} />);
     expect(screen.queryByTestId("module-direction")).not.toBeInTheDocument();

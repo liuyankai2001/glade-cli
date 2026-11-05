@@ -1,4 +1,4 @@
-"""Readiness and revision checks for one existing expression construct."""
+"""Readiness checks for one existing expression construct."""
 
 from __future__ import annotations
 
@@ -54,8 +54,6 @@ def read_project(config: Any) -> ProjectSnapshot:
         raise DesignError(
             f"当前表达构建或组件库需更新：{exc}", code="project_not_ready"
         ) from exc
-    if source.manifest_revision != int(manifest.get("revision", 0)):
-        raise DesignError("读取期间项目状态已变化，请刷新后重试。", code="stale_source")
     try:
         record = SeqIO.read(source.constructs[0].path, "genbank")
     except (OSError, ValueError) as exc:
@@ -63,10 +61,3 @@ def read_project(config: Any) -> ProjectSnapshot:
             "表达构建 GenBank 无法读取，请重新组装并刷新。", code="project_not_ready"
         ) from exc
     return ProjectSnapshot(manifest, source, catalog, record)
-
-
-def authenticate_request(snapshot: ProjectSnapshot, request: dict) -> None:
-    if request.get("expected_revision") != snapshot.source.manifest_revision:
-        raise DesignError(
-            "项目已更新，请刷新页面后重新检查与生成。", code="stale_source"
-        )

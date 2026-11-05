@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .lifecycle import serialized_main_enzyme_run, require_revision
+from .lifecycle import serialized_main_enzyme_run
 from .common import (
     get_solution_steps,
     heterologous_requirements,
@@ -1307,9 +1307,7 @@ def build_main_enzyme_sets(
     invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
     write_json_atomic(main_enzyme_set_paths(output_dir)["main_enzyme_sets_json"], {"status": "running"})
     manifest = read_manifest(manifest_path)
-    source_revision = int(manifest.get("revision", 0))
     def publish(result):
-        require_revision(manifest_path, source_revision)
         return _write_set_outputs(output_dir, result)
     solution_id, steps = get_solution_steps(manifest)
     solution = manifest["solution"]

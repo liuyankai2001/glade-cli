@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from filelock import FileLock
-from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
+from src.write_manifest.store import manifest_update_lock, update_design_manifest
 
 from src.final_assemble_plan.common import (
     relative_project_path,
@@ -208,12 +208,9 @@ def _run_final_assembly_plan(config: Any) -> dict[str, Any]:
     parameters = _parameters(requested_method)
     output_path = (context.project_output_path / "final_assemble_plan" / ASSEMBLY_PLAN_RECOMMENDATIONS_FILENAME)
     with manifest_update_lock(context.manifest_path):
-        manifest = read_design_manifest(context.manifest_path)
-        if manifest.get("revision", 0) != context.manifest_revision:
-            raise ValueError("项目版本已变化，请重试")
         obsolete = ("final_assembly_plan", "final_assembly", "final_design_report")
         update_design_manifest(context.manifest_path, target_compound_id=context.target_compound_id,
-                               sections={}, discard_sections=obsolete, expected_revision=context.manifest_revision)
+                               sections={}, discard_sections=obsolete)
         if output_path.exists():
             from uuid import uuid4
             history = output_path.parent / "history" / uuid4().hex
@@ -279,7 +276,6 @@ def _run_final_assembly_plan(config: Any) -> dict[str, Any]:
         "requested_method": requested_method,
         "source": {
             "manifest_path": str(context.manifest_path),
-            "manifest_revision": context.manifest_revision,
         },
         "parameters": parameters,
         "design_count": len(context.constructs),

@@ -43,13 +43,13 @@ export type Context = {
     target: string;
     name: string;
     host: string;
-    manifest_revision: number;
   };
   ready: boolean;
   issues: Issue[];
   construct: {
     id: number;
     name: string;
+    sequence?: string;
     length_bp: number;
     gc_percent: number;
     features: Feature[];
@@ -100,7 +100,6 @@ export type Preview = {
   }[];
   features: Feature[];
   enzymes: Enzyme[];
-  manifest_revision?: number;
 };
 export type Result = {
   assembly_schema_version?: number;
@@ -113,7 +112,6 @@ export type Result = {
   replication_id: string;
   length_bp: number;
   gc_percent: number;
-  manifest_revision: number;
   files: {
     id: string;
     label: string;

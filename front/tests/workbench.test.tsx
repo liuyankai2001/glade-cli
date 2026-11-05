@@ -17,7 +17,7 @@ const context = {
     target: "demo",
     name: "Demo construct",
     host: "E. coli",
-    manifest_revision: 3,
+
     },
   ready: true,
   issues: [],
@@ -91,7 +91,7 @@ const preview: Preview = {
   ],
   features: [],
   enzymes: context.restriction_enzymes,
-  manifest_revision: 3,
+
 };
 
 function response(body: any, ok = true, status = 200, init?: RequestInit) {
@@ -129,6 +129,91 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+it.each(["length", "sequence"])("refreshes a changed source with the same business ID without a write counter: %s", async (change) => {
+  let refresh: (() => void) | undefined;
+  const originalInterval = window.setInterval.bind(window);
+  vi.spyOn(window, "setInterval").mockImplementation((handler, delay, ...args) => {
+    if (delay === 5000) {
+      refresh = handler as () => void;
+      return 123;
+    }
+    return originalInterval(handler, delay, ...args);
+  });
+  let changed = false;
+  const mock = vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes("modules")) return response(modules, true, 200, init);
+    if (url.includes("preview")) return response({ ...preview, sequence: changed ? "ATGCCC" : "ATGC" }, true, 200, init);
+    return response({ ...context, construct: { ...context.construct,
+      length_bp: changed && change === "length" ? 2001 : 2000,
+      sequence: changed && change === "sequence" ? "AGCT" : "ACGT",
+    } }, true, 200, init);
+  });
+  vi.stubGlobal("fetch", mock);
+  render(<Workbench />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择 AmpR" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择 pUC ori" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled());
+  const previous = mock.mock.calls.filter(([url]) => url.includes("preview")).length;
+  changed = true;
+  await act(async () => { refresh?.(); });
+  await waitFor(() => expect(mock.mock.calls.filter(([url]) => url.includes("preview")).length).toBeGreaterThan(previous));
+});
+
+it.each(["replacement", "invalid"])("ignores delayed job success after authoritative context: %s", async (mode) => {
+  let resolvePoll: ((value: Response) => void) | undefined;
+  let contextReads = 0;
+  let components: ComponentInstance[] = [];
+  const artifact = (id: string) => ({
+    id, components, resistance_id: "amp", replication_id: "puc", length_bp: 3381, gc_percent: 51,
+    files: [{ id: "gb", label: "GenBank", filename: id + ".gb", format: "gb", url: "/api/files/" + id + "/gb" }], warnings: [],
+  });
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+    if (url.includes("modules")) return response(modules, true, 200, init);
+    if (url.includes("preview")) return response(preview, true, 200, init);
+    if (url.includes("generate")) {
+      components = JSON.parse(String(init?.body)).components;
+      return response({ id: "job-a", status: "running", stage: "exporting", message: "running" }, true, 202, init);
+    }
+    if (url.includes("jobs/job-a")) return new Promise<Response>((resolve) => { resolvePoll = resolve; });
+    contextReads += 1;
+    if (contextReads > 2) return Promise.reject(new Error("offline after accepted context"));
+    return response({ ...context, active_job: null, result: contextReads === 2 && mode === "replacement" ? artifact("b") : null }, true, 200, init);
+  }));
+  render(<Workbench />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择 AmpR" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择 pUC ori" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "生成设计" }));
+  await waitFor(() => expect(resolvePoll).toBeDefined(), { timeout: 2500 });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "刷新源构建" })); });
+  expect(contextReads).toBe(2);
+  await act(async () => {
+    resolvePoll?.(new Response(JSON.stringify({ id: "job-a", status: "succeeded", stage: "done", message: "done", result: artifact("a") })));
+  });
+  if (mode === "replacement") expect(screen.getByRole("link", { name: "下载 GenBank" })).toHaveAttribute("href", "/api/files/b/gb");
+  else expect(screen.queryByRole("link", { name: "下载 GenBank" })).not.toBeInTheDocument();
+});
+
+it("sends preview and generation requests without retired metadata", async () => {
+  const mock = vi.fn((url: string, init?: RequestInit) => response(
+    url.includes("modules") ? modules : url.includes("preview") ? preview
+      : url.includes("generate") ? { id: "job", status: "queued", stage: "queued", message: "queued" }
+      : context, true, 200, init,
+  ));
+  vi.stubGlobal("fetch", mock);
+  render(<Workbench />);
+  fireEvent.click(await screen.findByRole("button", { name: "选择 AmpR" }));
+  fireEvent.click(screen.getByRole("button", { name: "选择 pUC ori" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "生成设计" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "生成设计" }));
+  await waitFor(() => expect(mock.mock.calls.some(([url]) => url.includes("generate"))).toBe(true));
+  for (const [url, init] of mock.mock.calls) {
+    if (url.includes("preview") || url.includes("generate")) {
+      expect(JSON.parse(String(init?.body))).not.toHaveProperty("expected_revision");
+    }
+  }
 });
 
 describe("Workbench", () => {
@@ -193,7 +278,7 @@ describe("Workbench", () => {
             module_id: "amp",
           },
         ],
-        expected_revision: 3,
+
       });
     },
   );
@@ -359,6 +444,7 @@ describe("Workbench", () => {
   });
 
   it("shows API failures and exposes actual downloaded files after a successful job", async () => {
+    let registered: any = null;
     const fetchMock = vi
       .fn()
       .mockImplementation((url: string, init?: RequestInit) => {
@@ -371,13 +457,14 @@ describe("Workbench", () => {
               status: "succeeded",
               stage: "done",
               message: "完成",
-              result: {
+              result: registered = {
+                components: JSON.parse(String(init?.body)).components,
                 id: "g1",
                 resistance_id: "amp",
                 replication_id: "puc",
                 length_bp: 3381,
                 gc_percent: 51,
-                manifest_revision: 3,
+
                 files: [
                   {
                     id: "gb",
@@ -397,7 +484,7 @@ describe("Workbench", () => {
         return response(
           {
             ...context,
-            project: { ...context.project, manifest_revision: 2 },
+            result: registered,
           },
           true,
           200,
@@ -458,7 +545,7 @@ describe("Workbench", () => {
         replication_id: "puc",
         length_bp: 3381,
         gc_percent: 51,
-        manifest_revision: 3,
+
         files: [
           {
             id: "gb",
@@ -555,14 +642,14 @@ describe("Workbench", () => {
     ).toHaveAttribute("data-strand", "1");
   });
 
-  it("keeps a generated download when its source and selected IDs match despite a newer result revision", async () => {
+  it("keeps a generated download when the registered artifact and selected IDs match", async () => {
     const result = {
       id: "g2",
       resistance_id: "amp",
       replication_id: "puc",
       length_bp: 3381,
       gc_percent: 51,
-      manifest_revision: 2,
+
       files: [
         {
           id: "gb",
@@ -574,10 +661,12 @@ describe("Workbench", () => {
       ],
       warnings: [],
     };
+    let registered: any = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((url: string, init?: RequestInit) =>
-        response(
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("generate")) registered = { ...result, components: JSON.parse(String(init?.body)).components };
+        return response(
           url.includes("modules")
             ? modules
             : url.includes("preview")
@@ -588,17 +677,17 @@ describe("Workbench", () => {
                     status: "succeeded",
                     stage: "done",
                     message: "完成",
-                    result,
+                    result: registered,
                   }
                 : {
                     ...context,
-                    project: { ...context.project, manifest_revision: 1 },
+                    result: registered,
                   },
           true,
           200,
           init,
-        ),
-      ),
+        );
+      }),
     );
     render(<Workbench />);
     await screen.findByText("AmpR");
@@ -636,24 +725,24 @@ describe("Workbench", () => {
     ).toBe(false);
   });
   it("recovers a generate conflict by refreshing context and preview", async () => {
-    let revision = 3;
+    let sourceChanged = false;
     const mock = vi.fn((url: string, init?: RequestInit) => {
       if (url.includes("modules")) return response(modules, true, 200, init);
       if (url.includes("preview"))
         return response(
-          { ...preview, manifest_revision: revision },
+          { ...preview, },
           true,
           200,
           init,
         );
       if (url.includes("generate")) {
-        revision = 4;
+        sourceChanged = true;
         return response({ error: { message: "源已更新" } }, false, 409, init);
       }
       return response(
         {
           ...context,
-          project: { ...context.project, manifest_revision: revision },
+          construct: { ...context.construct, length_bp: sourceChanged ? 2001 : 2000 },
         },
         true,
         200,
@@ -772,14 +861,14 @@ describe("Workbench", () => {
       container.querySelectorAll("[data-testid=restriction-tick]"),
     ).toHaveLength(1);
   });
-  it("refreshes the preview revision after committing a job while preserving chosen IDs", async () => {
-    let revision = 1;
+  it("refreshes the registered result after committing a job while preserving chosen IDs", async () => {
+    let generated = false;
     const committed = {
       components: [] as ComponentInstance[],
       id: "g",
       resistance_id: "amp",
       replication_id: "puc",
-      manifest_revision: 2,
+
       files: [
         {
           id: "gb",
@@ -793,13 +882,13 @@ describe("Workbench", () => {
       if (url.includes("modules")) return response(modules, true, 200, init);
       if (url.includes("preview"))
         return response(
-          { ...preview, manifest_revision: revision },
+          { ...preview, },
           true,
           200,
           init,
         );
       if (url.includes("generate")) {
-        revision = 2;
+        generated = true;
         committed.components = JSON.parse(String(init?.body)).components;
         return response(
           {
@@ -817,8 +906,8 @@ describe("Workbench", () => {
       return response(
         {
           ...context,
-          result: revision === 2 ? committed : null,
-          project: { ...context.project, manifest_revision: revision },
+          result: generated ? committed : null,
+          project: { ...context.project, },
         },
         true,
         200,
@@ -841,7 +930,7 @@ describe("Workbench", () => {
           .filter(([url]) => url.includes("preview"))
           .some(
             ([, init]) =>
-              JSON.parse(String(init?.body)).expected_revision === 2,
+              JSON.parse(String(init?.body)).assembly_schema_version === 2,
           ),
       ).toBe(true),
     );
@@ -885,7 +974,7 @@ describe("Workbench", () => {
         id: "a",
         resistance_id: "amp",
         replication_id: "puc",
-        manifest_revision: 2,
+
         files: [
           {
             id: "gb",
@@ -896,7 +985,7 @@ describe("Workbench", () => {
         ],
       };
       let authoritative: any = null;
-      let revision = 1;
+      let generated = false;
       let invalid = false;
       vi.stubGlobal(
         "fetch",
@@ -905,13 +994,13 @@ describe("Workbench", () => {
             return response(modules, true, 200, init);
           if (url.includes("preview"))
             return response(
-              { ...preview, manifest_revision: revision },
+              { ...preview, },
               true,
               200,
               init,
             );
           if (url.includes("generate")) {
-            revision = 2;
+            generated = true;
             resultA.components = JSON.parse(String(init?.body)).components;
             authoritative = resultA;
             return response(
@@ -930,7 +1019,7 @@ describe("Workbench", () => {
           return response(
             {
               ...context,
-              project: { ...context.project, manifest_revision: revision },
+              project: { ...context.project, },
               result: authoritative,
               issues: invalid
                 ? [{ code: "artifact_invalid", message: "产物校验失败" }]

@@ -140,7 +140,7 @@ def _execute_one_design(
         "algorithm_version": FINAL_ASSEMBLY_EXECUTION_ALGORITHM_VERSION,
         "target_compound_id": context.source_context.target_compound_id,
         "parts_design_id": design_id,
-        "source": {"manifest_revision": context.manifest_revision},
+        "source": {},
         "assembly_method": plan.get("assembly_method"),
         "backbone_linearization": dict(linearization),
         "target": assembled.target_audit,
@@ -268,14 +268,11 @@ def execute_final_assembly(
     context = load_execution_context(config)
     with manifest_update_lock(context.manifest_path):
         manifest = read_design_manifest(context.manifest_path)
-        if manifest.get("revision", 0) != context.manifest_revision:
-            raise ValueError("项目版本已变化，请重试")
         obsolete = ("final_assembly", "final_design_report")
         if any(name in manifest for name in obsolete):
             update_design_manifest(context.manifest_path,
                                    target_compound_id=context.source_context.target_compound_id,
-                                   sections={}, discard_sections=obsolete,
-                                   expected_revision=context.manifest_revision)
+                                   sections={}, discard_sections=obsolete)
             context = load_execution_context(config)
     project_root = context.project_output_path.resolve()
     project_root.mkdir(parents=True, exist_ok=True)
@@ -332,7 +329,6 @@ def execute_final_assembly(
             "failed_count": len(failures),
             "method_counts": method_counts,
             "source": {
-                "manifest_revision": context.manifest_revision,
             },
             "constructs": constructs,
             "failures": failures,
@@ -396,19 +392,15 @@ def execute_final_assembly(
         }
 
         with manifest_update_lock(context.manifest_path):
-            current = read_design_manifest(context.manifest_path)
-            if int(current.get("revision") or 0) != context.manifest_revision:
-                raise ValueError("项目版本已变化，请重试")
             transaction.install()
             try:
-                updated = update_design_manifest(
+                update_design_manifest(
                     context.manifest_path,
                     target_compound_id=context.source_context.target_compound_id,
                     sections={
                         "final_assembly": final_section,
                         "final_design_report": design_report_section,
                     },
-                    expected_revision=context.manifest_revision,
                 )
             except Exception:
                 transaction.rollback()
@@ -433,7 +425,6 @@ def execute_final_assembly(
             "failures": failures,
             "warnings": warnings_list,
             "manifest_path": str(context.manifest_path.resolve()),
-            "manifest_revision": updated["revision"],
         }
     except Exception:
         transaction.cleanup_staging()

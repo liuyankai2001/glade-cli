@@ -180,8 +180,6 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
         if manifest.get("target_compound_id") != target:
             raise ValueError("manifest 与当前目标化合物不一致")
         context = load_expression_parts_context(path, root)
-        if context.manifest_revision != int(manifest["revision"]):
-            raise ValueError("manifest revision 已变化，请重试")
         for cassette in context.cassettes:
             for cds in cassette.cds:
                 try:
@@ -224,11 +222,11 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
             transaction.install()
             if not snapshot_path.is_file() or snapshot_path.read_bytes() != snapshot_bytes:
                 write_bytes_atomic(snapshot_path, snapshot_bytes)
-            updated = update_design_manifest(
+            update_design_manifest(
                 path, target_compound_id=target,
                 sections={"expression_parts_draft": draft, "parts_selection": selection,
                           "assembled_expression_constructs": transaction.section},
-                discard_sections=ASSEMBLY_DOWNSTREAM, expected_revision=context.manifest_revision,
+                discard_sections=ASSEMBLY_DOWNSTREAM,
             ) if changed else manifest
             files.commit()
         except Exception:
@@ -239,5 +237,5 @@ def assemble_expression_constructs(config: Any, *, predictor=predict_rbs_context
                 "表达元件方案编号": selection["selected_design_ids"], "完整表达构建数量": len(designs),
                 "GenBank目录": str(root / "expression_constructs"), "GenBank是否复用": not transaction.needs_install,
                 "GenBank是否修复": transaction.is_repair, "清单是否更新": changed,
-                "清单文件": str(path), "清单版本": updated["revision"],
+                "清单文件": str(path),
                 "警告": selection["warnings"] + ([cleanup_warning] if cleanup_warning else [])}

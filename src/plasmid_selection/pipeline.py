@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from filelock import FileLock
-from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
+from src.write_manifest.store import manifest_update_lock, update_design_manifest
 
 from src.plasmid_selection.config import (
     BURDEN_COPY_FIT_SCORES,
@@ -347,14 +347,10 @@ def _run_plasmid_recommendation(
     plasmid_dir = context.project_output_path / "plasmid_selection"
     artifact_path = plasmid_dir / PLASMID_CANDIDATES_FILENAME
     with manifest_update_lock(context.manifest_path):
-        manifest = read_design_manifest(context.manifest_path)
-        if manifest.get("revision", 0) != context.manifest_revision:
-            raise ValueError("项目版本已变化，请重试")
         obsolete = ("plasmid_selection", "final_assembly_plan", "final_assembly", "final_design_report")
         update_design_manifest(context.manifest_path, target_compound_id=context.target_compound_id,
-                               sections={}, discard_sections=obsolete,
-                               expected_revision=context.manifest_revision)
-        # Move computed reports under the same lock as revision invalidation.
+                               sections={}, discard_sections=obsolete)
+        # Move computed reports under the same lock as current-result invalidation.
         if artifact_path.exists():
             _seed_old_raw_sequences(plasmid_dir, artifact_path)
             from uuid import uuid4
@@ -434,7 +430,6 @@ def _run_plasmid_recommendation(
         "generated_at": _utc_now(),
         "source": {
             "manifest_path": str(context.manifest_path),
-            "manifest_revision": context.manifest_revision,
             "milvus_collection": snapshot.collection_name,
             "milvus_row_count": snapshot.collection_row_count,
         },

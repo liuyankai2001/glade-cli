@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from src.write_manifest.store import read_design_manifest, update_design_manifest
+from src.write_manifest.store import update_design_manifest
 
 
 def _stage(path: Path, content: bytes) -> Path:
@@ -27,7 +27,7 @@ def _stage(path: Path, content: bytes) -> Path:
 
 
 def commit_cds_optimization(
-    *, manifest_path: Path, project_root: Path, target: str, revision: int,
+    *, manifest_path: Path, project_root: Path, target: str,
     selection: dict[str, Any], discard_sections: tuple[str, ...],
     files: dict[Path, bytes], guards: dict[Path, bytes | None],
     dependent_sections: dict[str, Any] | None = None,
@@ -49,9 +49,6 @@ def commit_cds_optimization(
         for path, content in files.items():
             backups[path] = path.read_bytes() if path.exists() else None
             staged[path] = _stage(path, content)
-        current = read_design_manifest(manifest_path)
-        if int(current.get("revision", 0)) != revision:
-            raise ValueError("优化期间 manifest revision 已变化，请重试")
         for path, expected in guards.items():
             observed = path.read_bytes() if path.exists() else None
             if observed != expected:
@@ -62,7 +59,6 @@ def commit_cds_optimization(
         return update_design_manifest(
             manifest_path, target_compound_id=target,
             sections={"cds_selection": selection, **(dependent_sections or {})}, discard_sections=discard_sections,
-            expected_revision=revision,
         )
     except BaseException:
         for path in reversed(installed):

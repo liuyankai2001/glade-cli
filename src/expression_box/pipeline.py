@@ -116,7 +116,6 @@ def _full_payload(
         "algorithm_version": GROUPING_ALGORITHM_VERSION,
         "source": {
             "manifest_path": str(context.manifest_path),
-            "manifest_revision": context.manifest_revision,
         },
         "constraints": {
             "balanced_max_main_units_per_cassette": (
@@ -198,7 +197,7 @@ def _invalidate_calculation(manifest_path: Path, *, grouping: bool, preserve_dra
     elif raw_draft is not None:
         downstream = (*downstream, "expression_parts_draft")
     update_design_manifest(manifest_path, target_compound_id=target, sections=sections,
-                           discard_sections=downstream, expected_revision=int(manifest["revision"]))
+                           discard_sections=downstream)
 
 def _run_expression_box_design(config: Any) -> dict[str, Any]:
     """Generate and persist system-recommended protein grouping candidates."""

@@ -28,18 +28,15 @@ def retained_uploaded_draft(manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {"expression_parts_draft": draft}
 
 
-def invalidate_current(path: str | Path, sections: tuple[str, ...], *, expected_revision: int | None = None) -> dict[str, Any]:
+def invalidate_current(path: str | Path, sections: tuple[str, ...]) -> dict[str, Any]:
     from src.write_manifest.store import read_design_manifest, update_design_manifest
     manifest = read_design_manifest(path)
-    if expected_revision is not None and manifest.get("revision") != expected_revision:
-        raise ValueError("manifest revision changed before recalculation")
     if not any(name in manifest for name in sections):
         return manifest
     retained = retained_uploaded_draft(manifest)
     return update_design_manifest(
         path, target_compound_id=str(manifest.get("target_compound_id") or ""),
         sections=retained, discard_sections=sections,
-        expected_revision=int(manifest.get("revision", 0)),
     )
 
 
@@ -58,9 +55,3 @@ def serialized_main_enzyme_run(function):
         except Timeout as exc:
             raise ValueError("主酶计算正在运行，请稍后重试") from exc
     return wrapped
-
-
-def require_revision(path: str | Path, expected: int) -> None:
-    from src.write_manifest.store import read_design_manifest
-    if int(read_design_manifest(path).get("revision", 0)) != expected:
-        raise ValueError("manifest revision changed during main-enzyme calculation")

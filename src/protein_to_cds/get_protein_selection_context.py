@@ -25,7 +25,6 @@ class SelectedProteinForCds:
 @dataclass(frozen=True, slots=True)
 class ProteinToCdsContext:
     manifest_path: Path
-    manifest_revision: int
     target_compound_id: str
     chassis_key: str
     selected_solution_id: int
@@ -113,10 +112,6 @@ def get_proteins_for_cds(
     target_compound_id = _nonempty_text(
         manifest.get("target_compound_id"), "target_compound_id"
     )
-    try:
-        revision = int(manifest.get("revision", 0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("manifest revision must be an integer") from exc
 
     selection = _mapping(manifest.get("main_enzyme_selection"), "main_enzyme_selection")
     if selection.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
@@ -164,7 +159,6 @@ def get_proteins_for_cds(
     ordered = tuple(proteins[accession] for accession in sorted(proteins))
     return ProteinToCdsContext(
         manifest_path=path,
-        manifest_revision=revision,
         target_compound_id=target_compound_id,
         chassis_key=chassis_key,
         selected_solution_id=selected_solution_id,

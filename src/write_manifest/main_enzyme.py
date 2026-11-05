@@ -386,16 +386,13 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         isinstance(current_selection, Mapping)
         and dict(current_selection) == payload
     )
-    if unchanged:
-        updated_manifest = manifest
-    else:
+    if not unchanged:
         from src.main_protein_selection.lifecycle import retained_uploaded_draft
-        updated_manifest = update_design_manifest(
+        update_design_manifest(
             manifest_path,
             target_compound_id=target_compound,
             sections={"main_enzyme_selection": payload, **retained_uploaded_draft(manifest)},
             discard_sections=MAIN_ENZYME_DOWNSTREAM_SECTIONS,
-            expected_revision=int(manifest.get("revision", 0)),
         )
 
     proteins = sorted(
@@ -431,7 +428,6 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         ],
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path.resolve()),
-        "清单版本": updated_manifest["revision"],
     }
 
 

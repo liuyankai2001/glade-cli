@@ -17,7 +17,7 @@ from src.plasmid_selection.config import (
 )
 from src.plasmid_selection.get_plasmid_context import load_plasmid_context
 from src.plasmid_selection.sequence_fetch import validate_genbank_bytes
-from src.write_manifest.store import manifest_update_lock, read_design_manifest, update_design_manifest
+from src.write_manifest.store import manifest_update_lock, update_design_manifest
 
 
 PLASMID_SELECTION_DOWNSTREAM_SECTIONS = (
@@ -96,8 +96,6 @@ def _validate_artifact(
     source = artifact.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("质粒候选缺少 source")
-    if source.get("manifest_revision") != context.manifest_revision:
-        raise ValueError("质粒候选与当前项目版本不一致，请重新运行 plasmid --recommend")
     raw_candidates = artifact.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ValueError("质粒候选文件中没有 candidates")
@@ -288,18 +286,14 @@ def write_plasmid_selection(config: Any) -> dict[str, Any]:
         / "selected_backbone.gb"
     )
     with manifest_update_lock(context.manifest_path):
-        current = read_design_manifest(context.manifest_path)
-        if int(current.get("revision") or 0) != context.manifest_revision:
-            raise ValueError("项目版本已变化，请重新运行推荐")
         old_content = destination.read_bytes() if destination.is_file() else None
         _install_bytes_atomic(destination, candidate_content)
         try:
-            updated_manifest = update_design_manifest(
+            update_design_manifest(
                 context.manifest_path,
                 target_compound_id=context.target_compound_id,
                 sections={"plasmid_selection": payload},
                 discard_sections=PLASMID_SELECTION_DOWNSTREAM_SECTIONS,
-                expected_revision=context.manifest_revision,
             )
         except Exception:
             if old_content is None:
@@ -319,7 +313,6 @@ def write_plasmid_selection(config: Any) -> dict[str, Any]:
         "covered_design_count": len(context.selected_design_ids),
         "selected_backbone": str(destination.resolve()),
         "manifest_path": str(context.manifest_path.resolve()),
-        "manifest_revision": updated_manifest["revision"],
         "manifest_modified": True,
     }
 

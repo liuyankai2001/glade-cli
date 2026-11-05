@@ -36,7 +36,7 @@ const context = {
     target: "terminator-demo",
     name: "Demo",
     host: "E. coli",
-    manifest_revision: 1,
+
     },
   ready: true,
   issues: [],
@@ -72,7 +72,7 @@ function install(warnings = ["未添加 T0", "未添加 T1"], valid = true) {
                   sequence: "ATGC",
                   length_bp: 1008,
                   gc_percent: 50,
-                  manifest_revision: 1,
+
                   segments: [],
                   features: [],
                   enzymes: [],
@@ -241,7 +241,7 @@ it("migrates legacy order around expression and respects explicit terminator seg
     issues: [],
     warnings: [],
     gc_percent: 50,
-    manifest_revision: 1,
+
     enzymes: [],
   } as Preview;
   const next = reorderGeometry(preview, [
@@ -291,7 +291,7 @@ it("always labels short independent terminator sectors with external callouts an
     sequence: "",
     length_bp: 1000,
     gc_percent: 50,
-    manifest_revision: 1,
+
     segments: parts,
     features: [
       {
@@ -486,7 +486,7 @@ it("ignores a late preview from before a manual terminator choice", async () => 
           features: [],
           enzymes: [],
           gc_percent: 50,
-          manifest_revision: 1,
+
         }),
       ),
     ),
@@ -506,10 +506,7 @@ it("closes confirmation on a changed source while preserving manual choices and 
           new Response(
             JSON.stringify({
               ...context,
-              project: {
-                ...context.project,
-                            manifest_revision: 2,
-              },
+              construct: { ...context.construct!, length_bp: context.construct!.length_bp + 1 },
             }),
           ),
         )
@@ -541,7 +538,7 @@ it("closes confirmation on a changed source while preserving manual choices and 
       ),
     ),
   ).toMatchObject({
-    expected_revision: 2,
+
     components: expect.arrayContaining([
       {
         instance_id: expect.any(String),

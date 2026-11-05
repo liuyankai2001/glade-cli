@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from src.main_protein_selection.lifecycle import serialized_main_enzyme_run, require_revision
+from src.main_protein_selection.lifecycle import serialized_main_enzyme_run
 from src.main_protein_selection.common import (
     PROTEIN_CANDIDATE_COLUMNS,
     STEP_CANDIDATE_COLUMNS,
@@ -291,7 +291,6 @@ def select_main_enzymes(
         write_json_atomic(paths["main_enzyme_selection_json"], {"status": "running"})
         write_json_atomic(output_path / "main_enzyme_sets.json", {"status": "stale_input"})
         manifest = read_manifest(manifest_path)
-        source_revision = int(manifest.get("revision", 0))
         solution_id, steps = get_solution_steps(manifest)
         all_requirements = heterologous_requirements(steps)
         retropath_requirements = [
@@ -1087,7 +1086,6 @@ def select_main_enzymes(
                 ),
             },
         )
-        require_revision(manifest_path, source_revision)
         write_json_atomic(
             paths["main_enzyme_selection_json"],
             canonical_result.model_dump(mode="json"),

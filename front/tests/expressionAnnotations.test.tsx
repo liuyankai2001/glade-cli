@@ -27,7 +27,7 @@ const features = [
 ];
 const preview: Preview = {
   valid: true, issues: [], warnings: [], sequence: "", length_bp: 6138,
-  gc_percent: 50, manifest_revision: 1, enzymes: [], features,
+  gc_percent: 50,  enzymes: [], features,
   segments: [
     { id: "expression", label: "expression", kind: "expression", component_type: "expression", instance_id: "expression", start_bp: 1, end_bp: 3553, length_bp: 3553 },
     { id: "ori", label: "ori", kind: "replication", component_type: "replication", instance_id: "ori", start_bp: 3554, end_bp: 6138, length_bp: 2585 },

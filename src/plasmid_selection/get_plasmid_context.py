@@ -207,7 +207,6 @@ def load_plasmid_context(config: Any) -> PlasmidContext:
         target_compound_id=target,
         manifest_path=manifest_path,
         project_output_path=project_output,
-        manifest_revision=int(manifest.get("revision") or 0),
         host_key=host_key,
         host_name=host_name,
         selected_design_ids=selected_ids,
@@ -219,7 +218,6 @@ def plasmid_context_summary(config: Any) -> dict[str, Any]:
     context = load_plasmid_context(config)
     return {
         "target_compound_id": context.target_compound_id,
-        "manifest_revision": context.manifest_revision,
         "host": {"key": context.host_key, "name": context.host_name},
         "selected_design_ids": list(context.selected_design_ids),
         "construct_count": len(context.constructs),

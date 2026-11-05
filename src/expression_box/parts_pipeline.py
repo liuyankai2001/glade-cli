@@ -173,7 +173,6 @@ def _run_expression_parts_design(
         "algorithm_version": PARTS_RECOMMENDATION_ALGORITHM_VERSION,
         "source": {
             "manifest_path": str(manifest_path),
-            "manifest_revision": context.manifest_revision,
             "milvus_collection": snapshot.collection_name,
         },
         "target_compound_id": context.target_compound_id,
