@@ -41,6 +41,10 @@ STEP_FIELD_NAMES = {
     "module_ids": "KEGG模块ID",
     "rhea_ids": "Rhea反应ID",
     "reaction_comment": "反应备注",
+    "unclear_reaction": "反应细节不清楚",
+    "multi_step_reaction": "多步反应",
+    "incomplete_reaction": "反应信息不完整",
+    "requires_review": "需要反应复核",
     "step_source": "步骤来源",
     "expansion_depth": "扩展深度",
     "expansion_anchor_compounds": "扩展锚点化合物",
@@ -277,6 +281,11 @@ def _step_overview(
             "计量补全状态": _validation_name(row.get("stoichiometry_status")),
             "GEM验证状态": _validation_name(row.get("gem_status")),
         })
+    result.update({
+        STEP_FIELD_NAMES[field]: row[field]
+        for field in ("unclear_reaction", "multi_step_reaction", "incomplete_reaction", "requires_review")
+        if field in row
+    })
     return result
 
 
@@ -318,6 +327,10 @@ def _format_solution_info(result: dict[str, Any]) -> str:
             reaction_name = "RetroPath预测反应"
         if reaction_name:
             lines.append(f"反应：{reaction_name}")
+        if detail.get("需要反应复核") is True:
+            labels = [label for label in ("反应细节不清楚", "多步反应", "反应信息不完整")
+                      if detail.get(label) is True]
+            lines.append(f"反应需复核：{'、'.join(labels)}")
         ecs = _split_values(
             detail.get("酶EC编号") or detail.get("来源模板EC")
         )
@@ -335,8 +348,16 @@ def _format_solution_info(result: dict[str, Any]) -> str:
 
     if result.get("完整路线模式") is True:
         if result.get("详细模式") is True:
-            return _format_full_solution_verbose(result)
-        return _format_full_solution_summary(result)
+            text = _format_full_solution_verbose(result)
+        else:
+            text = _format_full_solution_summary(result)
+        if result.get("需要反应复核") is True:
+            marked = "、".join(_split_values(result.get("标记反应ID")))
+            return (
+                f"反应需复核：{marked}；候选连接不代表已有完整酶组合\n\n"
+                f"{text}"
+            )
+        return text
 
     total_steps = result.get("步骤数量", 0)
     heterologous_steps = result.get("异源步骤数", 0)
@@ -348,6 +369,8 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         f"路线规模：共 {total_steps} 步，其中异源反应 {heterologous_steps} 步",
         f"起始代谢物：{'、'.join(starts)}",
     ]
+    if result.get("需要反应复核") is True:
+        lines.append("反应需复核：含已标记的反应记录；候选连接不代表已有完整酶组合")
     if source == "RetroPath预测":
         lines.append(
             "验证状态："
@@ -376,6 +399,10 @@ def _format_solution_info(result: dict[str, Any]) -> str:
         inputs = _friendly_compounds(step.get("输入", []))
         lines.append(f"  输入：{' + '.join(inputs)}")
         lines.append(f"  输出：{_friendly_compound(step.get('输出'))}")
+        if step.get("需要反应复核") is True:
+            labels = [label for label in ("反应细节不清楚", "多步反应", "反应信息不完整")
+                      if step.get(label) is True]
+            lines.append(f"  反应需复核：{'、'.join(labels)}")
         ecs = _split_values(step.get("酶EC编号"))
         if ecs:
             lines.append(f"  酶 EC：{'、'.join(ecs)}")
@@ -910,6 +937,9 @@ def get_solution_info(config: Any) -> dict[str, Any]:
         "路径编号": selected_solution_id,
         "路线来源": "RetroPath预测" if solution_source == "retropath" else "KEGG",
     }
+    if "requires_review" in summary:
+        common["需要反应复核"] = summary["requires_review"] is True
+        common["标记反应ID"] = _split_values(summary.get("marked_reaction_ids"))
     if solution_source == "retropath":
         common.update({
             "RetroPath验证状态": summary.get("validation_status"),

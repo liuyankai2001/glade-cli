@@ -64,8 +64,8 @@ DEFAULT_MAX_ROUTES_PER_STATE = 3
 DEFAULT_MAX_MODULE_CHAIN_DEPTH = 5
 DEFAULT_MODULE_FILTER_MODE = "prefer"
 EndogenousDirectionIndex = Dict[str, frozenset[str]]
-SCREENING_RULE_VERSION = "directional_screening_v5_gem_bounds_cycle_safe"
-REACTION_RESOLUTION_VERSION = "reaction_resolution.v1"
+SCREENING_RULE_VERSION = "directional_screening_v6_reaction_only_markers"
+REACTION_RESOLUTION_VERSION = "reaction_resolution.v2_mark_only"
 REACTION_RESOLUTION_MODES = frozenset({"strict", "audit"})
 ENDOGENOUS_DIRECTION_MODE_GEM_BOUNDS = "gem_bounds"
 CYCLE_POLICY = "no_reaction_reuse_no_expanded_compound_reentry"
@@ -242,13 +242,18 @@ class PlanStep:
 
 @dataclass(frozen=True)
 class ReactionResolution:
-    """KEGG 反应条目作为工程酶促步骤时的规范化状态。"""
+    """KEGG 反应记录的拆解状态和复核标记，不判定酶的可用性。"""
 
     is_multistep: bool
     is_incomplete: bool
     component_ids: Tuple[str, ...]
     hard_blocker: bool
     reason: str
+    is_unclear: bool = False
+
+    @property
+    def requires_review(self) -> bool:
+        return self.is_unclear or self.is_multistep or self.is_incomplete
 
 
 @dataclass(frozen=True)
@@ -269,12 +274,13 @@ class Solution:
 
     @property
     def heterologous_steps(self) -> int:
-        """返回需要新增酶的步骤数。"""
+        """返回新增反应步骤数，不表示已找到酶或所需蛋白数量。"""
 
         return sum(not step.is_endogenous for step in self.steps)
 
     @property
     def reaction_ready(self) -> bool:
+        """是否允许输出为反应连接候选，不代表已有完整酶组合。"""
         return not self.blocking_reaction_ids
 
 
@@ -1323,41 +1329,35 @@ def should_expand_multistep_summary(reaction: ReactionRecord) -> bool:
 
 
 def classify_reaction_resolution(reaction: ReactionRecord) -> ReactionResolution:
-    """判断 KEGG 条目能否直接作为一个可实现的酶促步骤。
+    """解析反应备注；三类复核标签和 EC/KO 均不构成 gap 准入条件。
 
-    ``incomplete reaction`` 且没有 EC/KO 表示无法锁定独立工程步骤；若条目
-    已有明确 EC/KO，则保留为 enzyme-anchored review，交由严格反应证据门禁
-    继续验证。仅标记 ``multistep`` 但具有 EC/KO 的条目也可能表示同一酶的
-    多轮催化，不作硬阻断。
+    方向、前体连接和搜索预算另行检查。底盘 forward expansion 仍独立执行
+    明确单步反应策略，不因这里取消标签阻断而放行汇总或不完整条目。
     """
 
     comment = reaction.comment.lower()
     is_multistep = bool(STEP_SUMMARY_COMMENT_PATTERN.search(comment))
     is_incomplete = "incomplete reaction" in comment
+    is_unclear = "unclear reaction" in comment
     component_ids = multistep_component_reaction_ids(reaction)
     unresolved_multistep = is_multistep and not component_ids
-    lacks_enzyme_anchor = not reaction.enzyme_ecs and not reaction.ko_ids
-    hard_blocker = (
-        is_incomplete and lacks_enzyme_anchor
-    ) or (unresolved_multistep and lacks_enzyme_anchor)
-    if is_incomplete and lacks_enzyme_anchor:
-        reason = "incomplete_reaction"
-    elif is_incomplete:
-        reason = "incomplete_enzyme_anchored_review"
-    elif unresolved_multistep and lacks_enzyme_anchor:
-        reason = "unresolved_multistep_without_enzyme_anchor"
+    if is_incomplete:
+        reason = "incomplete_reaction_review"
     elif unresolved_multistep:
-        reason = "multistep_enzyme_anchored_review"
+        reason = "unresolved_multistep_review"
     elif component_ids:
         reason = "explicit_multistep"
+    elif is_unclear:
+        reason = "unclear_reaction_review"
     else:
         reason = "atomic"
     return ReactionResolution(
         is_multistep=is_multistep,
         is_incomplete=is_incomplete,
         component_ids=component_ids,
-        hard_blocker=hard_blocker,
+        hard_blocker=False,
         reason=reason,
+        is_unclear=is_unclear,
     )
 
 
@@ -1975,7 +1975,6 @@ def rank_reaction_options(
             endogenous_direction_index,
         ) else 1
         shared_pathway_penalty = 0 if target_pathway_ids & set(option.reaction.pathway_ids) else 1
-        enzyme_penalty = 0 if option.reaction.enzyme_ecs or option.reaction.ko_ids else 1
 
         reachable_penalty = 0 if reachable_count > 0 else 1
         # 元组按字段依次比较，因此前面的方向和辅因子指标优先级更高。
@@ -1988,7 +1987,6 @@ def rank_reaction_options(
             distance_score,
             unresolved_count,
             shared_pathway_penalty,
-            enzyme_penalty,
             endogenous_penalty,
             len(precursor_set),
             option.reaction.reaction_id,
@@ -2467,7 +2465,9 @@ def _find_unique_complete_pair_replacement(
         resolution = classify_reaction_resolution(reaction)
         if resolution.is_incomplete or resolution.hard_blocker:
             continue
-        if not reaction.enzyme_ecs and not reaction.ko_ids:
+        # A known component chain must go through normal decomposition.  It
+        # cannot stand in for one complete step here and hide direction/steps.
+        if should_expand_multistep_summary(reaction):
             continue
         if _net_signature(
             _net_stoichiometry_for_option(option, ignored_common_compounds)
@@ -2479,6 +2479,24 @@ def _find_unique_complete_pair_replacement(
     return next(iter(candidates.values()))
 
 
+def _steps_close_to_reachable(
+    steps: Sequence[PlanStep],
+    reachable_compounds: set[str],
+) -> bool:
+    """检查全部主要前体分支能否从给定底盘集合启动，不用净计量抵消依赖。"""
+
+    available = set(reachable_compounds)
+    pending = list(steps)
+    while pending:
+        ready = [step for step in pending if set(step.option.precursor_compounds) <= available]
+        if not ready:
+            return False
+        for step in ready:
+            available.add(step.option.produced_compound)
+            pending.remove(step)
+    return True
+
+
 def normalize_solution_reactions(
     solution: Solution,
     client: KeggRestClient,
@@ -2487,8 +2505,10 @@ def normalize_solution_reactions(
     ignored_common_compounds: set[str],
     endogenous_direction_index: EndogenousDirectionIndex | None,
     unpre_re_reaction: int = DEFAULT_UNPRE_RE_REACTION,
+    max_new_enzymes: int | None = None,
+    max_major_precursors: int | None = None,
 ) -> Solution:
-    """合并可唯一解析的相邻不完整步骤，并标记仍不可实现的反应。"""
+    """尝试合并相邻不完整步骤；无法修复的原记录保留并标记待复核。"""
 
     steps = list(solution.steps)
     events: List[str] = []
@@ -2543,15 +2563,31 @@ def normalize_solution_reactions(
                     "unique_complete_kegg_reaction",
                 ),
             )
-            steps[index : index + 2] = [replacement_step]
+            candidate_steps = steps[:index] + [replacement_step] + steps[index + 2 :]
+            candidate_ids = [step.option.reaction.reaction_id for step in candidate_steps]
+            if len(set(candidate_ids)) != len(candidate_ids):
+                continue
+            if max_new_enzymes is not None and sum(
+                not step.is_endogenous for step in candidate_steps
+            ) > max_new_enzymes:
+                continue
+            if max_major_precursors is not None and len(
+                replacement.precursor_compounds
+            ) > max_major_precursors:
+                continue
+            if not _steps_close_to_reachable(candidate_steps, reachable_compounds):
+                continue
+            steps = candidate_steps
             events.append(merge_event)
             changed = True
             break
 
     blocking_ids: List[str] = []
     blocking_reasons: List[str] = []
+    requires_review = False
     for step in steps:
         resolution = classify_reaction_resolution(step.option.reaction)
+        requires_review = requires_review or resolution.requires_review
         if not resolution.hard_blocker:
             continue
         blocking_ids.append(step.option.reaction.reaction_id)
@@ -2560,7 +2596,9 @@ def normalize_solution_reactions(
         )
     blocking_ids_tuple = dedupe_keep_order(blocking_ids)
     status = "blocked" if blocking_ids_tuple else (
-        "resolved_with_merges" if events else "resolved"
+        "marked_for_review" if requires_review else (
+            "resolved_with_merges" if events else "resolved"
+        )
     )
     return Solution(
         steps=tuple(steps),
@@ -2636,11 +2674,13 @@ def search_gap_solutions_once(
             normalized = normalize_solution_reactions(
                 solution=candidate,
                 client=client,
-                reachable_compounds=reachable_compounds,
+                reachable_compounds=base_reachable,
                 endogenous_reactions=endogenous_reactions,
                 ignored_common_compounds=ignored_common_compounds,
                 endogenous_direction_index=endogenous_direction_index,
                 unpre_re_reaction=unpre_re_reaction,
+                max_new_enzymes=max_new_enzymes,
+                max_major_precursors=max_major_precursors,
             )
             if not all(
                 reaction_direction_allowed(
@@ -2729,11 +2769,13 @@ def search_gap_solutions_once(
                 normalized_solution = normalize_solution_reactions(
                     solution=candidate,
                     client=client,
-                    reachable_compounds=reachable_compounds,
+                    reachable_compounds=base_reachable,
                     endogenous_reactions=endogenous_reactions,
                     ignored_common_compounds=ignored_common_compounds,
                     endogenous_direction_index=endogenous_direction_index,
                     unpre_re_reaction=unpre_re_reaction,
+                    max_new_enzymes=max_new_enzymes,
+                    max_major_precursors=max_major_precursors,
                 )
                 normalized_signature = plan_route_signature(
                     normalized_solution.steps
@@ -3111,6 +3153,11 @@ def build_solution_summary_rows(
     rows: List[Dict[str, Any]] = []
 
     for idx, solution in enumerate(result.solutions, start=1):
+        marked_reactions = dedupe_keep_order(
+            step.option.reaction.reaction_id
+            for step in solution.steps
+            if classify_reaction_resolution(step.option.reaction).requires_review
+        )
         heterologous_reactions = dedupe_keep_order(
             step.option.reaction.reaction_id
             for step in solution.steps
@@ -3158,6 +3205,8 @@ def build_solution_summary_rows(
                 "heterologous_ko_ids": ";".join(heterologous_kos),
                 "heterologous_enzyme_ecs": ";".join(heterologous_ecs),
                 "reaction_resolution_status": solution.reaction_resolution_status,
+                "requires_review": bool(marked_reactions),
+                "marked_reaction_ids": ";".join(marked_reactions),
                 "normalization_event_count": len(solution.normalization_events),
                 "normalization_events": ";".join(solution.normalization_events),
                 "blocking_reaction_count": len(solution.blocking_reaction_ids),
@@ -3191,6 +3240,7 @@ def build_solution_step_rows(
         option = step.option
         reaction = option.reaction
         screening = option.screening
+        resolution = classify_reaction_resolution(reaction)
         row = {
             "solution_id": solution_id,
             "step_index": step_index,
@@ -3210,6 +3260,10 @@ def build_solution_step_rows(
             ),
             "ko_ids": ";".join(reaction.ko_ids),
             "enzyme_ecs": ";".join(reaction.enzyme_ecs),
+            "unclear_reaction": resolution.is_unclear,
+            "multi_step_reaction": resolution.is_multistep,
+            "incomplete_reaction": resolution.is_incomplete,
+            "requires_review": resolution.requires_review,
             "source_reaction_ids": ";".join(
                 step.source_reaction_ids or (reaction.reaction_id,)
             ),

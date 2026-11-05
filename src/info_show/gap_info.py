@@ -240,6 +240,8 @@ def get_gap_info(config: Any) -> dict[str, Any]:
             "需要氧气步骤数": _as_int(row.get("oxygen_required_steps")),
             "热力学不利步骤数": _as_int(row.get("thermo_disfavored_steps")),
             "可以推荐": _as_bool(row.get("eligible_for_recommendation")),
+            "需要反应复核": _as_bool(row.get("requires_review")),
+            "标记反应ID": str(row.get("marked_reaction_ids") or ""),
             "需要预测结果复核": _as_bool(
                 row.get("prediction_review_required")
             ),
@@ -248,6 +250,11 @@ def get_gap_info(config: Any) -> dict[str, Any]:
     ]
 
     messages = []
+    if any(_as_bool(row.get("requires_review")) for row in solutions):
+        messages.append(
+            "部分候选含不清楚、多步或不完整的反应记录，已保留并标记待复核；"
+            "反应连接成立不代表已有完整酶组合"
+        )
     for value in (
         run_config.get("message"),
         retropath_pipeline.get("message"),
@@ -289,6 +296,10 @@ def get_gap_info(config: Any) -> dict[str, Any]:
         ),
         "需要预测复核路线数": sum(
             _as_bool(row.get("prediction_review_required"))
+            for row in solutions
+        ),
+        "需要反应复核路线数": sum(
+            _as_bool(row.get("requires_review"))
             for row in solutions
         ),
         "拒绝路线数": len(kegg_rejected) + len(retropath_rejected),
