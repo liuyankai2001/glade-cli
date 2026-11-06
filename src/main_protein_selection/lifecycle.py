@@ -34,6 +34,9 @@ def invalidate_current(path: str | Path, sections: tuple[str, ...]) -> dict[str,
     if not any(name in manifest for name in sections):
         return manifest
     retained = retained_uploaded_draft(manifest)
+    if "main_enzyme_selection" in sections:
+        from src.write_manifest.reaction_selection import retained_manual_selection
+        retained.update(retained_manual_selection(manifest))
     return update_design_manifest(
         path, target_compound_id=str(manifest.get("target_compound_id") or ""),
         sections=retained, discard_sections=sections,

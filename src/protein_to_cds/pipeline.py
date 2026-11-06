@@ -19,6 +19,7 @@ from src.protein_to_cds.artifacts import ArtifactTransaction
 from src.protein_to_cds.config import HostProfile, host_profile_for_chassis
 from src.protein_to_cds.get_protein_selection_context import ProteinToCdsContext, get_proteins_for_cds
 from src.main_protein_selection.genome_ec_filter import read_current_genome_selection
+from src.write_manifest.store import read_design_manifest
 from src.protein_to_cds.search_protein_sequence import (
     ProteinSequenceRecord,
     search_protein_sequence,
@@ -116,10 +117,12 @@ def run_protein_to_cds(
     if (current_selection is not None and current_selection.ok
             and current_selection.genome_ec_filter is not None
             and current_selection.genome_ec_filter.no_external_enzymes_required):
-        return {"ok": True, "status": "not_required", "message": "无需外源酶和 CDS 构建",
-                "counts": {"selected": 0, "succeeded": 0, "failed": 0},
-                "genome_supported_step_indexes": current_selection.genome_ec_filter.supported_step_indexes,
-                "manifest_written": False, "manifest_path": str(manifest_path)}
+        selected = read_design_manifest(manifest_path).get("main_enzyme_selection") or {}
+        if not any(group.get("proteins") for group in selected.get("reaction_assignments", {}).values()):
+            return {"ok": True, "status": "not_required", "message": "无需外源酶和 CDS 构建",
+                    "counts": {"selected": 0, "succeeded": 0, "failed": 0},
+                    "genome_supported_step_indexes": current_selection.genome_ec_filter.supported_step_indexes,
+                    "manifest_written": False, "manifest_path": str(manifest_path)}
     context = get_proteins_for_cds(manifest_path, genome_path=genome_path)
     host = host_profile_for_chassis(
         context.chassis_key,
@@ -158,7 +161,6 @@ def run_protein_to_cds(
     with ArtifactTransaction(paths, lock_path=output_root / ".gc_optimization.lock") as transaction:
         from src.main_protein_selection.lifecycle import invalidate_current
         from src.write_manifest.cds_dependencies import CDS_SELECTION_DOWNSTREAM_SECTIONS
-        from src.write_manifest.store import read_design_manifest
         previous_manifest = read_design_manifest(context.manifest_path)
         invalidate_current(context.manifest_path, ("cds_selection", *CDS_SELECTION_DOWNSTREAM_SECTIONS))
         return _run_batch(context, host, project_root, requested_device, motifs, transaction, previous_manifest)

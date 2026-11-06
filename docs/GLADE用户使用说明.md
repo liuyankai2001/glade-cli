@@ -166,7 +166,9 @@ python main.py write -i demo01.json --main-enzyme-set 1
 
 写入时会先为选中蛋白准备 `inputs/protein_sequences/<蛋白编号>.fasta` 和同名 `.json`，复用完整且一致的本地缓存；缺失时联网补齐。序列必须与主酶候选结果一致，冲突或下载失败时保留原清单。
 
-设计清单的 `main_enzyme_selection` 仅保存路线编号、组合编号、选择状态、步骤分配和待复核步骤。每步记录步骤编号、反应编号、蛋白编号与 `sequence_file`。蛋白注释保存在同名 JSON 中，评分及证据保留在主酶分析文件中。旧版清单仍可读取，重新写入时转换；其他操作不会自动迁移旧版清单。
+设计清单的 `main_enzyme_selection` 仅保存 `selected_solution_id`（路线编号）、`reaction_assignments`（按反应编号组织的已选蛋白）和 `review_required_step_indexes`（待复核步骤）。每个反应记录 `step_indexes` 和 `proteins`，每个蛋白记录 `accession`、`sequence_file` 与 `selection_source`（`automatic` 或 `manual`）。同一反应下的蛋白全部属于已选蛋白；同一反应出现多次时合并步骤和蛋白，同一蛋白用于多个反应时共享序列，并只生成一份 CDS。
+
+自动组合写入更新自动选择部分，并保留当前路线已有的人工记录。主酶重新计算时保留人工记录，切换路线则清理旧选择。本版本尚未提供 `protein add` 命令。蛋白注释保存在同名 JSON 中，评分及证据保留在主酶分析文件中；已选蛋白的读取不依赖组合编号或组合文件。旧版清单仍可读取，重新写入时转换，其他操作不会自动迁移旧版清单。
 
 示例选择组合 1。确认后，可以用 `python main.py info -i demo01.json --proteins` 查看已选蛋白及其编号。
 

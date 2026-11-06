@@ -26,8 +26,9 @@ def resolve_download_host(config: Any, session: requests.Session) -> ChassisTaxo
     selection = manifest.get("main_enzyme_selection") or {}
     if not isinstance(selection, dict):
         raise ValueError("设计清单宿主信息格式错误")
-    if selection.get("_compact_details_error"):
-        raise ValueError("设计清单底盘信息不可用，请重新运行 main-enzyme 或改用 --uniprot：" + selection["_compact_details_error"])
+    error = selection.get("_compact_details_error") or selection.get("_selection_context_error")
+    if error:
+        raise ValueError("设计清单底盘信息不可用，请重新运行 main-enzyme 或改用 --uniprot：" + error)
     keys = list(dict.fromkeys(key for key in (
         getattr(config, "chassis_key", None), selection.get("chassis_key"),
     ) if key))

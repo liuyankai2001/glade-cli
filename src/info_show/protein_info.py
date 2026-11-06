@@ -274,7 +274,7 @@ def get_proteins_info(config: Any) -> dict[str, Any]:
     return {
         "运行成功": True,
         "目标化合物": _text(manifest.get("target_compound_id")),
-        "主酶组合编号": main_selection.get("selected_set_id"),
+        **({"主酶组合编号": main_selection["selected_set_id"]} if main_selection.get("selected_set_id") is not None else {}),
         "CDS整体状态": cds_status,
         "蛋白总数": len(records),
         "主酶数": sum("main_enzyme" in item["roles"] for item in records),
@@ -298,7 +298,7 @@ def get_protein_info(config: Any) -> dict[str, Any]:
     result.update({
         "运行成功": True,
         "目标化合物": _text(manifest.get("target_compound_id")),
-        "主酶组合编号": main_selection.get("selected_set_id"),
+        **({"主酶组合编号": main_selection["selected_set_id"]} if main_selection.get("selected_set_id") is not None else {}),
         "CDS整体状态": cds_status,
         "来源生物Reviewed": record["reviewed"],
         "辅因子": list(record["cofactors"]),

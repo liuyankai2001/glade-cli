@@ -401,7 +401,10 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
 
     from src.protein_selection.download import download_protein_sequence
     from src.protein_selection.sequence_store import entry_sequence, read_cached_pair
-    from src.write_manifest.main_enzyme_format import compact_selection, selected_sequences, sequence_file_value
+    from src.write_manifest.main_enzyme_format import selected_sequences, sequence_file_value
+    from src.write_manifest.reaction_selection import (
+        compact_reaction_selection, from_step_selection, is_reaction_selection, merge_manual_selection,
+    )
     sequences = selected_sequences(_selection_dir(config), result, selected)
     paths = {}
     for accession, sequence in sequences.items():
@@ -416,18 +419,17 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
     })
     for assignment in payload["step_assignments"]:
         assignment["sequence_file"] = paths[assignment["accession"]]
-    payload["_compact_storage"] = True
-
     current_selection = manifest.get("main_enzyme_selection")
+    context_payload = payload
+    payload = merge_manual_selection(from_step_selection(payload, steps), current_selection, manifest)
     unchanged = (
-        isinstance(current_selection, Mapping)
-        and current_selection.get("_compact_storage") is True
-        and compact_selection(current_selection) == compact_selection(payload)
+        is_reaction_selection(current_selection)
+        and compact_reaction_selection(current_selection) == payload
         and not current_selection.get("_compact_details_error")
     )
     if not unchanged:
         from src.main_protein_selection.lifecycle import retained_uploaded_draft
-        same_selection = _same_selection(current_selection, payload)
+        same_selection = _same_selection(current_selection, payload, steps, paths, context_payload)
         update_design_manifest(
             manifest_path,
             target_compound_id=target_compound,
@@ -435,27 +437,25 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
             discard_sections=MAIN_ENZYME_DOWNSTREAM_SECTIONS if not same_selection else (),
         )
 
-    proteins = sorted(
-        selected.proteins,
-        key=lambda item: (
-            min(item.assigned_step_indexes),
-            item.accession,
-        ),
-    )
-    pending_review = bool(payload["unresolved_reviews"])
+    proteins = {}
+    for group in payload["reaction_assignments"].values():
+        for protein in group["proteins"]:
+            proteins.setdefault(protein["accession"], set()).update(group["step_indexes"])
+    ordered = sorted(proteins, key=lambda accession: (min(proteins[accession]), accession))
+    pending_review = bool(payload["review_required_step_indexes"])
     return {
         "运行成功": True,
         "目标化合物": target_compound,
         "路径编号": solution_id,
         "主酶组合编号": selected.set_id,
-        "主酶数量": selected.protein_count,
-        "覆盖步骤": selected.covered_step_indexes,
+        "主酶数量": len(proteins),
+        "覆盖步骤": sorted({index for indexes in proteins.values() for index in indexes}),
         "主酶分配": [
             (
-                f"{protein.accession}: Step "
-                f"{_step_ranges(protein.assigned_step_indexes)}"
+                f"{accession}: Step "
+                f"{_step_ranges(sorted(proteins[accession]))}"
             )
-            for protein in proteins
+            for accession in ordered
         ],
         "选择状态": (
             "已选择，仍有待复核项"
@@ -464,33 +464,31 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
         ),
         "待复核类型": [
             item["review_type"]
-            for item in payload["unresolved_reviews"]
+            for item in context_payload["unresolved_reviews"]
         ],
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path.resolve()),
     }
 
 
-def _same_selection(current: Any, payload: Mapping[str, Any]) -> bool:
+def _same_selection(current: Any, payload: Mapping[str, Any], steps: list[dict], paths: dict, context: dict) -> bool:
     """A storage-only conversion must not invalidate existing CDSs."""
     if not isinstance(current, Mapping) or current.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
         return False
     if current.get("_compact_details_error"):
         return False
-    keys = ("selected_solution_id", "selected_set_id", "expansion_depth", "chassis_key",
-            "selection_status", "coverage", "genome_ec_filter")
-    if any(current.get(key) != payload.get(key) for key in keys):
+    if current.get("selected_solution_id") != payload["selected_solution_id"]:
         return False
-    def bindings(value):
-        return [(item.get("step_index"), item.get("reaction_id"), item.get("accession"))
-                for item in value.get("step_assignments", [])]
-    if bindings(current) != bindings(payload):
+    if any(current.get(key) != context.get(key) for key in ("chassis_key", "genome_ec_filter")):
         return False
-    current_paths = {item.get("accession"): item.get("sequence_file") for item in current.get("step_assignments", [])}
+    from src.write_manifest.reaction_selection import from_step_selection, is_reaction_selection
     from src.write_manifest.main_enzyme_format import resolve_sequence_file
-    return all(not current_paths.get(item["accession"])
-               or resolve_sequence_file(current_paths[item["accession"]]) == resolve_sequence_file(item["sequence_file"])
-               for item in payload["step_assignments"])
+    previous = current if is_reaction_selection(current) else from_step_selection(current, steps, paths=paths)
+    def identity(value):
+        return {reaction: (tuple(group["step_indexes"]), {
+            protein["accession"]: resolve_sequence_file(protein["sequence_file"]) for protein in group["proteins"]})
+            for reaction, group in value["reaction_assignments"].items()}
+    return identity(previous) == identity(payload)
 
 
 def run_write_main_enzyme_set(config: Any) -> dict[str, Any]:

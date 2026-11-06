@@ -290,7 +290,7 @@ def _write_cds_selection_to_manifest(
         "homopolymer_max": manifest.get("cds_selection", {}).get("homopolymer_max"),
         "source_selection": {
             "selected_solution_id": context.selected_solution_id,
-            "selected_set_id": context.selected_set_id,
+            **({"selected_set_id": context.selected_set_id} if context.selected_set_id is not None else {}),
         },
         "host": host.to_dict(),
         "counts": {

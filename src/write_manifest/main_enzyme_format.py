@@ -32,8 +32,11 @@ def compact_selection(selection: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def selection_for_storage(manifest: dict[str, Any]) -> dict[str, Any]:
+    from .reaction_selection import is_reaction_selection, compact_reaction_selection
     selection = manifest.get("main_enzyme_selection")
-    if is_compact_selection(selection):
+    if is_reaction_selection(selection):
+        manifest["main_enzyme_selection"] = compact_reaction_selection(selection)
+    elif is_compact_selection(selection):
         manifest["main_enzyme_selection"] = compact_selection(selection)
     return manifest
 
@@ -136,7 +139,7 @@ def _validate_compact(compact: Mapping[str, Any]) -> None:
         raise ValueError("待复核步骤与主酶步骤不一致")
 
 
-def restore_selection(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+def _restore_step_selection(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
     """Missing evidence must not prevent reading a route or running recovery."""
     compact = manifest.get("main_enzyme_selection")
     if not is_compact_selection(compact):
@@ -191,3 +194,10 @@ def restore_selection(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         selection["_compact_details_error"] = "；".join(errors)
         selection["warnings"] = [*selection.get("warnings", []), *errors]
     return manifest
+
+
+def restore_selection(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    from .reaction_selection import is_reaction_selection, restore_reaction_selection
+    if is_reaction_selection(manifest.get("main_enzyme_selection")):
+        return restore_reaction_selection(manifest, manifest_path)
+    return _restore_step_selection(manifest, manifest_path)

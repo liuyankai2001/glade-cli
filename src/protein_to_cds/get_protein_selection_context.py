@@ -30,7 +30,7 @@ class ProteinToCdsContext:
     target_compound_id: str
     chassis_key: str
     selected_solution_id: int
-    selected_set_id: int
+    selected_set_id: int | None
     proteins: tuple[SelectedProteinForCds, ...]
     warnings: tuple[str, ...]
 
@@ -120,6 +120,8 @@ def get_proteins_for_cds(
     selection = _mapping(manifest.get("main_enzyme_selection"), "main_enzyme_selection")
     if selection.get("_compact_details_error"):
         raise ValueError(str(selection["_compact_details_error"]))
+    if selection.get("_selection_context_error"):
+        raise ValueError(str(selection["_selection_context_error"]))
     if selection.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
         raise ValueError("主酶选择结果已过期，请重新运行 main-enzyme、main-enzyme-sets 和 write --main-enzyme-set")
     selection_status = _nonempty_text(
@@ -139,10 +141,8 @@ def get_proteins_for_cds(
         selection.get("selected_solution_id"),
         "main_enzyme_selection.selected_solution_id",
     )
-    selected_set_id = _positive_int(
-        selection.get("selected_set_id"),
-        "main_enzyme_selection.selected_set_id",
-    )
+    selected_set_id = (None if "reaction_assignments" in selection else _positive_int(
+        selection.get("selected_set_id"), "main_enzyme_selection.selected_set_id"))
     warnings: list[str] = []
     if selection_status == "user_selected_pending_review":
         warnings.append(
@@ -158,7 +158,10 @@ def get_proteins_for_cds(
     )
     if genome_filter is not None:
         assigned = {step for protein in proteins.values() for step in protein.assigned_step_indexes}
-        if (assigned != set(genome_filter.external_required_step_indexes)
+        assigned_matches = (set(genome_filter.external_required_step_indexes).issubset(assigned)
+                            if "reaction_assignments" in selection
+                            else assigned == set(genome_filter.external_required_step_indexes))
+        if (not assigned_matches
                 or coverage.get("required_step_indexes") != genome_filter.required_step_indexes
                 or coverage.get("covered_step_indexes") != genome_filter.required_step_indexes):
             raise ValueError("Genome and external enzyme coverage are inconsistent; rerun main-enzyme")
