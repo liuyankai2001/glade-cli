@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
+from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -55,7 +56,7 @@ class ProteinSequenceConflictError(ProteinSequenceError):
 
 @dataclass(frozen=True, slots=True)
 class ProteinSequenceRecord:
-    """One validated and locally persisted UniProt protein sequence."""
+    """One validated protein sequence with its original source."""
 
     requested_accession: str
     primary_accession: str
@@ -65,6 +66,7 @@ class ProteinSequenceRecord:
     source_url: str
     fasta_path: Path
     reused_existing: bool
+    source_type: Literal["uniprot", "local"] = "uniprot"
 
 
 def normalize_uniprot_accession(accession: str) -> str:
@@ -279,6 +281,7 @@ def search_protein_sequence(
             source_url=UNIPROT_FASTA_URL_TEMPLATE.format(accession=requested_accession),
             fasta_path=existing_path,
             reused_existing=True,
+            source_type="uniprot",
         )
 
     fasta_text, source_url = _download_uniprot_fasta(
@@ -314,6 +317,7 @@ def search_protein_sequence(
         source_url=source_url,
         fasta_path=fasta_path,
         reused_existing=False,
+        source_type="uniprot",
     )
 
 

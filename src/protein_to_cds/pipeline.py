@@ -78,11 +78,13 @@ def _load_selected_sequence(selected, directory: Path) -> ProteinSequenceRecord:
     """Use the bound sequence for compact selections; retain legacy behavior."""
     if selected.sequence_file is None:
         return search_protein_sequence(selected.accession, directory)
-    from src.protein_selection.local_sequences import read_sequence_pair
+    from src.protein_selection.local_sequences import LOCAL_METADATA_SCHEMA, read_sequence_pair
     from src.protein_to_cds.artifacts import write_bytes_atomic
 
     path = selected.sequence_file
     metadata, sequence = read_sequence_pair(path, selected.accession)
+    # The pair reader accepts only validated UniProt or local metadata schemas.
+    source_type = "local" if metadata["schema_version"] == LOCAL_METADATA_SCHEMA else "uniprot"
     if not selected.sequence_sha256 or hashlib.sha256(sequence.encode()).hexdigest() != selected.sequence_sha256:
         raise ValueError(f"选中蛋白序列已变化：{selected.accession}；请重新运行 main-enzyme 并写入")
     entry_name = str((metadata.get("uniprot_entry") or {}).get("uniProtkbId") or selected.accession)
@@ -94,7 +96,7 @@ def _load_selected_sequence(selected, directory: Path) -> ProteinSequenceRecord:
     return ProteinSequenceRecord(requested_accession=selected.accession,
         primary_accession=selected.accession, entry_name=entry_name, sequence=sequence,
         length_aa=len(sequence), source_url=metadata.get("source_url") or "", fasta_path=fasta_path,
-        reused_existing=reused)
+        reused_existing=reused, source_type=source_type)
 
 
 def run_protein_to_cds(

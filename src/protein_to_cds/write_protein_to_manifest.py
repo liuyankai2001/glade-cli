@@ -108,6 +108,9 @@ def _validated_success_payload(
     optimization = success.optimization
     accession = selected.accession
 
+    if protein.source_type not in {"uniprot", "local"}:
+        raise ValueError(f"unsupported protein sequence source: {protein.source_type}")
+
     if not optimization.optimized_fasta_path.resolve().is_relative_to(project_output_path.resolve() / "protein_to_cds/optimized_cds"):
         raise ValueError("current CDS must have an independent optimized_cds working file")
 
@@ -194,7 +197,7 @@ def _validated_success_payload(
         "assigned_step_indexes": list(selected.assigned_step_indexes),
         "sequence_input": {
             "type": "protein",
-            "source": "uniprot",
+            "source": protein.source_type,
         },
         "protein_sequence": {
             "path": _relative_path(project_output_path, protein.fasta_path),
