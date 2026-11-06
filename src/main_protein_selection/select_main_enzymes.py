@@ -1153,8 +1153,10 @@ def _main_enzyme_cli_summary(
     if genome_supported and total_steps == 0 and not preselected:
         status_text = "无需外源酶和 CDS 构建"
         conclusion = status_text
-    if preselected:
-        conclusion = "人工已选反应已跳过检索；组合阶段尚未适配此结果格式"
+    all_preselected = bool(preselected) and int(result.get("automatic_search_step_count", total_steps)) == 0
+    if all_preselected:
+        status_text = "主酶已选齐，无需生成或写入组合"
+        conclusion = "保留当前已选记录，可继续查看已选蛋白"
 
     return {
         "运行成功": bool(result.get("ok")),
@@ -1172,7 +1174,7 @@ def _main_enzyme_cli_summary(
         "需要人工复核的步骤": review_steps,
         "序列检查": "已排除含未知或非标准氨基酸的候选",
         "结论": conclusion,
-        "下一步": ("组合阶段尚未适配含人工已选反应的结果，请保留当前已选记录" if preselected else
+        "下一步": ("无需生成或写入组合，可通过 info --proteins 查看已选蛋白" if all_preselected else
                    "无需后续构建" if genome_supported and total_steps == 0 else "python main.py main-enzyme-sets -i <同一输入文件>"),
         "查看详情": (
             "python main.py info -i <同一输入文件> "

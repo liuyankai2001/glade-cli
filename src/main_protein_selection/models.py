@@ -21,6 +21,10 @@ SUPPORTED_MAIN_ENZYME_SELECTION_SCHEMAS = frozenset({
     MAIN_ENZYME_SELECTION_SCHEMA_VERSION, MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION,
 })
 MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v7"
+MAIN_ENZYME_PRESELECTED_SETS_SCHEMA_VERSION = "main_enzyme_sets.v8"
+SUPPORTED_MAIN_ENZYME_SETS_SCHEMAS = frozenset({
+    MAIN_ENZYME_SETS_SCHEMA_VERSION, MAIN_ENZYME_PRESELECTED_SETS_SCHEMA_VERSION,
+})
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
     "evidence_constrained_assignment.v6_main_enzyme_only_taxonomy_ranked"
 )
@@ -822,7 +826,19 @@ class MainEnzymeSetsResult(BaseModel):
         return self
 
 
+def parse_main_enzyme_sets(payload: Mapping[str, Any]):
+    if not isinstance(payload, Mapping):
+        raise ValueError("主酶组合结果必须是 JSON 对象")
+    if payload.get("schema_version") == MAIN_ENZYME_PRESELECTED_SETS_SCHEMA_VERSION:
+        from .preselected_set_models import PreselectedEnzymeSetsResult
+        return PreselectedEnzymeSetsResult.model_validate(payload)
+    if payload.get("schema_version") == MAIN_ENZYME_SETS_SCHEMA_VERSION:
+        return MainEnzymeSetsResult.model_validate(payload)
+    raise ValueError("主酶组合结果格式已过期，请重新运行 main-enzyme-sets")
+
+
 __all__ = [
+    "parse_main_enzyme_sets",
     "MAIN_ENZYME_SELECTION_SCHEMA_VERSION",
     "MAIN_ENZYME_SETS_ALGORITHM_VERSION",
     "MAIN_ENZYME_SETS_SCHEMA_VERSION",

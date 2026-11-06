@@ -14,6 +14,7 @@ before it is selected.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -738,6 +739,8 @@ def _enumerate_valid_assignments(
     proteins: list[_Protein],
     *,
     max_search_nodes: int,
+    fixed_accessions: frozenset[str] = frozenset(),
+    assignment_quality: Any = None,
 ) -> _SearchResult:
     """Enumerate primary Step assignments under multi-step evidence gates."""
 
@@ -785,11 +788,10 @@ def _enumerate_valid_assignments(
 
         if position == len(step_order):
             assignment = tuple(sorted(assignment_by_step.items()))
-            accession_set = tuple(sorted(assigned_by_accession))
+            accession_set = tuple(sorted(set(assigned_by_accession) | fixed_accessions))
             current = found.get(accession_set)
-            if current is None or _assignment_quality(
-                assignment, protein_by_accession
-            ) < _assignment_quality(current, protein_by_accession):
+            quality = assignment_quality or (lambda item: _assignment_quality(item, protein_by_accession))
+            if current is None or quality(assignment) < quality(current):
                 found[accession_set] = assignment
             return
 
@@ -797,7 +799,7 @@ def _enumerate_valid_assignments(
         candidates = list(by_step[step_index])
         candidates.sort(
             key=lambda accession: (
-                0 if accession in assigned_by_accession else 1,
+                0 if accession in assigned_by_accession or accession in fixed_accessions else 1,
                 _edge_quality(
                     protein_by_accession[accession].edges[step_index]
                 ),
@@ -830,7 +832,7 @@ def _enumerate_valid_assignments(
         ),
     )
     minimum_count = min(
-        (len({accession for _, accession in item}) for item in assignments),
+        (len({accession for _, accession in item} | fixed_accessions) for item in assignments),
         default=None,
     )
     return _SearchResult(
@@ -1008,8 +1010,19 @@ def build_main_enzyme_sets_from_rows(
     max_search_nodes: int = 1_000_000,
     source_artifacts: Mapping[str, str] | None = None,
     genome_ec_filter: GenomeEcFilter | None = None,
+    preselected_reactions: Mapping[str, Any] | None = None,
+    preselected_proteins: Mapping[str, Any] | None = None,
+    preselected_review_step_indexes: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Pure, offline enzyme-set search over validated shortlist-like rows."""
+
+    if preselected_reactions:
+        from .preselected_sets import build_preselected_sets_from_rows
+        return build_preselected_sets_from_rows(solution_id=solution_id, expansion_depth=expansion_depth,
+            chassis_key=chassis_key, required_steps=required_steps, candidate_rows=candidate_rows,
+            max_sets=max_sets, max_search_nodes=max_search_nodes, source_artifacts=source_artifacts,
+            genome_ec_filter=genome_ec_filter, preselected_reactions=preselected_reactions,
+            preselected_proteins=preselected_proteins or {}, preselected_review_step_indexes=preselected_review_step_indexes)
 
     if solution_id < 1:
         raise ValueError("solution_id must be positive")
@@ -1218,6 +1231,7 @@ def _write_set_outputs(
     write_json_atomic(paths["main_enzyme_sets_json"], dict(result))
     summary_rows: list[dict[str, Any]] = []
     member_rows: list[dict[str, Any]] = []
+    fixed_groups = result.get("preselected_reactions", {})
     for enzyme_set in result.get("sets", []):
         metrics = enzyme_set["metrics"]
         summary_rows.append(
@@ -1254,6 +1268,7 @@ def _write_set_outputs(
                     "exact_specificity_count"
                 ],
                 "warnings": enzyme_set["warnings"],
+                **({"score_scope": "automatic_assignments"} if fixed_groups else {}),
             }
         )
         reactions_by_accession: dict[str, list[str]] = defaultdict(list)
@@ -1261,6 +1276,12 @@ def _write_set_outputs(
             reactions_by_accession[assignment["accession"]].append(
                 assignment["reaction_id"]
             )
+        automatic_ids = set(reactions_by_accession)
+        fixed_ids = set()
+        for reaction, group in fixed_groups.items():
+            for protein in group["proteins"]:
+                reactions_by_accession[protein["accession"]].append(reaction)
+                fixed_ids.add(protein["accession"])
         for protein in enzyme_set["proteins"]:
             member_rows.append(
                 {
@@ -1275,13 +1296,34 @@ def _write_set_outputs(
                         map(str, protein["assigned_step_indexes"])
                     ),
                     "assigned_reaction_ids": ";".join(
-                        reactions_by_accession[protein["accession"]]
+                        dict.fromkeys(reactions_by_accession[protein["accession"]]) if fixed_groups
+                        else reactions_by_accession[protein["accession"]]
                     ),
+                    **({"assignment_source": ";".join(
+                        (["preselected"] if protein["accession"] in fixed_ids else [])
+                        + (["automatic"] if protein["accession"] in automatic_ids else []))} if fixed_groups else {}),
                 }
             )
-    write_csv(paths["main_enzyme_sets_csv"], summary_rows, _SUMMARY_COLUMNS)
+    if fixed_groups and not result.get("sets"):
+        from src.write_manifest.reaction_selection import read_protein_pair
+        fixed_members = {}
+        for reaction, group in fixed_groups.items():
+            for protein in group["proteins"]:
+                metadata, sequence = read_protein_pair(protein)
+                if hashlib.sha256(sequence.encode()).hexdigest() != protein["sequence_sha256"]:
+                    raise ValueError("固定蛋白序列快照已变化")
+                current = fixed_members.setdefault(protein["accession"], {"set_id": "", "set_status": result["status"],
+                    "accession": protein["accession"], **{key: metadata[key] for key in ("protein_name", "organism_name", "reviewed")},
+                    "cofactors": ";".join(metadata["cofactors"]), "indexes": set(), "reactions": [], "assignment_source": "preselected"})
+                current["indexes"].update(group["step_indexes"])
+                current["reactions"].append(reaction)
+        for current in fixed_members.values():
+            current["assigned_step_indexes"] = current["capable_step_indexes"] = ";".join(map(str, sorted(current.pop("indexes"))))
+            current["assigned_reaction_ids"] = ";".join(dict.fromkeys(current.pop("reactions")))
+            member_rows.append(current)
+    write_csv(paths["main_enzyme_sets_csv"], summary_rows, [*_SUMMARY_COLUMNS, *(["score_scope"] if fixed_groups else [])])
     write_csv(
-        paths["main_enzyme_set_members_csv"], member_rows, _MEMBER_COLUMNS
+        paths["main_enzyme_set_members_csv"], member_rows, [*_MEMBER_COLUMNS, *(["assignment_source"] if fixed_groups else [])]
     )
     return {key: rel_or_abs(path) for key, path in paths.items()}
 
@@ -1302,25 +1344,20 @@ def build_main_enzyme_sets(
     manifest_path = Path(manifest_path)
     selection_path = Path(selection_path)
     candidate_csv_path = Path(candidate_csv_path)
-    # Reject the new, deliberately unsupported search input before invalidating
-    # the complete reaction groups retained by candidate generation.
+    # V8 preflights the complete fixed snapshot before any invalidation.
     from src.main_protein_selection.models import MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION
     try:
         preflight = json.loads(selection_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         preflight = None
     if isinstance(preflight, dict) and preflight.get("schema_version") == MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION:
-        current = read_manifest(manifest_path)
-        solution_id, steps = get_solution_steps(current)
-        result = _failure_result(status="source_unavailable", solution_id=solution_id,
-            expansion_depth=_int(current["solution"].get("expansion_depth")),
-            chassis_key=str(preflight.get("chassis_key") or "unknown"),
-            required_step_indexes=sorted(_int(step.get("step_index")) for step in heterologous_requirements(steps)),
-            max_sets=max_sets, max_search_nodes=max_search_nodes,
-            reason="候选结果包含人工已选反应，组合阶段尚未适配此格式；已选记录已保留，无需重新检索这些反应。",
-            source_artifacts={"manifest": rel_or_abs(manifest_path), "candidate_selection": rel_or_abs(selection_path)})
-        result["output_files"] = _write_set_outputs(output_dir, result)
-        return result
+        from .preselected_sets import build_persisted_preselected_sets
+        return build_persisted_preselected_sets(manifest_path, selection_path, candidate_csv_path, output_dir,
+            max_sets=max_sets, max_search_nodes=max_search_nodes, genome_path=genome_path)
+    if not isinstance(preflight, dict) or preflight.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
+        from .preselected_reactions import scan_preselected_reactions
+        if scan_preselected_reactions(read_manifest(manifest_path)):
+            raise ValueError("候选结果缺失、损坏或格式已过期，请重新运行 main-enzyme；已选反应已保留")
     from src.main_protein_selection.lifecycle import invalidate_current
     from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
     invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
@@ -1472,11 +1509,13 @@ def run_main_enzyme_sets(config: Any) -> dict[str, Any]:
         "阻塞原因": result.get("blocking_reasons", []),
         "警告": result.get("warnings", []),
     }
+    if result["status"] == "already_selected":
+        summary["结论"] = "主酶已选齐，无需搜索或写入组合"
     if result.get("genome_ec_filter") is not None:
         genome_filter = GenomeEcFilter.model_validate(result["genome_ec_filter"])
         summary["基因组支持步骤"] = genome_filter.supported_step_indexes
         summary["需外源酶步骤"] = result["required_step_indexes"]
-        if genome_filter.no_external_enzymes_required:
+        if genome_filter.no_external_enzymes_required and not result.get("preselected_reactions"):
             summary["结论"] = "无需外源酶和 CDS 构建，无需选择主酶组合"
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return result

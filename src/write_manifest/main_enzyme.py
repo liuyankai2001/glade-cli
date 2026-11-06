@@ -20,7 +20,8 @@ from src.main_protein_selection.genome_ec_filter import (
     UNSPECIFIED_GENOME, read_current_genome_selection, validate_genome_ec_filter,
 )
 from src.main_protein_selection.models import (
-    MAIN_ENZYME_SETS_SCHEMA_VERSION,
+    SUPPORTED_MAIN_ENZYME_SETS_SCHEMAS,
+    parse_main_enzyme_sets,
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
@@ -86,12 +87,12 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError(f"主酶组合结果必须是 JSON 对象，请重新运行 main-enzyme-sets：{path}")
-    if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
+    if payload.get("schema_version") not in SUPPORTED_MAIN_ENZYME_SETS_SCHEMAS:
         raise ValueError(
             "主酶组合使用旧版结果格式，请重新运行 main-enzyme-sets"
         )
     try:
-        return MainEnzymeSetsResult.model_validate(payload)
+        return parse_main_enzyme_sets(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
 
@@ -374,16 +375,27 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
     if result.expansion_depth != depth or result.selected_solution_id != solution_id:
         raise ValueError("Selected route changed; rerun main-enzyme and main-enzyme-sets")
     genome_path = getattr(config, "genome_file", UNSPECIFIED_GENOME)
+    preselected = getattr(result, "preselected_reactions", {})
+    fixed_records, fixed_paths = {}, {}
+    if preselected:
+        from src.main_protein_selection.preselected_sets import validate_preselected_snapshot
+        fixed_records = validate_preselected_snapshot(result, manifest, genome_path)
+        for group in preselected.values():
+            for protein in group.proteins:
+                fixed_paths.setdefault(protein.accession, protein.sequence_file)
+        if result.status == "already_selected":
+            raise ValueError("主酶已选齐，无需写入组合")
     genome_filter = validate_genome_ec_filter(
         result.genome_ec_filter, heterologous_requirements(steps), result.chassis_key, genome_path,
     )
     if genome_filter is not None:
-        if genome_filter.no_external_enzymes_required:
+        if genome_filter.no_external_enzymes_required and not preselected:
             raise ValueError("无需外源酶和 CDS 构建，无需选择主酶组合")
     selected = _select_set(result, set_id)
     required = {int(step["step_index"]): str(step.get("reaction_id") or "") for step in heterologous_requirements(steps)}
     external = set(genome_filter.external_required_step_indexes) if genome_filter is not None else set(required)
-    if set(result.required_step_indexes) != external or any(
+    fixed_steps = {index for group in preselected.values() for index in group.step_indexes}
+    if set(result.required_step_indexes) != external | fixed_steps or any(
         assignment.step_index not in required or assignment.reaction_id != required[assignment.step_index]
         for assignment in selected.step_assignments
     ):
@@ -408,6 +420,11 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
     sequences = selected_sequences(_selection_dir(config), result, selected)
     paths = {}
     for accession, sequence in sequences.items():
+        if accession in fixed_records:
+            if fixed_records[accession]["sequence"] != sequence:
+                raise ValueError(f"自动候选与固定蛋白序列冲突：{accession}")
+            paths[accession] = fixed_paths[accession]
+            continue
         downloaded = download_protein_sequence(config, uniprot=accession)
         fasta = Path(downloaded["fasta_path"])
         metadata = read_cached_pair(fasta.parent, accession)
@@ -421,7 +438,18 @@ def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
         assignment["sequence_file"] = paths[assignment["accession"]]
     current_selection = manifest.get("main_enzyme_selection")
     context_payload = payload
-    payload = merge_manual_selection(from_step_selection(payload, steps), current_selection, manifest)
+    payload = from_step_selection(payload, steps)
+    if preselected:
+        if set(payload["reaction_assignments"]) & set(preselected):
+            raise ValueError("自动组合试图覆盖固定反应，请重新生成组合")
+        groups = {reaction: current_selection["reaction_assignments"][reaction] for reaction in preselected}
+        payload["reaction_assignments"] = {**groups, **payload["reaction_assignments"]}
+        payload["review_required_step_indexes"] = sorted(
+            (set(payload["review_required_step_indexes"]) - fixed_steps)
+            | (set(current_selection["review_required_step_indexes"]) & fixed_steps))
+        payload = merge_manual_selection(payload, None, manifest)
+    else:
+        payload = merge_manual_selection(payload, current_selection, manifest)
     unchanged = (
         is_reaction_selection(current_selection)
         and compact_reaction_selection(current_selection) == payload

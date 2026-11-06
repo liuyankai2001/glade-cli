@@ -14,7 +14,8 @@ from src.main_protein_selection.common import (
 )
 from src.main_protein_selection.genome_ec_filter import validate_genome_ec_filter
 from src.main_protein_selection.models import (
-    MAIN_ENZYME_SETS_SCHEMA_VERSION,
+    SUPPORTED_MAIN_ENZYME_SETS_SCHEMAS,
+    parse_main_enzyme_sets,
     MainEnzymeSet,
     MainEnzymeSetsResult,
 )
@@ -37,6 +38,7 @@ RESULT_STATUS_NAMES = {
     "truncated": "搜索未完成",
     "stale_input": "输入已经过期",
     "source_unavailable": "候选来源不可用",
+    "already_selected": "主酶已选齐，无需生成或写入组合",
 }
 
 SPECIFICITY_NAMES = {
@@ -48,6 +50,7 @@ SPECIFICITY_NAMES = {
 
 
 _MESSAGE_TRANSLATIONS = {
+    "includes every preselected protein": "包含人工涉及反应下的全部固定蛋白",
     "covers every required heterologous step": (
         "覆盖全部需要主酶的异源反应步骤"
     ),
@@ -77,12 +80,14 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
             "未找到主酶组合，请先运行：main-enzyme-sets -i <输入文件>"
         )
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
+    if not isinstance(payload, dict):
+        raise ValueError("主酶组合结果必须是 JSON 对象，请重新运行 main-enzyme-sets")
+    if payload.get("schema_version") not in SUPPORTED_MAIN_ENZYME_SETS_SCHEMAS:
         raise ValueError(
             "主酶组合使用旧版结果格式，请重新运行 main-enzyme-sets"
         )
     try:
-        return MainEnzymeSetsResult.model_validate(payload)
+        return parse_main_enzyme_sets(payload)
     except ValueError as exc:
         raise ValueError(f"主酶组合结果格式无效：{path}") from exc
 
@@ -162,6 +167,9 @@ def _load_current_context(
     result = _read_sets(_sets_path(config))
     manifest = read_manifest(config.manifest_output_path)
     solution_id, steps = get_solution_steps(manifest)
+    if getattr(result, "preselected_reactions", None):
+        from src.main_protein_selection.preselected_sets import validate_preselected_snapshot
+        validate_preselected_snapshot(result, manifest, getattr(config, "genome_file", None))
     if result.genome_ec_filter is not None:
         validate_genome_ec_filter(result.genome_ec_filter, heterologous_requirements(steps),
                                  result.chassis_key, getattr(config, "genome_file", None))
@@ -225,7 +233,8 @@ def get_main_enzyme_sets_info(config: Any) -> dict[str, Any]:
         "路径编号": solution_id,
         "组合生成状态": RESULT_STATUS_NAMES.get(
             result.status, result.status
-        ) if not (result.genome_ec_filter and result.genome_ec_filter.no_external_enzymes_required)
+        ) if not (result.genome_ec_filter and result.genome_ec_filter.no_external_enzymes_required
+                  and not getattr(result, "preselected_reactions", None))
         else "无需外源酶和 CDS 构建",
         "基因组支持步骤": result.genome_ec_filter.supported_step_indexes if result.genome_ec_filter else [],
         "需外源酶步骤": result.required_step_indexes,
@@ -234,6 +243,7 @@ def get_main_enzyme_sets_info(config: Any) -> dict[str, Any]:
         "组合数量": len(result.sets),
         "推荐组合编号": result.sets[0].set_id if result.sets else None,
         "主酶组合": [_compact_set(item) for item in result.sets],
+        **_fixed_details(result),
         "阻塞原因": _translated_messages(result.blocking_reasons),
         "警告": _translated_messages(result.warnings),
     }
@@ -251,6 +261,8 @@ def _selected_set(config: Any) -> tuple[MainEnzymeSetsResult, MainEnzymeSet]:
         raise ValueError("主酶组合编号必须是正整数")
 
     result, _, _ = _load_current_context(config)
+    if result.status == "already_selected":
+        raise ValueError("主酶已选齐，无需选择或查看组合")
     selected = next(
         (item for item in result.sets if item.set_id == set_id),
         None,
@@ -290,6 +302,7 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
         "完整覆盖": enzyme_set.coverage_complete,
         "蛋白数量": enzyme_set.protein_count,
         "需要复核步骤": enzyme_set.review_required_step_indexes,
+        **_fixed_details(result),
         "主酶成员": [
             {
                 "UniProt": protein.accession,
@@ -348,6 +361,16 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
         "推荐理由": _translated_messages(enzyme_set.reasons),
         "警告": _translated_messages(enzyme_set.warnings),
     }
+
+
+def _fixed_details(result):
+    fixed = getattr(result, "preselected_reactions", {})
+    if not fixed:
+        return {}
+    return {"固定反应": [{"反应ID": reaction, "步骤编号": group.step_indexes,
+                         "已选蛋白": [protein.accession for protein in group.proteins]}
+                        for reaction, group in fixed.items()],
+            "评分范围": "反应、蛋白、底盘评分及风险计数仅评估自动选择部分；数量、物种及Reviewed比例按完整方案统计"}
 
 
 def run_main_enzyme_sets_info(config: Any) -> dict[str, Any]:
