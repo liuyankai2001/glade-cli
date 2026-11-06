@@ -32,13 +32,11 @@ from .common import (
     write_json_atomic,
 )
 from .models import (
-    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
     MAIN_ENZYME_SETS_ALGORITHM_VERSION,
     MAIN_ENZYME_SETS_SCHEMA_VERSION,
-    MainEnzymeSelectionResult,
     MainEnzymeSetsResult,
 )
-from .genome_ec_filter import GenomeEcFilter, UNSPECIFIED_GENOME, validate_genome_ec_filter
+from .genome_ec_filter import GenomeEcFilter, UNSPECIFIED_GENOME
 from .sequence_quality import analyze_protein_sequence
 
 
@@ -1351,17 +1349,33 @@ def build_main_enzyme_sets(
     except (OSError, ValueError):
         preflight = None
     if isinstance(preflight, dict) and preflight.get("schema_version") == MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION:
+        from .candidate_inputs import read_candidate_inputs
+        read_candidate_inputs(selection_path, candidate_csv_path, read_manifest(manifest_path), genome_path)
         from .preselected_sets import build_persisted_preselected_sets
         return build_persisted_preselected_sets(manifest_path, selection_path, candidate_csv_path, output_dir,
             max_sets=max_sets, max_search_nodes=max_search_nodes, genome_path=genome_path)
     from .preselected_reactions import scan_preselected_reactions
     if scan_preselected_reactions(read_manifest(manifest_path)):
         raise ValueError("候选结果缺失、损坏或与人工已选记录不一致，请重新运行 main-enzyme；已选反应已保留")
-    from src.main_protein_selection.lifecycle import invalidate_current
-    from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
-    invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
-    write_json_atomic(main_enzyme_set_paths(output_dir)["main_enzyme_sets_json"], {"status": "running"})
+    # A failed v7 preflight must also preserve every existing selection and artifact.
+    from .candidate_inputs import read_candidate_inputs
     manifest = read_manifest(manifest_path)
+    try:
+        selection, _, checked_rows, _ = read_candidate_inputs(selection_path, candidate_csv_path, manifest, genome_path)
+        rows = read_csv(candidate_csv_path)
+        if rows != checked_rows:
+            raise ValueError("候选 CSV 在读取期间发生变化，请重新运行 main-enzyme")
+        from .preselected_sets import validate_preselected_snapshot
+        validate_preselected_snapshot(selection, read_manifest(manifest_path), genome_path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        solution_id, steps = get_solution_steps(manifest)
+        return {**_failure_result(
+            status="source_unavailable" if not selection_path.exists() or not candidate_csv_path.exists() else "stale_input",
+            solution_id=solution_id, expansion_depth=_int(manifest["solution"].get("expansion_depth")),
+            chassis_key="unknown", required_step_indexes=sorted(item["step_index"] for item in heterologous_requirements(steps)),
+            max_sets=max_sets, max_search_nodes=max_search_nodes,
+            reason=f"Invalid main-enzyme candidate input: {exc}; rerun main-enzyme. 请重新运行 main-enzyme；已有选择已保留",
+            source_artifacts={"manifest": rel_or_abs(manifest_path)}), "output_files": {}}
     def publish(result):
         return _write_set_outputs(output_dir, result)
     solution_id, steps = get_solution_steps(manifest)
@@ -1373,78 +1387,12 @@ def build_main_enzyme_sets(
     )
     source_artifacts = {"manifest": rel_or_abs(manifest_path)}
 
-    if not selection_path.exists() or not candidate_csv_path.exists():
-        missing = [
-            str(path)
-            for path in (selection_path, candidate_csv_path)
-            if not path.exists()
-        ]
-        result = _failure_result(
-            status="source_unavailable",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            chassis_key="unknown",
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason="Missing main-enzyme candidate artifact(s): " + ", ".join(missing),
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = publish(result)
-        return result
-
     source_artifacts.update(
         {
             "candidate_selection": rel_or_abs(selection_path),
             "candidate_details": rel_or_abs(candidate_csv_path),
         }
     )
-    try:
-        raw_selection = json.loads(selection_path.read_text(encoding="utf-8"))
-        if raw_selection.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
-            raise ValueError(
-                "old main-enzyme selection schema; rerun main-enzyme"
-            )
-        selection = MainEnzymeSelectionResult.model_validate(raw_selection)
-    except Exception as exc:
-        result = _failure_result(
-            status="stale_input",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            chassis_key="unknown",
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason=f"Invalid main-enzyme selection artifact: {exc}",
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = publish(result)
-        return result
-
-    stale_reasons: list[str] = []
-    if selection.selected_solution_id != solution_id:
-        stale_reasons.append("selected solution ID changed")
-    if selection.expansion_depth != expansion_depth:
-        stale_reasons.append("selected expansion depth changed")
-    try:
-        validate_genome_ec_filter(selection.genome_ec_filter, requirements, selection.chassis_key, genome_path)
-    except (OSError, ValueError) as exc:
-        stale_reasons.append(str(exc))
-    if stale_reasons:
-        result = _failure_result(
-            status="stale_input",
-            solution_id=solution_id,
-            expansion_depth=expansion_depth,
-            chassis_key=selection.chassis_key,
-            required_step_indexes=required_indexes,
-            max_sets=max_sets,
-            max_search_nodes=max_search_nodes,
-            reason="; ".join(stale_reasons) + "; rerun main-enzyme",
-            source_artifacts=source_artifacts,
-        )
-        result["output_files"] = publish(result)
-        return result
-
     if selection.status == "source_unavailable":
         result = _failure_result(
             status="source_unavailable",
@@ -1457,10 +1405,13 @@ def build_main_enzyme_sets(
             reason="Main-enzyme candidate retrieval was unavailable; rerun main-enzyme.",
             source_artifacts=source_artifacts,
         )
-        result["output_files"] = publish(result)
+        result["output_files"] = {}
         return result
 
-    rows = read_csv(candidate_csv_path)
+    from src.main_protein_selection.lifecycle import invalidate_current
+    from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
+    invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
+    write_json_atomic(main_enzyme_set_paths(output_dir)["main_enzyme_sets_json"], {"status": "running"})
     shortlist_rows = [
         row
         for row in rows

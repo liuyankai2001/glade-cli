@@ -1,4 +1,4 @@
-"""CLI entry point for local protein sequence downloads."""
+"""CLI entry points for downloading, adding and removing proteins."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import sys
 from argparse import ArgumentTypeError
 from pathlib import PureWindowsPath
 
-from src.protein_selection import add_protein_to_reaction, download_protein_sequence
+from src.protein_selection import add_protein_to_reaction, download_protein_sequence, remove_protein_from_reaction
 
 
 def _input_filename(value: str) -> str:
@@ -30,7 +30,7 @@ def _run_download(config):
 
 
 def register(subparsers):
-    parser = subparsers.add_parser("protein", help="下载蛋白序列或为反应添加本地蛋白")
+    parser = subparsers.add_parser("protein", help="下载蛋白序列、添加或删除已选蛋白")
     actions = parser.add_subparsers(dest="protein_action", required=True)
     download = actions.add_parser("download", help="按 UniProt 编号或名称下载 FASTA 和 JSON")
     download.add_argument("-i", "--input", required=True, type=_input_filename, help="inputs 目录下的配置文件名")
@@ -44,12 +44,27 @@ def register(subparsers):
     add.add_argument("-r", "--reaction", dest="reaction_id", required=True, help="当前路线中的反应编号")
     add.add_argument("-f", "--file", dest="sequence_file", required=True, help="inputs/protein_sequences 下的 .fasta 文件名")
     add.set_defaults(func=_run_add)
+    remove = actions.add_parser("remove", help="删除当前路线反应中的一条已选蛋白关联，保留序列文件")
+    remove.add_argument("-i", "--input", required=True, type=_input_filename, help="inputs 下的配置文件名")
+    remove.add_argument("-r", "--reaction", dest="reaction_id", required=True, help="当前路线中的反应编号")
+    remove.add_argument("-p", "--protein", dest="accession", required=True, help="UniProt 或本地蛋白编号")
+    remove.set_defaults(func=_run_remove)
     return parser
 
 
 def _run_add(config):
     try:
         result = add_protein_to_reaction(config, reaction_id=config.reaction_id, sequence_file=config.sequence_file)
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def _run_remove(config):
+    try:
+        result = remove_protein_from_reaction(config, reaction_id=config.reaction_id, accession=config.accession)
     except (ValueError, OSError) as exc:
         print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(2) from exc

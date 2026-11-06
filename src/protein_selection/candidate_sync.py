@@ -6,12 +6,11 @@ import io
 import json
 from pathlib import Path
 
+from src.main_protein_selection.candidate_inputs import read_candidate_inputs
 from src.main_protein_selection.common import get_solution_steps, heterologous_requirements, merge_step_candidates
 from src.main_protein_selection.genome_ec_filter import validate_genome_ec_filter
 from src.main_protein_selection.models import MainEnzymeSelectionResult
 from src.main_protein_selection.preselected_reactions import scan_preselected_reactions
-from src.main_protein_selection.preselected_sets import validate_preselected_snapshot
-from src.main_protein_selection.sequence_quality import analyze_protein_sequence
 from src.protein_to_cds.artifacts import write_bytes_atomic
 
 
@@ -74,17 +73,8 @@ def candidate_updates(directory: Path, before: dict, after: dict, genome_path) -
     """Return a complete publication, or None for missing/stale candidate inputs."""
     source_path = directory / "main_enzyme_selection.json"
     try:
-        source = MainEnzymeSelectionResult.model_validate(json.loads(source_path.read_text(encoding="utf-8-sig")))
-        validate_preselected_snapshot(source, before, genome_path)
-        fields, rows = _csv(directory / "step_main_enzyme_candidates.csv")
-        def identity(row):
-            return (int(row["step_index"]), row["reaction_id"], row["accession"], int(row["candidate_rank"]),
-                    analyze_protein_sequence(row["sequence"]).normalized_sequence)
-        expected = {(c.step_index, c.reaction_id, c.accession, c.candidate_rank,
-                     analyze_protein_sequence(c.sequence).normalized_sequence)
-                    for candidates in source.candidates_by_step.values() for c in candidates}
-        if len(rows) != len(expected) or {identity(row) for row in rows} != expected:
-            return None
+        source, fields, rows, _ = read_candidate_inputs(
+            source_path, directory / "step_main_enzyme_candidates.csv", before, genome_path)
         groups = scan_preselected_reactions(after)
         fixed = {index for group in groups.values() for index in group["step_indexes"]}
         _, steps = get_solution_steps(after)
@@ -130,6 +120,24 @@ def candidate_updates(directory: Path, before: dict, after: dict, genome_path) -
         return updates
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def candidate_removal_updates(directory: Path, before: dict, after: dict, genome_path) -> dict[Path, bytes] | None:
+    """Update a reduced fixed group without rewriting any automatic evidence."""
+    path = directory / "main_enzyme_selection.json"
+    try:
+        source, _, _, _ = read_candidate_inputs(path, directory / "step_main_enzyme_candidates.csv", before, genome_path)
+        if not source.ok:
+            return None
+        groups = scan_preselected_reactions(after)
+        if set(groups) != set(source.preselected_reactions):
+            return None  # A released reaction needs retrieval, never an invented empty shortlist.
+        payload = source.model_dump(mode="json")
+        payload["preselected_reactions"] = groups
+        source = MainEnzymeSelectionResult.model_validate(payload)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {path: (json.dumps(source.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n").encode("utf-8")}
 
 
 def publish_candidate_updates(updates: dict[Path, bytes]) -> None:
