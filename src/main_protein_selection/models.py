@@ -332,7 +332,7 @@ class MainEnzymeSetProtein(BaseModel):
     accession: str = Field(min_length=1)
     protein_name: str = ""
     organism_name: str = ""
-    reviewed: bool
+    reviewed: bool | None
     cofactors: list[str] = Field(default_factory=list)
     capable_step_indexes: list[int]
     assigned_step_indexes: list[int]
@@ -515,7 +515,7 @@ class MainEnzymeSet(BaseModel):
                 "non-empty organism count"
             )
         reviewed_fraction = sum(
-            protein.reviewed for protein in self.proteins
+            protein.reviewed is True for protein in self.proteins
         ) / len(self.proteins)
         if not isclose(
             self.metrics.reviewed_fraction,

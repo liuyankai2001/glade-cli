@@ -78,19 +78,14 @@ def _load_selected_sequence(selected, directory: Path) -> ProteinSequenceRecord:
     """Use the bound sequence for compact selections; retain legacy behavior."""
     if selected.sequence_file is None:
         return search_protein_sequence(selected.accession, directory)
-    from src.protein_selection.sequence_store import entry_sequence, read_cached_pair
+    from src.protein_selection.local_sequences import read_sequence_pair
     from src.protein_to_cds.artifacts import write_bytes_atomic
 
     path = selected.sequence_file
-    if path.name != f"{selected.accession}.fasta":
-        raise ValueError(f"选中蛋白序列文件名不一致：{selected.accession}")
-    metadata = read_cached_pair(path.parent, selected.accession)
-    if metadata is None:
-        raise ValueError(f"选中蛋白序列文件不完整：{selected.accession}")
-    sequence = entry_sequence(metadata["uniprot_entry"])
+    metadata, sequence = read_sequence_pair(path, selected.accession)
     if not selected.sequence_sha256 or hashlib.sha256(sequence.encode()).hexdigest() != selected.sequence_sha256:
         raise ValueError(f"选中蛋白序列已变化：{selected.accession}；请重新运行 main-enzyme 并写入")
-    entry_name = str(metadata["uniprot_entry"].get("uniProtkbId") or selected.accession)
+    entry_name = str((metadata.get("uniprot_entry") or {}).get("uniProtkbId") or selected.accession)
     fasta_path = directory / f"{selected.accession}.fasta"
     content = f">{selected.accession} {entry_name}\n{sequence}\n".encode("utf-8")
     reused = fasta_path.is_file() and fasta_path.read_bytes() == content
@@ -98,7 +93,7 @@ def _load_selected_sequence(selected, directory: Path) -> ProteinSequenceRecord:
         write_bytes_atomic(fasta_path, content)
     return ProteinSequenceRecord(requested_accession=selected.accession,
         primary_accession=selected.accession, entry_name=entry_name, sequence=sequence,
-        length_aa=len(sequence), source_url=metadata["source_url"], fasta_path=fasta_path,
+        length_aa=len(sequence), source_url=metadata.get("source_url") or "", fasta_path=fasta_path,
         reused_existing=reused)
 
 

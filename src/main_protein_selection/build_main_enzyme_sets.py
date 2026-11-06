@@ -1354,10 +1354,9 @@ def build_main_enzyme_sets(
         from .preselected_sets import build_persisted_preselected_sets
         return build_persisted_preselected_sets(manifest_path, selection_path, candidate_csv_path, output_dir,
             max_sets=max_sets, max_search_nodes=max_search_nodes, genome_path=genome_path)
-    if not isinstance(preflight, dict) or preflight.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
-        from .preselected_reactions import scan_preselected_reactions
-        if scan_preselected_reactions(read_manifest(manifest_path)):
-            raise ValueError("候选结果缺失、损坏或格式已过期，请重新运行 main-enzyme；已选反应已保留")
+    from .preselected_reactions import scan_preselected_reactions
+    if scan_preselected_reactions(read_manifest(manifest_path)):
+        raise ValueError("候选结果缺失、损坏或与人工已选记录不一致，请重新运行 main-enzyme；已选反应已保留")
     from src.main_protein_selection.lifecycle import invalidate_current
     from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
     invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
 import math
 import re
 import time
@@ -1100,6 +1102,17 @@ def validate_gap_output(
 
 
 def gem_validate(config: Any) -> dict[str, Any]:
+    """Serialize report publication and synchronize the selected KEGG route."""
+    terminal_result = _target_already_available_validation_result(config)
+    if terminal_result is not None:
+        return {**terminal_result, "manifest_updated": False, "manifest_update_message": "目标已可供给，无需验证或回写路线"}
+    from src.write_manifest.solution_validation import kegg_validation_lock
+    gap_dir = gap_depth_output_dir(Path(config.gap_output_path).expanduser().resolve(), int(getattr(config, "depth", 0)))
+    with kegg_validation_lock(gap_dir):
+        return _gem_validate(config)
+
+
+def _gem_validate(config: Any) -> dict[str, Any]:
     """使用 ``RunConfig`` 验证 gap 候选路径的 GEM 通量可行性。"""
 
     terminal_result = _target_already_available_validation_result(config)
@@ -1149,7 +1162,8 @@ def gem_validate(config: Any) -> dict[str, Any]:
             f"{steps_path}"
         )
     try:
-        all_steps_df = pd.read_csv(steps_path)
+        steps_bytes = steps_path.read_bytes()
+        all_steps_df = pd.read_csv(io.BytesIO(steps_bytes))
     except pd.errors.EmptyDataError as exc:
         raise ValueError(f"Gap analysis produced no candidate solutions: {steps_path}") from exc
     if all_steps_df.empty:
@@ -1164,6 +1178,11 @@ def gem_validate(config: Any) -> dict[str, Any]:
         solution_ids,
         available_solution_ids,
     )
+
+    from src.write_manifest.solution_validation import capture_validation_selection, sync_validation_selection
+    snapshot, skip_message = capture_validation_selection(config, gap_dir=gap_dir,
+        selected_ids=selected_solution_ids, mode=mode, steps_frame=all_steps_df,
+        steps_sha256=hashlib.sha256(steps_bytes).hexdigest())
 
     print(
         f"[INFO] validating {len(selected_solution_ids)} gap solution(s) "
@@ -1198,7 +1217,10 @@ def gem_validate(config: Any) -> dict[str, Any]:
         if not summary_df.empty and "validation_status" in summary_df.columns
         else []
     )
+    synchronization = sync_validation_selection(snapshot, skip_message=skip_message,
+        summary=summary_df, fluxes=flux_df, output_dir=output_dir)
     return {
+        **synchronization,
         "ok": True,
         "target_compound": target_compound,
         "expansion_depth": expansion_depth,
@@ -1319,6 +1341,7 @@ def run_validation(config: Any) -> dict[str, Any]:
 
     terminal_result = _target_already_available_validation_result(config)
     if terminal_result is not None:
+        terminal_result.update(manifest_updated=False, manifest_update_message="目标已可供给，无需验证或回写路线")
         print(json.dumps(terminal_result, ensure_ascii=False, indent=2))
         return terminal_result
 

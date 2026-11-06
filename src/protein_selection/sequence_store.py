@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,15 @@ from src.protein_to_cds.search_protein_sequence import (
 )
 
 METADATA_SCHEMA = "protein_sequence_metadata.v1"
+
+
+@cache
+def _protein_lock(path: str) -> FileLock:
+    return FileLock(path, timeout=30)
+
+
+def protein_file_lock(folder: Path, accession: str) -> FileLock:
+    return _protein_lock(os.path.normcase(str(folder.resolve() / f".{accession}.download.lock")))
 
 
 def accession_value(value: str) -> str:
@@ -103,6 +114,12 @@ def _read_metadata(path: Path, accession: str) -> dict[str, Any]:
 def _inspect(folder: Path, accession: str) -> tuple[str | None, dict[str, Any] | None]:
     fasta, metadata_file = _paths(folder, accession)
     try:
+        if metadata_file.exists():
+            raw = json.loads(metadata_file.read_text(encoding="utf-8-sig"))
+            from .local_sequences import LOCAL_METADATA_SCHEMA, read_sequence_pair
+            if isinstance(raw, dict) and raw.get("schema_version") == LOCAL_METADATA_SCHEMA:
+                metadata, sequence = read_sequence_pair(fasta, accession)
+                return sequence, metadata
         sequence = _read_fasta(fasta, accession) if fasta.exists() else None
         metadata = _read_metadata(metadata_file, accession) if metadata_file.exists() else None
         if sequence is not None and metadata is not None:
@@ -116,22 +133,22 @@ def _inspect(folder: Path, accession: str) -> tuple[str | None, dict[str, Any] |
 def read_cached_pair(folder: Path, accession: str) -> dict[str, Any] | None:
     if not folder.exists():
         return None
-    with FileLock(str(folder / f".{accession}.download.lock"), timeout=30):
+    with protein_file_lock(folder, accession):
         sequence, metadata = _inspect(folder, accession)
-        return metadata if sequence is not None and metadata is not None else None
+        return metadata if sequence is not None and metadata is not None and metadata.get("schema_version") == METADATA_SCHEMA else None
 
 
 def publish_entry(folder: Path, entry: dict[str, Any], *, force: bool) -> tuple[dict[str, Any], bool]:
     metadata = entry_metadata(entry)
     accession, sequence = metadata["accession"], entry_sequence(entry)
     folder.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(folder / f".{accession}.download.lock"), timeout=30):
+    with protein_file_lock(folder, accession):
         if not force:
             previous_sequence, previous_metadata = _inspect(folder, accession)
-            if previous_sequence is not None and previous_metadata is not None:
+            if previous_sequence is not None and previous_metadata is not None and previous_metadata.get("schema_version") == METADATA_SCHEMA:
                 return previous_metadata, True
             existing = previous_sequence
-            if previous_metadata is not None:
+            if previous_metadata is not None and existing is None:
                 existing = entry_sequence(previous_metadata["uniprot_entry"])
             if existing is not None and existing != sequence:
                 raise ValueError(f"本地蛋白序列与 UniProt 内容冲突，请使用 --force 刷新：{accession}")

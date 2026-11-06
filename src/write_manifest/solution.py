@@ -657,6 +657,20 @@ def _retropath_validation_files(commit: dict[str, Any], mapping: dict[str, Any])
 
 
 def write_solution(config: Any) -> dict[str, Any]:
+    """Keep pure KEGG selection mutually exclusive with validation publication."""
+    gap_dir = gap_depth_output_dir(Path(config.gap_output_path).expanduser().resolve(), int(getattr(config, "depth", 0)))
+    try:
+        summary = _select_solution_summary(gap_dir / "solutions.csv", int(getattr(config, "solution", 0) or 0))
+    except (OSError, ValueError, TypeError):
+        return _write_solution(config)
+    if str(summary.get("solution_source") or "kegg").strip().lower() == "retropath":
+        return _write_solution(config)
+    from .solution_validation import kegg_validation_lock
+    with kegg_validation_lock(gap_dir):
+        return _write_solution(config)
+
+
+def _write_solution(config: Any) -> dict[str, Any]:
     """将一条 KEGG 或可选验证的 RetroPath 路线写入 design manifest。"""
 
     target_compound = validate_target_compound_id(config.target_name)
@@ -858,20 +872,33 @@ def write_solution(config: Any) -> dict[str, Any]:
     }
     if solution_source == "retropath":
         validation_files = _retropath_validation_files(materialization or promotion or {}, promotion_mapping or {})
+    evidence_updates = {}
+    if solution_source != "retropath":
+        from .solution_validation import existing_validation_evidence, project_validation
+        evidence = existing_validation_evidence(validation_dir, solution_id)
+        if evidence is not None:
+            row, validation_files, evidence_updates = evidence
+            solution_payload["validation"] = project_validation(row, validation_files,
+                manifest_path=manifest_path, target=target_compound)
     from src.write_manifest.solution_format import compact_solution
     solution_payload = compact_solution(
         solution_payload, manifest_path=manifest_path,
-        target_compound_id=target_compound, validation_files=validation_files,
+        target_compound_id=target_compound, validation_files=None if evidence_updates else validation_files,
     )
 
-    update_design_manifest(
-        manifest_path,
-        target_compound_id=target_compound,
-        sections={
-            "solution": solution_payload,
-        },
-        discard_sections=SOLUTION_DOWNSTREAM_SECTIONS,
-    )
+    from src.protein_to_cds.artifacts import ArtifactTransaction
+    from .solution_validation import publish_evidence
+    from .store import manifest_update_lock
+    with manifest_update_lock(manifest_path):
+        with ArtifactTransaction((manifest_path, *evidence_updates)) as transaction:
+            publish_evidence(evidence_updates)
+            update_design_manifest(
+                manifest_path,
+                target_compound_id=target_compound,
+                sections={"solution": solution_payload},
+                discard_sections=SOLUTION_DOWNSTREAM_SECTIONS,
+            )
+            transaction.commit()
 
     return {
         "运行成功": True,

@@ -83,7 +83,8 @@ def _validate_structure(selection: Mapping[str, Any], manifest: Mapping[str, Any
                     or any(not isinstance(protein.get(key), str) or not protein[key].strip() for key in PROTEIN_FIELDS)
                     or protein["selection_source"] not in {"automatic", "manual"}):
                 raise ValueError("反应中的蛋白记录格式无效")
-            if resolve_sequence_file(protein["sequence_file"]).name != f"{protein['accession']}.fasta":
+            from src.protein_selection.local_sequences import sequence_identity
+            if sequence_identity(resolve_sequence_file(protein["sequence_file"])) != protein["accession"]:
                 raise ValueError("选中蛋白序列文件名与编号不一致")
         assigned.update(indexes)
     reviews = selection.get("review_required_step_indexes")
@@ -93,14 +94,10 @@ def _validate_structure(selection: Mapping[str, Any], manifest: Mapping[str, Any
 
 
 def read_protein_pair(protein: Mapping[str, Any]):
-    from src.protein_selection.sequence_store import entry_sequence, read_cached_pair
+    from src.protein_selection.local_sequences import read_sequence_pair, runtime_annotations
     path = resolve_sequence_file(protein["sequence_file"])
-    if path.name != f"{protein['accession']}.fasta":
-        raise ValueError("选中蛋白序列文件名与编号不一致")
-    metadata = read_cached_pair(path.parent, protein["accession"])
-    if metadata is None:
-        raise ValueError(f"缺少完整的蛋白 FASTA/JSON：{protein['accession']}")
-    return metadata, entry_sequence(metadata["uniprot_entry"])
+    metadata, sequence = read_sequence_pair(path, protein["accession"])
+    return runtime_annotations(metadata), sequence
 
 
 def merge_manual_selection(automatic: dict[str, Any], current: Any, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -233,6 +230,7 @@ def restore_reaction_selection(manifest: dict[str, Any], manifest_path: Path) ->
                     raise ValueError(f"同一蛋白编号对应不同序列：{accession}")
                 for key in ("protein_name", "organism_name", "reviewed", "cofactors"):
                     record[key] = metadata[key]
+                record["source_type"] = metadata.get("source_type", "uniprot")
                 record["sequence_sha256"] = hashlib.sha256(sequence.encode()).hexdigest()
                 preselected = context.preselected_reactions.get(reaction) if context is not None else None
                 snapshot = next((protein for protein in preselected.proteins if protein.accession == accession), None) if preselected else None

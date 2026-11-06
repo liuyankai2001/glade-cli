@@ -88,6 +88,7 @@ def _merge_main_proteins(
             _step_list(item.get("assigned_step_indexes"))
         )
         current["reviewed"] = item.get("reviewed")
+        current["source_type"] = item.get("source_type", "uniprot")
         current["cofactors"] = _string_list(item.get("cofactors"))
         current["sequence_file"] = _text(item.get("sequence_file"))
     return selection
@@ -175,10 +176,10 @@ def _compact_record(config: Any, record: Mapping[str, Any]) -> dict[str, Any]:
         "蛋白ID": record["accession"],
         "类型": "主酶",
         "角色": ["主酶"],
-        "蛋白名称": record["protein_name"],
-        "来源生物": record["organism_name"],
+        "蛋白名称": record["protein_name"] or "未知",
+        "来源生物": record["organism_name"] or "未知",
         "负责步骤": sorted(record["assigned_step_indexes"]),
-        "来源": "UniProt",
+        "来源": "本地" if record.get("source_type") == "local" else "UniProt",
         "CDS状态": cds["状态"],
         "CDS长度_nt": cds["长度_nt"],
     }
@@ -300,8 +301,8 @@ def get_protein_info(config: Any) -> dict[str, Any]:
         "目标化合物": _text(manifest.get("target_compound_id")),
         **({"主酶组合编号": main_selection["selected_set_id"]} if main_selection.get("selected_set_id") is not None else {}),
         "CDS整体状态": cds_status,
-        "来源生物Reviewed": record["reviewed"],
-        "辅因子": list(record["cofactors"]),
+        "来源生物Reviewed": record["reviewed"] if record["reviewed"] is not None else "未知",
+        "辅因子": "未知" if record.get("source_type") == "local" else list(record["cofactors"]),
         "序列文件": _sequence_file_info(config, record),
         "CDS详情": {
             **_cds_summary(record),

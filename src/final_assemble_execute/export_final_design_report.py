@@ -309,17 +309,17 @@ def _render_report(payload: Mapping[str, Any]) -> str:
             "",
             f"- 选择状态：`{_table(main.get('selection_status'))}`",
             "",
-            "| 步骤 | UniProt | 蛋白 | 来源生物 | Reviewed |",
+            "| 步骤 | 蛋白ID | 蛋白 | 来源生物 | Reviewed |",
             "|---|---|---|---|---|",
         ]
     )
     for item in _items(main.get("proteins")):
         if isinstance(item, Mapping):
-            reviewed = "是" if item.get("reviewed") else "否"
+            reviewed = "未知" if item.get("reviewed") is None else ("是" if item["reviewed"] else "否")
             lines.append(
                 f"| {_table(_join(item.get('assigned_step_indexes')))} | "
-                f"{_table(item.get('accession'))} | {_table(item.get('protein_name'))} | "
-                f"{_table(item.get('organism_name'))} | {reviewed} |"
+                f"{_table(item.get('accession'))} | {_table(item.get('protein_name') or '未知')} | "
+                f"{_table(item.get('organism_name') or '未知')} | {reviewed} |"
             )
     lines.extend(["", "### 未解决的复核项", ""])
     reviews = _items(main.get("unresolved_reviews"))
@@ -351,7 +351,7 @@ def _render_report(payload: Mapping[str, Any]) -> str:
             "- 下列优化序列已经生成并进入表达构建；实验前应复核并据此下单合成，"
             "无需重新从零进行密码子优化。",
             "",
-            "| 步骤 | UniProt | 蛋白 | 长度 (nt) | GC (%) | CAI | Gate | 文件 |",
+            "| 步骤 | 蛋白ID | 蛋白 | 长度 (nt) | GC (%) | CAI | Gate | 文件 |",
             "|---|---|---|---:|---:|---:|---|---|",
         ]
     )
@@ -359,7 +359,7 @@ def _render_report(payload: Mapping[str, Any]) -> str:
         if isinstance(item, Mapping):
             lines.append(
                 f"| {_table(_join(item.get('assigned_step_indexes')))} | "
-                f"{_table(item.get('accession'))} | {_table(item.get('protein_name'))} | "
+                f"{_table(item.get('accession'))} | {_table(item.get('protein_name') or '未知')} | "
                 f"{_table(item.get('length_nt'))} | {_table(item.get('gc_percent'))} | "
                 f"{_table(item.get('cai'))} | {_table(item.get('gate_status'))} | "
                 f"`{_table(item.get('path'))}` |"

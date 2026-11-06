@@ -305,11 +305,11 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
         **_fixed_details(result),
         "主酶成员": [
             {
-                "UniProt": protein.accession,
-                "蛋白名称": protein.protein_name,
-                "来源物种": protein.organism_name,
-                "Reviewed": protein.reviewed,
-                "辅因子": protein.cofactors,
+                ("蛋白ID" if protein.reviewed is None else "UniProt"): protein.accession,
+                "蛋白名称": protein.protein_name or "未知",
+                "来源物种": protein.organism_name or "未知",
+                "Reviewed": protein.reviewed if protein.reviewed is not None else "未知",
+                "辅因子": protein.cofactors if protein.reviewed is not None else "未知",
                 "可催化步骤": protein.capable_step_indexes,
                 "实际负责步骤": protein.assigned_step_indexes,
             }

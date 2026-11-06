@@ -6,7 +6,7 @@ import sys
 from argparse import ArgumentTypeError
 from pathlib import PureWindowsPath
 
-from src.protein_selection import download_protein_sequence
+from src.protein_selection import add_protein_to_reaction, download_protein_sequence
 
 
 def _input_filename(value: str) -> str:
@@ -30,7 +30,7 @@ def _run_download(config):
 
 
 def register(subparsers):
-    parser = subparsers.add_parser("protein", help="获取本地蛋白氨基酸序列")
+    parser = subparsers.add_parser("protein", help="下载蛋白序列或为反应添加本地蛋白")
     actions = parser.add_subparsers(dest="protein_action", required=True)
     download = actions.add_parser("download", help="按 UniProt 编号或名称下载 FASTA 和 JSON")
     download.add_argument("-i", "--input", required=True, type=_input_filename, help="inputs 目录下的配置文件名")
@@ -39,4 +39,19 @@ def register(subparsers):
     source.add_argument("--name", help="基因名或蛋白名称；按当前底盘分类接近度自动选择")
     download.add_argument("--force", action="store_true", help="重新获取并替换同编号的 FASTA 和 JSON")
     download.set_defaults(func=_run_download)
+    add = actions.add_parser("add", help="为当前路线反应追加本地已选蛋白")
+    add.add_argument("-i", "--input", required=True, type=_input_filename, help="inputs 下的配置文件名")
+    add.add_argument("-r", "--reaction", dest="reaction_id", required=True, help="当前路线中的反应编号")
+    add.add_argument("-f", "--file", dest="sequence_file", required=True, help="inputs/protein_sequences 下的 .fasta 文件名")
+    add.set_defaults(func=_run_add)
     return parser
+
+
+def _run_add(config):
+    try:
+        result = add_protein_to_reaction(config, reaction_id=config.reaction_id, sequence_file=config.sequence_file)
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
