@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
+
 from src.main_protein_selection.common import get_solution_steps, heterologous_requirements
 from src.main_protein_selection.genome_ec_filter import (
     UNSPECIFIED_GENOME, read_current_genome_selection, validate_genome_ec_filter,
@@ -25,6 +27,7 @@ from src.main_protein_selection.models import (
 from src.pathway_analyze.target_id import validate_target_compound_id
 from src.write_manifest.store import (
     read_design_manifest,
+    manifest_update_lock,
     update_design_manifest,
 )
 
@@ -81,6 +84,8 @@ def _read_sets(path: Path) -> MainEnzymeSetsResult:
             "未找到主酶组合，请先运行：main-enzyme-sets -i <输入文件>"
         )
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"主酶组合结果必须是 JSON 对象，请重新运行 main-enzyme-sets：{path}")
     if payload.get("schema_version") != MAIN_ENZYME_SETS_SCHEMA_VERSION:
         raise ValueError(
             "主酶组合使用旧版结果格式，请重新运行 main-enzyme-sets"
@@ -335,6 +340,19 @@ def _step_ranges(step_indexes: list[int]) -> str:
 def write_main_enzyme_set(config: Any) -> dict[str, Any]:
     """Validate and commit one ranked main-enzyme set to the manifest."""
 
+    directory = _selection_dir(config)
+    if not directory.is_dir():
+        raise FileNotFoundError("未找到主酶组合，请先运行 main-enzyme-sets")
+    try:
+        with FileLock(str(directory / ".main_enzyme_calculation.lock"), timeout=0):
+            with manifest_update_lock(config.manifest_output_path):
+                return _write_main_enzyme_set(config)
+    except Timeout as exc:
+        raise ValueError("主酶计算正在运行，请稍后重试") from exc
+
+
+def _write_main_enzyme_set(config: Any) -> dict[str, Any]:
+
     set_id = _positive_set_id(config)
     target_compound = validate_target_compound_id(config.target_name)
     manifest_path = Path(config.manifest_output_path).expanduser()
@@ -381,18 +399,40 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         ),
     )
 
+    from src.protein_selection.download import download_protein_sequence
+    from src.protein_selection.sequence_store import entry_sequence, read_cached_pair
+    from src.write_manifest.main_enzyme_format import compact_selection, selected_sequences, sequence_file_value
+    sequences = selected_sequences(_selection_dir(config), result, selected)
+    paths = {}
+    for accession, sequence in sequences.items():
+        downloaded = download_protein_sequence(config, uniprot=accession)
+        fasta = Path(downloaded["fasta_path"])
+        metadata = read_cached_pair(fasta.parent, accession)
+        if downloaded["accession"] != accession or metadata is None or entry_sequence(metadata["uniprot_entry"]) != sequence:
+            raise ValueError(f"本地蛋白序列与当前选中候选序列不一致：{accession}；请核对缓存并重新运行 main-enzyme")
+        paths[accession] = sequence_file_value(fasta)
+    payload["review_required_step_indexes"] = sorted({
+        step for review in payload["unresolved_reviews"] for step in review["step_indexes"]
+    })
+    for assignment in payload["step_assignments"]:
+        assignment["sequence_file"] = paths[assignment["accession"]]
+    payload["_compact_storage"] = True
+
     current_selection = manifest.get("main_enzyme_selection")
     unchanged = (
         isinstance(current_selection, Mapping)
-        and dict(current_selection) == payload
+        and current_selection.get("_compact_storage") is True
+        and compact_selection(current_selection) == compact_selection(payload)
+        and not current_selection.get("_compact_details_error")
     )
     if not unchanged:
         from src.main_protein_selection.lifecycle import retained_uploaded_draft
+        same_selection = _same_selection(current_selection, payload)
         update_design_manifest(
             manifest_path,
             target_compound_id=target_compound,
-            sections={"main_enzyme_selection": payload, **retained_uploaded_draft(manifest)},
-            discard_sections=MAIN_ENZYME_DOWNSTREAM_SECTIONS,
+            sections={"main_enzyme_selection": payload, **(retained_uploaded_draft(manifest) if not same_selection else {})},
+            discard_sections=MAIN_ENZYME_DOWNSTREAM_SECTIONS if not same_selection else (),
         )
 
     proteins = sorted(
@@ -429,6 +469,28 @@ def write_main_enzyme_set(config: Any) -> dict[str, Any]:
         "清单是否更新": not unchanged,
         "清单文件": str(manifest_path.resolve()),
     }
+
+
+def _same_selection(current: Any, payload: Mapping[str, Any]) -> bool:
+    """A storage-only conversion must not invalidate existing CDSs."""
+    if not isinstance(current, Mapping) or current.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
+        return False
+    if current.get("_compact_details_error"):
+        return False
+    keys = ("selected_solution_id", "selected_set_id", "expansion_depth", "chassis_key",
+            "selection_status", "coverage", "genome_ec_filter")
+    if any(current.get(key) != payload.get(key) for key in keys):
+        return False
+    def bindings(value):
+        return [(item.get("step_index"), item.get("reaction_id"), item.get("accession"))
+                for item in value.get("step_assignments", [])]
+    if bindings(current) != bindings(payload):
+        return False
+    current_paths = {item.get("accession"): item.get("sequence_file") for item in current.get("step_assignments", [])}
+    from src.write_manifest.main_enzyme_format import resolve_sequence_file
+    return all(not current_paths.get(item["accession"])
+               or resolve_sequence_file(current_paths[item["accession"]]) == resolve_sequence_file(item["sequence_file"])
+               for item in payload["step_assignments"])
 
 
 def run_write_main_enzyme_set(config: Any) -> dict[str, Any]:

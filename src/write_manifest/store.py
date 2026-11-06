@@ -10,6 +10,7 @@ from typing import Any
 from filelock import FileLock
 
 from src.write_manifest.solution_format import manifest_for_runtime, manifest_for_storage
+from src.write_manifest.main_enzyme_format import restore_selection, selection_for_storage
 
 SCHEMA_VERSION = "design_manifest.v1"
 
@@ -73,7 +74,7 @@ def _read_existing_manifest(manifest_path: Path) -> dict[str, Any]:
             f"当前仅支持 {SCHEMA_VERSION}"
         )
     manifest["schema_version"] = SCHEMA_VERSION
-    return manifest_for_runtime(_without_legacy_write_metadata(manifest), manifest_path)
+    return restore_selection(manifest_for_runtime(_without_legacy_write_metadata(manifest), manifest_path), manifest_path)
 
 
 def _write_json_atomic(path: Path, data: Mapping[str, Any]) -> None:
@@ -139,6 +140,7 @@ def _update_locked(
     manifest.update(sections)
     manifest = _without_legacy_write_metadata(manifest)
     manifest = manifest_for_storage(manifest, manifest_path)
+    manifest = selection_for_storage(manifest)
     _write_json_atomic(manifest_path, manifest)
     return manifest
 

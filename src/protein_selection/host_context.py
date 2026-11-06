@@ -1,7 +1,6 @@
 """Resolve a download's selected chassis without registering or writing hosts."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +21,13 @@ def resolve_download_host(config: Any, session: requests.Session) -> ChassisTaxo
     manifest = {}
     manifest_path = getattr(config, "manifest_output_path", None)
     if manifest_path and Path(manifest_path).is_file():
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict):
-            raise ValueError("设计清单必须是 JSON 对象")
+        from src.write_manifest.store import read_design_manifest
+        manifest = read_design_manifest(manifest_path)
     selection = manifest.get("main_enzyme_selection") or {}
     if not isinstance(selection, dict):
         raise ValueError("设计清单宿主信息格式错误")
+    if selection.get("_compact_details_error"):
+        raise ValueError("设计清单底盘信息不可用，请重新运行 main-enzyme 或改用 --uniprot：" + selection["_compact_details_error"])
     keys = list(dict.fromkeys(key for key in (
         getattr(config, "chassis_key", None), selection.get("chassis_key"),
     ) if key))

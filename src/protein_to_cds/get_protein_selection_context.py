@@ -20,6 +20,8 @@ class SelectedProteinForCds:
     protein_name: str
     organism_name: str
     assigned_step_indexes: tuple[int, ...]
+    sequence_file: Path | None = None
+    sequence_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,8 @@ def _main_proteins(
                 item.get("assigned_step_indexes"),
                 f"main_enzyme_selection.proteins[{index}].assigned_step_indexes",
             ),
+            sequence_file=Path(item["sequence_file"]) if item.get("sequence_file") else None,
+            sequence_sha256=str(item.get("sequence_sha256") or ""),
         )
     return proteins
 
@@ -114,6 +118,8 @@ def get_proteins_for_cds(
     )
 
     selection = _mapping(manifest.get("main_enzyme_selection"), "main_enzyme_selection")
+    if selection.get("_compact_details_error"):
+        raise ValueError(str(selection["_compact_details_error"]))
     if selection.get("schema_version") != MAIN_ENZYME_MANIFEST_SCHEMA_VERSION:
         raise ValueError("主酶选择结果已过期，请重新运行 main-enzyme、main-enzyme-sets 和 write --main-enzyme-set")
     selection_status = _nonempty_text(

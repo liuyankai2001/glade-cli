@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 from collections.abc import Iterable
@@ -19,6 +20,7 @@ from src.protein_to_cds.config import HostProfile, host_profile_for_chassis
 from src.protein_to_cds.get_protein_selection_context import ProteinToCdsContext, get_proteins_for_cds
 from src.main_protein_selection.genome_ec_filter import read_current_genome_selection
 from src.protein_to_cds.search_protein_sequence import (
+    ProteinSequenceRecord,
     search_protein_sequence,
 )
 from src.protein_to_cds.write_protein_to_manifest import (
@@ -69,6 +71,34 @@ def _status(success_count: int, failure_count: int) -> str:
     if success_count:
         return "partial"
     return "failed"
+
+
+def _load_selected_sequence(selected, directory: Path) -> ProteinSequenceRecord:
+    """Use the bound sequence for compact selections; retain legacy behavior."""
+    if selected.sequence_file is None:
+        return search_protein_sequence(selected.accession, directory)
+    from src.protein_selection.sequence_store import entry_sequence, read_cached_pair
+    from src.protein_to_cds.artifacts import write_bytes_atomic
+
+    path = selected.sequence_file
+    if path.name != f"{selected.accession}.fasta":
+        raise ValueError(f"选中蛋白序列文件名不一致：{selected.accession}")
+    metadata = read_cached_pair(path.parent, selected.accession)
+    if metadata is None:
+        raise ValueError(f"选中蛋白序列文件不完整：{selected.accession}")
+    sequence = entry_sequence(metadata["uniprot_entry"])
+    if not selected.sequence_sha256 or hashlib.sha256(sequence.encode()).hexdigest() != selected.sequence_sha256:
+        raise ValueError(f"选中蛋白序列已变化：{selected.accession}；请重新运行 main-enzyme 并写入")
+    entry_name = str(metadata["uniprot_entry"].get("uniProtkbId") or selected.accession)
+    fasta_path = directory / f"{selected.accession}.fasta"
+    content = f">{selected.accession} {entry_name}\n{sequence}\n".encode("utf-8")
+    reused = fasta_path.is_file() and fasta_path.read_bytes() == content
+    if not reused:
+        write_bytes_atomic(fasta_path, content)
+    return ProteinSequenceRecord(requested_accession=selected.accession,
+        primary_accession=selected.accession, entry_name=entry_name, sequence=sequence,
+        length_aa=len(sequence), source_url=metadata["source_url"], fasta_path=fasta_path,
+        reused_existing=reused)
 
 
 def run_protein_to_cds(
@@ -153,7 +183,7 @@ def _run_batch(
     failures: list[FailedProteinCds] = []
     for selected in context.proteins:
         try:
-            protein = search_protein_sequence(selected.accession, protein_sequence_dir)
+            protein = _load_selected_sequence(selected, protein_sequence_dir)
             if protein.primary_accession != selected.accession:
                 raise ValueError(
                     "UniProt response accession does not match the manifest: "

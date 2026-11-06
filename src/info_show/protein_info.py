@@ -89,6 +89,7 @@ def _merge_main_proteins(
         )
         current["reviewed"] = item.get("reviewed")
         current["cofactors"] = _string_list(item.get("cofactors"))
+        current["sequence_file"] = _text(item.get("sequence_file"))
     return selection
 
 
@@ -202,14 +203,19 @@ def _preview(sequence: str) -> str:
 
 
 def _sequence_file_info(config: Any, record: Mapping[str, Any]) -> dict[str, Any]:
-    path_value = ""
-    source_kind = ""
+    path_value = _text(record.get("sequence_file"))
+    source_kind = "选中主酶序列文件" if path_value else ""
+    selected_path = path_value
     if not path_value and isinstance(record["cds"], Mapping):
         protein_sequence = record["cds"].get("protein_sequence")
         if isinstance(protein_sequence, Mapping):
             path_value = _text(protein_sequence.get("path"))
             source_kind = "protein-to-CDS 蛋白文件"
-    path, path_error = _safe_project_file(config, path_value)
+    if selected_path:
+        from src.write_manifest.main_enzyme_format import resolve_sequence_file
+        path, path_error = resolve_sequence_file(selected_path), ""
+    else:
+        path, path_error = _safe_project_file(config, path_value)
     if path is None:
         return {
             "路径": path_value,

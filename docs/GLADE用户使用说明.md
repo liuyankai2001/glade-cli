@@ -164,6 +164,10 @@ python main.py info -i demo01.json --main-enzyme-sets
 python main.py write -i demo01.json --main-enzyme-set 1
 ```
 
+写入时会先为选中蛋白准备 `inputs/protein_sequences/<蛋白编号>.fasta` 和同名 `.json`，复用完整且一致的本地缓存；缺失时联网补齐。序列必须与主酶候选结果一致，冲突或下载失败时保留原清单。
+
+设计清单的 `main_enzyme_selection` 仅保存路线编号、组合编号、选择状态、步骤分配和待复核步骤。每步记录步骤编号、反应编号、蛋白编号与 `sequence_file`。蛋白注释保存在同名 JSON 中，评分及证据保留在主酶分析文件中。旧版清单仍可读取，重新写入时转换；其他操作不会自动迁移旧版清单。
+
 示例选择组合 1。确认后，可以用 `python main.py info -i demo01.json --proteins` 查看已选蛋白及其编号。
 
 #### 单独下载蛋白氨基酸序列
@@ -192,7 +196,7 @@ python main.py protein download -i demo01.json --uniprot P22873 --force
 
 ### 2.4 生成并查看 CDS
 
-这一步仅为已选主酶准备 DNA 编码序列。程序获取主酶氨基酸序列，并使用 CodonTransformer 生成面向当前宿主的密码子设计。
+这一步仅为已选主酶准备 DNA 编码序列。新格式清单使用 `sequence_file` 指定的本地氨基酸序列，校验后复制到 CDS 工作目录，并使用 CodonTransformer 生成面向当前宿主的密码子设计。读取主酶注释和分析明细时不会联网；明细缺失或与当前路线不符时，仍可查看基本选择，但需重新生成主酶结果后才能继续 CDS 或表达盒流程。
 
 生成时启用 `match_protein=True`，由模型约束密码子选择以保持蛋白序列一致。对于未修改的模型输出，生成和写入清单时不独立翻译比对，仍检查碱基、长度、起止密码子和内部终止。每次调用重新生成 CDS，生成报告采用 `protein_to_cds.generation.v3`，记录模型约束依据，不再包含序列摘要。未执行的独立翻译检查不代表检查失败。后续通过 `optimize` 调整 CDS 时，仍会独立翻译核对蛋白序列。
 
