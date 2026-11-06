@@ -166,6 +166,30 @@ python main.py write -i demo01.json --main-enzyme-set 1
 
 示例选择组合 1。确认后，可以用 `python main.py info -i demo01.json --proteins` 查看已选蛋白及其编号。
 
+#### 单独下载蛋白氨基酸序列
+
+需要先准备本地蛋白序列时，可以使用 `protein download`。这一步独立于主酶组合选择，不要求已有路线或主酶组合，也不会把下载的蛋白自动写入设计清单。
+
+```powershell
+python main.py protein download -i demo01.json --uniprot P22873
+python main.py protein download -i demo01.json --name TBT
+```
+
+`--uniprot` 和 `--name` 必须且只能提供一个；`-i` 只填写 `inputs` 目录下的配置文件名。按编号时获取对应记录；按名称时查询基因名和蛋白名称并遍历候选，有精确基因名命中时优先在该候选池中选择，没有时才使用蛋白名称候选。在对应候选池内，优先选择与当前底盘分类学最接近且序列有效的蛋白；同分时比较现有证据评分，再按编号稳定排序。名称模式使用配置基因组或清单中的宿主；未指定宿主且使用默认模型时，沿用 MG1655 默认宿主。自定义底盘无法确定时，请补齐基因组配置或改用编号。
+
+下载结果固定保存到 `inputs/protein_sequences/`，以最终 UniProt 编号命名：
+
+- `<accession>.fasta`：单条氨基酸序列。
+- `<accession>.json`：蛋白名称、来源物种与 taxon ID、审校状态、辅因子、序列长度、版本、来源 URL、下载时间和 UniProt 原始记录。
+
+程序返回两个文件的绝对路径。默认校验并复用已有且一致的 FASTA/JSON；名称模式每次仍会先查询候选，按当前底盘重新确定编号。文件缺失时联网补齐；损坏或冲突时提示刷新。需要重新获取同编号的最新序列和注释时使用：
+
+```powershell
+python main.py protein download -i demo01.json --uniprot P22873 --force
+```
+
+更新发生错误时会恢复原文件。下载本身不会修改已选蛋白、生成 CDS 或注册新的宿主。Python 调用方式及输出字段见 [蛋白下载接口说明](protein_download.md)。
+
 ### 2.4 生成并查看 CDS
 
 这一步仅为已选主酶准备 DNA 编码序列。程序获取主酶氨基酸序列，并使用 CodonTransformer 生成面向当前宿主的密码子设计。
