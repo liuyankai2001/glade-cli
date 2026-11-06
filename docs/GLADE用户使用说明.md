@@ -215,6 +215,24 @@ python main.py protein remove -i demo01.json -r R06320 -p Q41594
 
 Python 接口：`remove_protein_from_reaction(config, *, reaction_id, accession)`，从 `src.protein_selection` 导入；返回变化标记、反应及步骤、蛋白编号、剩余数量、清单路径、候选同步与组合清理结果及重新检索提示，失败抛出明确异常。
 
+#### 替换反应中的一个已选蛋白
+
+`replace` 保留同 R 下其他蛋白，用新本地序列替换指定的一条已选关联：
+
+```powershell
+python main.py protein replace -i demo01.json -r R06320 -p Q41594 -f MY_ENZYME.fasta
+```
+
+`-p/--protein` 是旧蛋白编号；`-f/--file` 只填新 `.fasta` 文件名，从配置输入目录的 `protein_sequences` 查找，不依赖当前工作目录。编号与序列、注释校验沿用 `add`，支持 UniProt 和本地编号；缺少新 JSON 时补建本地注释，未知字段为 `null`。操作不联网，不删除或覆盖旧 FASTA/JSON。
+
+新蛋白占旧记录的位置，来源设为 `manual`。新编号已经在同 R 下时，移除旧记录，保留新记录原位置和路径并转为人工来源；其他 R 的关联保持不变。同编号同序列可跨反应共享已有文件，优先保留目标 R 已有路径；同编号不同序列报错。旧编号必须存在，因此成功替换后重复原“旧编号→新编号”命令会报错。自替换时自动记录转人工，已是相同人工记录则返回 `changed=false`，不重写或清理文件。
+
+不同编号替换允许被移除旧记录的文件缺失或损坏；新文件、保留记录及同编号自替换的原记录必须可校验。清单只局部更新 `main_enzyme_selection`，旧格式仅在实际替换时转换；该 R 的全部步骤并入待复核列表，整组蛋白作为固定选择。
+
+已有有效候选时同步 v8 固定快照；目标 R 原本只有自动记录时移除其活动自动候选并重算覆盖，其他反应的候选、排名和证据保留。候选缺失、损坏、过期或无法核对旧快照时仍可替换，返回 `requires_candidate_regeneration=true`，先运行 `main-enzyme` 再生成组合。实际变化后清理旧组合 JSON/CSV；注释、候选发布、清单与组合清理统一事务，失败完整回滚。已生成 CDS、表达盒后的失效处理未扩展。
+
+Python 接口为 `replace_protein_in_reaction(config, *, reaction_id, old_accession, sequence_file)`，从 `src.protein_selection` 导入；返回变化标记、新旧编号、反应与步骤、文件路径、剩余数量及候选同步、组合清理和重新检索提示，失败抛出明确异常。
+
 #### 单独下载蛋白氨基酸序列
 
 需要先准备本地蛋白序列时，可以使用 `protein download`。这一步独立于主酶组合选择，不要求已有路线或主酶组合，也不会把下载的蛋白自动写入设计清单。

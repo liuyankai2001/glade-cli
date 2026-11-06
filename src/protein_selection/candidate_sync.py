@@ -123,7 +123,7 @@ def candidate_updates(directory: Path, before: dict, after: dict, genome_path) -
 
 
 def candidate_removal_updates(directory: Path, before: dict, after: dict, genome_path) -> dict[Path, bytes] | None:
-    """Update a reduced fixed group without rewriting any automatic evidence."""
+    """Update an existing fixed group without rewriting any automatic evidence."""
     path = directory / "main_enzyme_selection.json"
     try:
         source, _, _, _ = read_candidate_inputs(path, directory / "step_main_enzyme_candidates.csv", before, genome_path)

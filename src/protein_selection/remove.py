@@ -23,7 +23,7 @@ from .candidate_sync import candidate_removal_updates, publish_candidate_updates
 from .sequence_store import protein_file_lock
 
 
-def _selection(raw, steps, folder):
+def _selection(raw, steps, folder, *, action="删除"):
     old = raw.get("main_enzyme_selection")
     if old is None:
         return None, False
@@ -35,7 +35,7 @@ def _selection(raw, steps, folder):
                  for item in old.get("step_assignments", [])} if legacy else None
         result = from_step_selection(old, steps, paths=paths) if legacy else compact_reaction_selection(old)
     except (KeyError, TypeError, AttributeError) as exc:
-        raise ValueError("已有主酶选择格式无效，无法删除蛋白") from exc
+        raise ValueError(f"已有主酶选择格式无效，无法{action}蛋白") from exc
     _validate_structure(result, raw)
     for group in result["reaction_assignments"].values():
         ids = [protein["accession"] for protein in group["proteins"]]
