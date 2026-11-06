@@ -10,7 +10,6 @@ from src.cli.commands import (
     info,
     main_enzyme,
     main_enzyme_sets,
-    optimize,
     plasmid,
     protein,
     protein_to_cds,
@@ -36,7 +35,6 @@ COMMAND_MODULES = [
     protein,
     protein_to_cds,
     plasmid,
-    optimize,
     web,
 ]
 

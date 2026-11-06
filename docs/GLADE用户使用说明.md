@@ -293,12 +293,13 @@ python main.py info -i demo01.json --cds --raw
 
 | 功能 | 命令示例 |
 |---|---|
-| 将一条 CDS 的整体 GC 含量设为 40%～60% | `python main.py optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
-| 检查一条 CDS 的每个连续 50 nt 区段，将局部 GC 设为 30%～70% | `python main.py optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
-| 去除所有 CDS 内部的 EcoRI、HindIII 识别位点，为后续克隆保留这两种酶 | `python main.py optimize -i demo01.json --enzyme EcoRI HindIII` |
-| 限制所有 CDS 中连续相同碱基的长度，最多允许 6 个 | `python main.py optimize -i demo01.json --homopolymer-max 6` |
+| 将一条 CDS 的整体 GC 含量设为 40%～60% | `python main.py protein optimize -i demo01.json --cds P21683 --gc-min 40 --gc-max 60` |
+| 检查一条 CDS 的每个连续 50 nt 区段，将局部 GC 设为 30%～70% | `python main.py protein optimize -i demo01.json --cds P21683 --gc-min 30 --gc-max 70 --window 50` |
+| 去除所有 CDS 内部的 EcoRI、HindIII 识别位点，为后续克隆保留这两种酶 | `python main.py protein optimize -i demo01.json --enzyme EcoRI HindIII` |
+| 限制所有 CDS 中连续相同碱基的长度，最多允许 6 个 | `python main.py protein optimize -i demo01.json --homopolymer-max 6` |
 
 - `--cds` 后填要调整的蛋白编号，可从 `info --proteins` 查看。
+- CDS 优化统一使用 `protein optimize`，旧的顶层 `optimize` 入口已移除。帮助命令为 `python main.py protein optimize --help`。
 - GC 单位是百分比；`--window` 的单位是 nt（碱基数），必须为正整数且不超过 CDS 长度。
 - “同聚物”就是连续相同碱基，例如 `AAAAAAA`。最大长度 6 表示允许连续 6 个，7 个及以上需要打断。
 - 酶名忽略大小写；未指定酶时，不会自动选择要去除的酶切位点。`--enzyme none` 只清空酶选择，不会恢复已修改的序列。
@@ -393,7 +394,7 @@ python main.py expression -i demo01.json --assemble
 例如，确定使用 EcoRI 和 HindIII 后，可按以下顺序准备并打开网页：
 
 ```powershell
-python main.py optimize -i demo01.json --enzyme EcoRI HindIII
+python main.py protein optimize -i demo01.json --enzyme EcoRI HindIII
 python main.py expression -i demo01.json --assemble
 python main.py web -i demo01.json
 ```
@@ -623,7 +624,7 @@ python main.py write -i demo01.json --expression-parts 1
 
 ```powershell
 python main.py --help
-python main.py optimize --help
+python main.py protein optimize --help
 ```
 
 部署与服务配置见 [部署教程](GLADE部署教程.md)，详细验证和更多参数见其中的 [可选用法速查](GLADE部署教程.md#8-可选用法速查)。

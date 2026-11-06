@@ -1,4 +1,4 @@
-"""CLI entry points for downloading, adding, removing and replacing proteins."""
+"""CLI entry points for protein selection, sequence downloads and CDS optimization."""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ import sys
 from argparse import ArgumentTypeError
 from pathlib import PureWindowsPath
 
+from src.cli.commands import optimize
 from src.protein_selection import (
     add_protein_to_reaction, download_protein_sequence, remove_protein_from_reaction, replace_protein_in_reaction,
 )
@@ -32,7 +33,7 @@ def _run_download(config):
 
 
 def register(subparsers):
-    parser = subparsers.add_parser("protein", help="下载蛋白序列，添加、删除或替换已选蛋白")
+    parser = subparsers.add_parser("protein", help="下载蛋白序列，添加、删除、替换已选蛋白及优化 CDS")
     actions = parser.add_subparsers(dest="protein_action", required=True)
     download = actions.add_parser("download", help="按 UniProt 编号或名称下载 FASTA 和 JSON")
     download.add_argument("-i", "--input", required=True, type=_input_filename, help="inputs 目录下的配置文件名")
@@ -57,6 +58,7 @@ def register(subparsers):
     replace.add_argument("-p", "--protein", dest="old_accession", required=True, help="该反应已选中的旧蛋白编号")
     replace.add_argument("-f", "--file", dest="sequence_file", required=True, help="inputs/protein_sequences 下的新 .fasta 文件名")
     replace.set_defaults(func=_run_replace)
+    optimize.register(actions)
     return parser
 
 
