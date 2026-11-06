@@ -47,6 +47,8 @@ from src.main_protein_selection.kegg_ko_retrieval import (
     retrieve_ko_candidates,
 )
 from src.main_protein_selection.models import (
+    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
+    MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION,
     MainEnzymeCandidate,
     MainEnzymeSelectionParameters,
     MainEnzymeSelectionResult,
@@ -275,7 +277,7 @@ def select_main_enzymes(
     """
     为已选 solution 的异源步骤选择主反应酶候选。
 
-    限制：只写主酶候选与检索证据，不写 design_manifest.json。
+    保留人工已选反应整组，重新检索其余异源步骤并发布候选与证据。
     """
 
     active_weights = normalize_scoring_weights(scoring_weights)
@@ -287,7 +289,12 @@ def select_main_enzymes(
         paths = evidence_paths(output_path)
         from src.main_protein_selection.lifecycle import invalidate_current
         from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
-        invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))
+        from src.main_protein_selection.preselected_reactions import scan_preselected_reactions
+        manifest = read_manifest(manifest_path)
+        preselected = scan_preselected_reactions(manifest)
+        preselected_steps = {index for group in preselected.values() for index in group["step_indexes"]}
+        invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS),
+                           preserve_manual_reactions=True)
         write_json_atomic(paths["main_enzyme_selection_json"], {"status": "running"})
         write_json_atomic(output_path / "main_enzyme_sets.json", {"status": "stale_input"})
         manifest = read_manifest(manifest_path)
@@ -297,11 +304,13 @@ def select_main_enzymes(
             requirement
             for requirement in all_requirements
             if str(requirement.get("step_source") or "").strip() == "retropath"
+            and requirement.get("reaction_id") not in preselected
         ]
         requirements = [
             requirement
             for requirement in all_requirements
             if str(requirement.get("step_source") or "").strip() != "retropath"
+            and requirement.get("reaction_id") not in preselected
         ]
         if retropath_requirements:
             rules_path = Path(retropath_rules_path or "").expanduser().resolve()
@@ -335,7 +344,7 @@ def select_main_enzymes(
             chassis_key,
             session=session,
             cache_root=cache_path,
-            allow_network=fetch_proteins and bool(all_requirements),
+            allow_network=fetch_proteins and bool(requirements or retropath_requirements),
         )
         query_errors: dict[str, str] = {}
         ko_query_errors: dict[str, str] = {}
@@ -917,7 +926,7 @@ def select_main_enzymes(
 
         covered_steps = {
             int(row.get("step_index") or 0) for row in selected_step_rows
-        }
+        } | preselected_steps
         expected_steps = {
             int(requirement.get("step_index") or 0)
             for requirement in all_requirements
@@ -953,6 +962,8 @@ def select_main_enzymes(
             "complete_ec_query_numbers": ecs,
             "heterologous_step_count": len(all_requirements),
             "external_required_step_count": len(all_requirements),
+            **({"preselected_reactions": preselected,
+                "automatic_search_step_count": len(requirements) + len(retropath_requirements)} if preselected else {}),
             "genome_supported_step_indexes": genome_filter.supported_step_indexes if genome_filter else [],
             "genome_ec_filter": genome_filter.model_dump(mode="json") if genome_filter else None,
             "step_candidate_count": len(selected_step_rows),
@@ -1043,6 +1054,8 @@ def select_main_enzymes(
             else 0
         )
         canonical_result = MainEnzymeSelectionResult(
+            schema_version=MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION if preselected else MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
+            preselected_reactions=preselected,
             genome_ec_filter=genome_filter,
             ok=result["ok"],
             status=result["status"],
@@ -1086,10 +1099,10 @@ def select_main_enzymes(
                 ),
             },
         )
-        write_json_atomic(
-            paths["main_enzyme_selection_json"],
-            canonical_result.model_dump(mode="json"),
-        )
+        canonical_payload = canonical_result.model_dump(mode="json")
+        if not preselected:
+            canonical_payload.pop("preselected_reactions", None)
+        write_json_atomic(paths["main_enzyme_selection_json"], canonical_payload)
         result["main_enzyme_selection_json"] = rel_or_abs(
             paths["main_enzyme_selection_json"]
         )
@@ -1118,9 +1131,10 @@ def _main_enzyme_cli_summary(
     })
     covered_steps = max(0, total_steps - len(uncovered_steps))
     genome_supported = result.get("genome_supported_step_indexes", [])
+    preselected = result.get("preselected_reactions", {})
     source_unavailable = str(result.get("status") or "") == "source_unavailable"
     requires_review = bool(review_steps) or (
-        total_steps > 0
+        int(result.get("automatic_search_step_count", total_steps)) > 0
         and int(result.get("verified_step_candidate_count") or 0) == 0
     )
 
@@ -1136,9 +1150,11 @@ def _main_enzyme_cli_summary(
     else:
         status_text = "已覆盖全部步骤"
         conclusion = "可以继续生成主酶组合"
-    if genome_supported and total_steps == 0:
+    if genome_supported and total_steps == 0 and not preselected:
         status_text = "无需外源酶和 CDS 构建"
         conclusion = status_text
+    if preselected:
+        conclusion = "人工已选反应已跳过检索；组合阶段尚未适配此结果格式"
 
     return {
         "运行成功": bool(result.get("ok")),
@@ -1148,12 +1164,16 @@ def _main_enzyme_cli_summary(
         "步骤覆盖": f"{covered_steps}/{total_steps}",
         "基因组支持步骤": genome_supported,
         "正式候选数量": int(result.get("step_candidate_count") or 0),
+        **({"人工已选反应": list(preselected),
+            "跳过检索步骤": sorted({index for group in preselected.values() for index in group["step_indexes"]})}
+           if preselected else {}),
         "每步候选上限": int(getattr(config, "top_n", 5) or 5),
         "未覆盖步骤": uncovered_steps,
         "需要人工复核的步骤": review_steps,
         "序列检查": "已排除含未知或非标准氨基酸的候选",
         "结论": conclusion,
-        "下一步": "无需后续构建" if genome_supported and total_steps == 0 else "python main.py main-enzyme-sets -i <同一输入文件>",
+        "下一步": ("组合阶段尚未适配含人工已选反应的结果，请保留当前已选记录" if preselected else
+                   "无需后续构建" if genome_supported and total_steps == 0 else "python main.py main-enzyme-sets -i <同一输入文件>"),
         "查看详情": (
             "python main.py info -i <同一输入文件> "
             "--main-enzyme-candidates"

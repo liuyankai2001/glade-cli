@@ -16,6 +16,10 @@ from src.main_protein_selection.taxonomy_compatibility import (
 
 
 MAIN_ENZYME_SELECTION_SCHEMA_VERSION = "main_enzyme_selection.v7"
+MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION = "main_enzyme_selection.v8"
+SUPPORTED_MAIN_ENZYME_SELECTION_SCHEMAS = frozenset({
+    MAIN_ENZYME_SELECTION_SCHEMA_VERSION, MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION,
+})
 MAIN_ENZYME_SETS_SCHEMA_VERSION = "main_enzyme_sets.v7"
 MAIN_ENZYME_SETS_ALGORITHM_VERSION = (
     "evidence_constrained_assignment.v6_main_enzyme_only_taxonomy_ranked"
@@ -178,12 +182,38 @@ class MainEnzymeSelectionParameters(BaseModel):
     fetch_proteins: bool
 
 
+class PreselectedProtein(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    accession: str = Field(min_length=1)
+    sequence_file: str = Field(min_length=1)
+    selection_source: Literal["automatic", "manual"]
+    sequence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PreselectedReaction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step_indexes: list[int] = Field(min_length=1)
+    proteins: list[PreselectedProtein] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_group(self):
+        _require_sorted_unique_positive(self.step_indexes, "preselected step indexes", allow_empty=False)
+        accessions = [protein.accession for protein in self.proteins]
+        if len(accessions) != len(set(accessions)):
+            raise ValueError("preselected proteins must have unique accessions")
+        if not any(protein.selection_source == "manual" for protein in self.proteins):
+            raise ValueError("preselected reaction must contain a manual protein")
+        return self
+
+
 class MainEnzymeSelectionResult(BaseModel):
     """Canonical machine-readable result for one selected route."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["main_enzyme_selection.v7"] = (
+    schema_version: Literal["main_enzyme_selection.v7", "main_enzyme_selection.v8"] = (
         MAIN_ENZYME_SELECTION_SCHEMA_VERSION
     )
     ok: bool
@@ -206,6 +236,7 @@ class MainEnzymeSelectionResult(BaseModel):
     })
     parameters: MainEnzymeSelectionParameters
     candidates_by_step: dict[int, list[MainEnzymeCandidate]]
+    preselected_reactions: dict[str, PreselectedReaction] = Field(default_factory=dict)
     uncovered_step_indexes: list[int] = Field(default_factory=list)
     direction_rejected_step_indexes: list[int] = Field(default_factory=list)
     direction_risk_step_indexes: list[int] = Field(default_factory=list)
@@ -217,6 +248,13 @@ class MainEnzymeSelectionResult(BaseModel):
         normalize_scoring_weights(self.scoring_weights)
         if self.ok != (self.status == "complete"):
             raise ValueError("ok must agree with selection status")
+        if bool(self.preselected_reactions) != (self.schema_version == MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION):
+            raise ValueError("preselected reactions require v8; v7 must not contain preselected reactions")
+        fixed_indexes = [index for group in self.preselected_reactions.values() for index in group.step_indexes]
+        if any(not reaction.strip() for reaction in self.preselected_reactions) or len(fixed_indexes) != len(set(fixed_indexes)):
+            raise ValueError("preselected reactions must reference distinct route steps")
+        if set(fixed_indexes) & (set(self.candidates_by_step) | set(self.uncovered_step_indexes)):
+            raise ValueError("preselected steps must not be automatic candidates or uncovered steps")
         if self.genome_ec_filter is not None:
             external = set(self.genome_ec_filter.external_required_step_indexes)
             if self.genome_ec_filter.chassis_key != self.chassis_key:

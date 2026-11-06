@@ -10,7 +10,7 @@ from typing import Any
 from src.main_protein_selection.common import get_solution_steps, heterologous_requirements, read_manifest
 from src.main_protein_selection.genome_ec_filter import validate_genome_ec_filter
 from src.main_protein_selection.models import (
-    MAIN_ENZYME_SELECTION_SCHEMA_VERSION,
+    SUPPORTED_MAIN_ENZYME_SELECTION_SCHEMAS,
     MainEnzymeSelectionResult,
 )
 
@@ -56,7 +56,7 @@ def _read_selection(path: Path) -> MainEnzymeSelectionResult:
             "未找到主酶候选，请先运行：main-enzyme -i <输入文件>"
         )
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if payload.get("schema_version") != MAIN_ENZYME_SELECTION_SCHEMA_VERSION:
+    if payload.get("schema_version") not in SUPPORTED_MAIN_ENZYME_SELECTION_SCHEMAS:
         raise ValueError(
             "主酶候选使用旧版结果格式，请重新运行 main-enzyme"
         )
@@ -114,8 +114,9 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         )
 
     genome_steps = {item.step_index: item for item in selection.genome_ec_filter.matched_steps} if selection.genome_ec_filter else {}
+    preselected_steps = {index: group for group in selection.preselected_reactions.values() for index in group.step_indexes}
     if selected_step is None:
-        step_indexes = sorted(set(selection.candidates_by_step) | set(genome_steps))
+        step_indexes = sorted(set(selection.candidates_by_step) | set(genome_steps) | set(preselected_steps))
     else:
         step_indexes = [selected_step]
 
@@ -132,7 +133,9 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
         )
         candidate_note = ""
         if not candidates:
-            if step_index in genome_steps:
+            if step_index in preselected_steps:
+                candidate_note = "人工已选，跳过检索；该反应下全部蛋白均已选中"
+            elif step_index in genome_steps:
                 candidate_note = "基因组 EC 已命中，跳过外源酶选型和 CDS 构建"
             elif str(step.get("status") or "").strip() == "endogenous":
                 candidate_note = "该步骤为内源反应，无需选择主酶"
@@ -143,6 +146,8 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
             "反应ID": step.get("reaction_id"),
             "候选数量": len(candidates),
             "说明": candidate_note,
+            **({"已选蛋白": [protein.model_dump(mode="json") for protein in preselected_steps[step_index].proteins]}
+               if step_index in preselected_steps else {}),
             **({"基因组匹配": genome_steps[step_index].model_dump(mode="json")} if step_index in genome_steps else {}),
             "候选酶": [
                 {

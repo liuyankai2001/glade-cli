@@ -1302,6 +1302,25 @@ def build_main_enzyme_sets(
     manifest_path = Path(manifest_path)
     selection_path = Path(selection_path)
     candidate_csv_path = Path(candidate_csv_path)
+    # Reject the new, deliberately unsupported search input before invalidating
+    # the complete reaction groups retained by candidate generation.
+    from src.main_protein_selection.models import MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION
+    try:
+        preflight = json.loads(selection_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        preflight = None
+    if isinstance(preflight, dict) and preflight.get("schema_version") == MAIN_ENZYME_PRESELECTED_SCHEMA_VERSION:
+        current = read_manifest(manifest_path)
+        solution_id, steps = get_solution_steps(current)
+        result = _failure_result(status="source_unavailable", solution_id=solution_id,
+            expansion_depth=_int(current["solution"].get("expansion_depth")),
+            chassis_key=str(preflight.get("chassis_key") or "unknown"),
+            required_step_indexes=sorted(_int(step.get("step_index")) for step in heterologous_requirements(steps)),
+            max_sets=max_sets, max_search_nodes=max_search_nodes,
+            reason="候选结果包含人工已选反应，组合阶段尚未适配此格式；已选记录已保留，无需重新检索这些反应。",
+            source_artifacts={"manifest": rel_or_abs(manifest_path), "candidate_selection": rel_or_abs(selection_path)})
+        result["output_files"] = _write_set_outputs(output_dir, result)
+        return result
     from src.main_protein_selection.lifecycle import invalidate_current
     from src.write_manifest.main_enzyme import MAIN_ENZYME_DOWNSTREAM_SECTIONS
     invalidate_current(manifest_path, ("main_enzyme_selection", *MAIN_ENZYME_DOWNSTREAM_SECTIONS))

@@ -136,7 +136,7 @@ def merge_manual_selection(automatic: dict[str, Any], current: Any, manifest: Ma
     return result
 
 
-def retained_manual_selection(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def retained_manual_selection(manifest: Mapping[str, Any], *, whole_reactions: bool = False) -> dict[str, Any]:
     current = manifest.get("main_enzyme_selection")
     if not is_reaction_selection(current):
         return {}
@@ -145,13 +145,14 @@ def retained_manual_selection(manifest: Mapping[str, Any]) -> dict[str, Any]:
     result = compact_reaction_selection(current)
     result["reaction_assignments"] = {
         reaction: {"step_indexes": group["step_indexes"], "proteins": [
-            protein for protein in group["proteins"] if protein["selection_source"] == "manual"]}
+            protein for protein in group["proteins"] if whole_reactions or protein["selection_source"] == "manual"]}
         for reaction, group in result["reaction_assignments"].items()
         if any(protein["selection_source"] == "manual" for protein in group["proteins"])}
     if not result["reaction_assignments"]:
         return {}
-    result["review_required_step_indexes"] = sorted({
-        index for group in result["reaction_assignments"].values() for index in group["step_indexes"]})
+    retained_indexes = {index for group in result["reaction_assignments"].values() for index in group["step_indexes"]}
+    result["review_required_step_indexes"] = (sorted(set(result["review_required_step_indexes"]) & retained_indexes)
+        if whole_reactions else sorted(retained_indexes))
     _validate_structure(result, manifest)
     return {"main_enzyme_selection": result}
 
@@ -233,7 +234,15 @@ def restore_reaction_selection(manifest: dict[str, Any], manifest_path: Path) ->
                 for key in ("protein_name", "organism_name", "reviewed", "cofactors"):
                     record[key] = metadata[key]
                 record["sequence_sha256"] = hashlib.sha256(sequence.encode()).hexdigest()
-                if selected["selection_source"] == "automatic" and context is not None:
+                preselected = context.preselected_reactions.get(reaction) if context is not None else None
+                snapshot = next((protein for protein in preselected.proteins if protein.accession == accession), None) if preselected else None
+                if snapshot is not None:
+                    if (snapshot.sequence_sha256 != record["sequence_sha256"]
+                            or preselected.step_indexes != group["step_indexes"]
+                            or resolve_sequence_file(snapshot.sequence_file) != resolve_sequence_file(selected["sequence_file"])
+                            or snapshot.selection_source != selected["selection_source"]):
+                        raise ValueError(f"已选蛋白与跳过检索时的序列快照不一致：{accession}")
+                elif selected["selection_source"] == "automatic" and context is not None:
                     matches = [candidate for index in group["step_indexes"] for candidate in context.candidates_by_step.get(index, [])
                                if candidate.accession == accession and candidate.reaction_id == reaction]
                     if not matches:

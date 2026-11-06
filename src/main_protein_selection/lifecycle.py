@@ -28,7 +28,7 @@ def retained_uploaded_draft(manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {"expression_parts_draft": draft}
 
 
-def invalidate_current(path: str | Path, sections: tuple[str, ...]) -> dict[str, Any]:
+def invalidate_current(path: str | Path, sections: tuple[str, ...], *, preserve_manual_reactions: bool = False) -> dict[str, Any]:
     from src.write_manifest.store import read_design_manifest, update_design_manifest
     manifest = read_design_manifest(path)
     if not any(name in manifest for name in sections):
@@ -36,7 +36,7 @@ def invalidate_current(path: str | Path, sections: tuple[str, ...]) -> dict[str,
     retained = retained_uploaded_draft(manifest)
     if "main_enzyme_selection" in sections:
         from src.write_manifest.reaction_selection import retained_manual_selection
-        retained.update(retained_manual_selection(manifest))
+        retained.update(retained_manual_selection(manifest, whole_reactions=preserve_manual_reactions))
     return update_design_manifest(
         path, target_compound_id=str(manifest.get("target_compound_id") or ""),
         sections=retained, discard_sections=sections,
