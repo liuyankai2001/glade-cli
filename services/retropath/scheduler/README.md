@@ -1,9 +1,0 @@
-# KNIME per-intermediate scheduling repair
-
-`build.py` compiles the Java control plugin, verifies its policy tests, patches the pinned original workflow into `r20261104_scheduler1`, and registers that version in the installed wrapper. The original workflow remains installed. The new workflow keeps the original standardization, reaction enumeration, PARSE/MCS, BUILD and scope/output subflows byte-for-byte. The original score beam is removed; overflow remains queued.
-
-Initialize reads only `Initial Sink=1` as real sink. Select processes one intermediate/diameter at a time in depth/score/stable order. Advance merges original parsed chemistry into the persistent queue. Diameter attempts do not consume chemical depth; logical processing batches contain at most `topx` completed node executions. Shared source origins are merged, and an already-expanded intermediate is replayed when a new origin requires downstream provenance. Pending work is drained, subject to the existing job time/memory limits.
-
-Checkpoints include the active node, remaining diameter, pending nodes, source origins and whether the retained network closes all targets. Events retain cyclic edges. A wrapper `no_solution` with unfinished/missing checkpoint is rejected as an execution failure. Job health/manifests expose workflow/plugin hashes. Native enumeration caps are unchanged; the original plugin does not export independent cap-hit counters, so none are invented.
-
-The standard Dockerfile bakes this repair. `Dockerfile.scheduler` is a focused rebuild over the deployed memory-fix image. For the approved 1917 run, deployment uses the root Compose file plus the batch's `compose.scheduler.yml`; the root Compose file is unchanged. Preserve the old image and jobs volume; `compose.rollback.yml` selects the old image without rebuilding or deleting jobs.

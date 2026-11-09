@@ -92,8 +92,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 CMD ["/
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
-
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} services/retropath/scheduler /opt/retropath/scheduler
-RUN /opt/conda/bin/python -B /opt/retropath/scheduler/build.py
-ENV RETROPATH_WORKFLOW_VERSION=r20261104_scheduler1
-LABEL org.opencontainers.image.version="3.9.1-r20261104-scheduler1-memoryfix2-cpu2"

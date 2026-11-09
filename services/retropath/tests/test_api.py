@@ -49,6 +49,7 @@ def test_health_and_source_in_sink_job(tmp_path: Path, monkeypatch):
         response = client.get("/health")
         assert response.status_code == 200
         assert response.json()["ready"] is True, response.json()
+        assert response.json()["scheduler_patch"] is None
 
         response = client.post(
             "/v1/jobs",
@@ -73,6 +74,9 @@ def test_health_and_source_in_sink_job(tmp_path: Path, monkeypatch):
         results = client.get(f"/v1/jobs/{job_id}/results")
         assert results.status_code == 200
         assert "run_manifest.json" in results.json()["artifacts"]
+        manifest = results.json()["manifest"]
+        assert manifest["scheduler"] is None and manifest["scheduler_patch"] is None
+        assert manifest["search_complete"] is True
 
         blocked = client.get(
             f"/v1/jobs/{job_id}/artifacts/../../jobs.sqlite3"

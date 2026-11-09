@@ -63,6 +63,21 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 
 只有 `ready` 为 `true` 时才能提交任务。
 
+### 2026-11-09：恢复上游工作流
+
+`scheduler1` 自定义调度补丁已从构建和服务代码移除。运行 `r20260212` 原始工作流，保留 `memoryfix2`、原生内存回收 agent 和兼容性处理。原生 Score Filter 按 `topx` 选择进入下一轮的候选化合物；不再保留溢出队列。直径与深度行为均恢复上游实现。
+
+本次独立镜像使用以下覆盖配置，根 Compose 文件不变：
+
+```powershell
+docker compose -f compose.retropath.yml -f tests/retropath_remove_scheduler1_20261109/compose.upstream.yml build retropath
+docker compose -f compose.retropath.yml -f tests/retropath_remove_scheduler1_20261109/compose.upstream.yml up -d --no-build retropath
+```
+
+健康检查应显示 `workflow_version=r20260212`、`scheduler_patch=null`；运行清单保留 `scheduler=null`。服务继续监控超时和内存，完整执行仅表示本次配置的搜索已经结束，不能证明所有可能路径均已穷尽。
+
+旧镜像和任务卷保留。若需回退本次部署，使用同目录 `compose.rollback.yml` 替代 `compose.upstream.yml`，执行 `up -d --no-build retropath`。切换前确认 `queue_active=0`，不要删除作业卷。历史 scheduler 任务的清单和检查点仍作为历史记录保存，新任务不再依赖它们。
+
 ## 4. 提交任务
 
 source 和 sink 均为 UTF-8 CSV，前两列必须是 `Name,InChI`。source 必须恰好包含一个化合物。
