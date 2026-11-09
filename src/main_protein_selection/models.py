@@ -7,7 +7,8 @@ from collections.abc import Mapping
 from math import isclose
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from .transmembrane import annotation, unknown_annotation
 from src.main_protein_selection.genome_ec_filter import GenomeEcFilter
 
 from src.main_protein_selection.taxonomy_compatibility import (
@@ -83,7 +84,16 @@ def _values(value: Any) -> list[str]:
     return list(dict.fromkeys(item for item in raw_values if item))
 
 
-class MainEnzymeCandidate(BaseModel):
+class TransmembraneAnnotatedModel(BaseModel):
+    transmembrane: dict[str, Any] = Field(default_factory=unknown_annotation)
+
+    @field_validator("transmembrane", mode="before")
+    @classmethod
+    def validate_transmembrane(cls, value):
+        return annotation(value)
+
+
+class MainEnzymeCandidate(TransmembraneAnnotatedModel):
     """One reaction-verified candidate for one selected-route step."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -135,6 +145,7 @@ class MainEnzymeCandidate(BaseModel):
             reaction_id=_string(row.get("reaction_id")),
             ec_number=_string(row.get("ec_number")) or None,
             accession=accession,
+            transmembrane=annotation(row.get("transmembrane")),
             protein_name=_string(row.get("protein_name")),
             organism_name=_string(row.get("organism_name")),
             organism_id=_optional_int(row.get("organism_id")),
@@ -183,10 +194,13 @@ class MainEnzymeSelectionParameters(BaseModel):
     top_n: int = Field(ge=1)
     max_results: int = Field(ge=1)
     allow_transmembrane: bool
+    transmembrane_penalty: StrictInt = Field(default=35, ge=0)
+    no_transmembrane_bonus: StrictInt = Field(default=10, ge=0)
+    transmembrane_policy_version: str | None = None
     fetch_proteins: bool
 
 
-class PreselectedProtein(BaseModel):
+class PreselectedProtein(TransmembraneAnnotatedModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     accession: str = Field(min_length=1)
@@ -239,6 +253,7 @@ class MainEnzymeSelectionResult(BaseModel):
         "host": 0.25,
     })
     parameters: MainEnzymeSelectionParameters
+    transmembrane_filter_audit: list[dict[str, Any]] = Field(default_factory=list)
     candidates_by_step: dict[int, list[MainEnzymeCandidate]]
     preselected_reactions: dict[str, PreselectedReaction] = Field(default_factory=dict)
     uncovered_step_indexes: list[int] = Field(default_factory=list)
@@ -324,7 +339,7 @@ class MainEnzymeStepAssignment(BaseModel):
     specificity_status: str = Field(min_length=1)
 
 
-class MainEnzymeSetProtein(BaseModel):
+class MainEnzymeSetProtein(TransmembraneAnnotatedModel):
     """One distinct protein used by an enzyme set."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)

@@ -11,6 +11,8 @@ from typing import Any
 
 import requests
 
+from .transmembrane import validate_options
+
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
     normalize_scoring_weights,
@@ -278,7 +280,11 @@ def retrieve_rhea_candidates_for_requirement(
     session: requests.Session,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
+    filter_audit: list[dict[str, Any]] | None = None,
 ) -> tuple[list[ProteinCandidate], list[str], dict[str, str]]:
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     rhea_ids = [
         str(value)
@@ -307,6 +313,9 @@ def retrieve_rhea_candidates_for_requirement(
             retrieval_query_id=";".join(query_ids),
             matched_rhea_ids=matched,
             allow_transmembrane=allow_transmembrane,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
+            filter_audit=filter_audit,
             taxonomy_profile=taxonomy_profile,
             scoring_weights=active_weights,
         )

@@ -16,6 +16,7 @@ from src.write_manifest.main_enzyme_format import resolve_sequence_file, sequenc
 from src.write_manifest.reaction_selection import _validate_structure, read_protein_pair, route_reactions
 from .candidate_sync import candidate_updates, candidate_removal_updates, publish_candidate_updates
 from .local_sequences import local_filename, read_sequence_pair, sequence_identity
+from src.main_protein_selection.transmembrane import extract_annotation
 from .remove import _selection
 from .sequence_store import protein_file_lock
 
@@ -98,7 +99,8 @@ def _replace(*, manifest_path, output_dir, reaction, old_accession, path, genome
             existing_new["selection_source"] = "manual"
         else:
             index = group["proteins"].index(old)
-            group["proteins"][index] = {"accession": accession, "sequence_file": canonical, "selection_source": "manual"}
+            group["proteins"][index] = {"accession": accession, "sequence_file": canonical, "selection_source": "manual",
+                                       "transmembrane": extract_annotation(metadata.get("uniprot_entry"))}
         response["remaining_protein_count"] = len(group["proteins"])
         selection["review_required_step_indexes"] = sorted(set(selection["review_required_step_indexes"]) | set(route[reaction]))
         _validate_structure(selection, raw)

@@ -38,6 +38,7 @@ from .models import (
 )
 from .genome_ec_filter import GenomeEcFilter, UNSPECIFIED_GENOME
 from .sequence_quality import analyze_protein_sequence
+from .transmembrane import annotation, unknown_annotation
 
 
 MAIN_ENZYME_SETS_FILENAME = "main_enzyme_sets.json"
@@ -87,6 +88,7 @@ _MEMBER_COLUMNS = [
     "organism_name",
     "reviewed",
     "cofactors",
+    "transmembrane",
     "capable_step_indexes",
     "assigned_step_indexes",
     "assigned_reaction_ids",
@@ -376,6 +378,7 @@ class _Protein:
     organism_name: str
     reviewed: bool
     sequence: str
+    transmembrane: dict[str, Any] = field(default_factory=unknown_annotation)
     cofactors: set[str] = field(default_factory=set)
     edges: dict[int, _Edge] = field(default_factory=dict)
     annotation_texts: set[str] = field(default_factory=set)
@@ -485,6 +488,7 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
             row.get("candidate_role") or row.get("role")
         ).lower(),
         "accession": _text(row.get("accession")).upper(),
+        "transmembrane": annotation(row.get("transmembrane")),
         "protein_name": _text(row.get("protein_name")),
         "organism_name": _text(row.get("organism_name")),
         "organism_id": _int(row.get("organism_id")),
@@ -639,8 +643,11 @@ def _build_protein_pool(
                 organism_name=row["organism_name"],
                 reviewed=row["reviewed"],
                 sequence=sequence,
+                transmembrane=row["transmembrane"],
             )
         protein = proteins[accession]
+        if protein.transmembrane["status"] == "unknown":
+            protein.transmembrane = row["transmembrane"]
         if protein.sequence != sequence:
             raise ValueError(
                 f"accession {accession} has inconsistent sequences across steps"
@@ -894,6 +901,7 @@ def _build_set_payload(
                 "organism_name": protein.organism_name,
                 "reviewed": protein.reviewed,
                 "cofactors": sorted(protein.cofactors),
+                "transmembrane": protein.transmembrane,
                 "capable_step_indexes": list(protein.capable_steps),
                 "assigned_step_indexes": sorted(
                     assigned_by_accession[protein.accession]
@@ -1286,6 +1294,7 @@ def _write_set_outputs(
                     "set_id": enzyme_set["set_id"],
                     "set_status": enzyme_set["status"],
                     **protein,
+                    "transmembrane": json.dumps(annotation(protein.get("transmembrane")), ensure_ascii=False),
                     "cofactors": ";".join(protein["cofactors"]),
                     "capable_step_indexes": ";".join(
                         map(str, protein["capable_step_indexes"])
@@ -1312,6 +1321,7 @@ def _write_set_outputs(
                     raise ValueError("固定蛋白序列快照已变化")
                 current = fixed_members.setdefault(protein["accession"], {"set_id": "", "set_status": result["status"],
                     "accession": protein["accession"], **{key: metadata[key] for key in ("protein_name", "organism_name", "reviewed")},
+                    "transmembrane": json.dumps(annotation(protein.get("transmembrane")), ensure_ascii=False),
                     "cofactors": ";".join(metadata["cofactors"]), "indexes": set(), "reactions": [], "assignment_source": "preselected"})
                 current["indexes"].update(group["step_indexes"])
                 current["reactions"].append(reaction)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from src.main_protein_selection.transmembrane import display as membrane_display
 import re
 from pathlib import Path
 from typing import Any
@@ -212,6 +213,8 @@ def _compact_set(enzyme_set: MainEnzymeSet) -> dict[str, Any]:
         "状态": SET_STATUS_NAMES.get(enzyme_set.status, enzyme_set.status),
         "蛋白数量": enzyme_set.protein_count,
         "主酶分工": _protein_assignments(enzyme_set),
+        "跨膜信息": {protein.accession: membrane_display(protein.transmembrane)
+                     for protein in enzyme_set.proteins},
         "需要复核步骤": enzyme_set.review_required_step_indexes,
         "风险计数": {
             "反应匹配待复核": (
@@ -307,6 +310,7 @@ def get_main_enzyme_set_info(config: Any) -> dict[str, Any]:
             {
                 ("蛋白ID" if protein.reviewed is None else "UniProt"): protein.accession,
                 "蛋白名称": protein.protein_name or "未知",
+                "跨膜信息": membrane_display(protein.transmembrane),
                 "来源物种": protein.organism_name or "未知",
                 "Reviewed": protein.reviewed if protein.reviewed is not None else "未知",
                 "辅因子": protein.cofactors if protein.reviewed is not None else "未知",
@@ -368,7 +372,9 @@ def _fixed_details(result):
     if not fixed:
         return {}
     return {"固定反应": [{"反应ID": reaction, "步骤编号": group.step_indexes,
-                         "已选蛋白": [protein.accession for protein in group.proteins]}
+                         "已选蛋白": [protein.accession for protein in group.proteins],
+                         "跨膜信息": {protein.accession: membrane_display(protein.transmembrane)
+                                      for protein in group.proteins}}
                         for reaction, group in fixed.items()],
             "评分范围": "反应、蛋白、底盘评分及风险计数仅评估自动选择部分；数量、物种及Reviewed比例按完整方案统计"}
 

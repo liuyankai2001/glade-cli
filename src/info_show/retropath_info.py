@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from src.main_protein_selection.transmembrane import display as membrane_display
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -875,7 +876,8 @@ def _p9_overlay(
         candidate_path = verified_paths[STEP_ENZYME_CANDIDATES_FILE_NAME]
         with candidate_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if tuple(reader.fieldnames or ()) != ENZYME_CANDIDATE_COLUMNS:
+            legacy_columns = tuple(column for column in ENZYME_CANDIDATE_COLUMNS if column != "transmembrane")
+            if tuple(reader.fieldnames or ()) not in (ENZYME_CANDIDATE_COLUMNS, legacy_columns):
                 raise ValueError("P9 candidate artifact schema mismatch")
             candidate_rows = tuple(dict(row) for row in reader)
         by_step: dict[int, list[Mapping[str, str]]] = defaultdict(list)
@@ -964,6 +966,7 @@ def _p9_candidate_display(row: Mapping[str, str]) -> dict[str, Any]:
         ),
         "UniProt": str(row.get("accession") or ""),
         "蛋白名称": str(row.get("protein_name") or ""),
+        "跨膜信息": membrane_display(row.get("transmembrane")),
         "来源物种": str(row.get("organism_name") or ""),
         "Reviewed": _as_bool(row.get("reviewed"), "P9 reviewed"),
         "证据等级": str(row.get("evidence_tier") or ""),

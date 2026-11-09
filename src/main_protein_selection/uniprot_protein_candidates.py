@@ -11,6 +11,8 @@ from typing import Any
 
 import requests
 
+from .transmembrane import extract_annotation, unknown_annotation, validate_options
+
 from src.main_protein_selection.sequence_quality import (
     unsupported_amino_acid_reason,
 )
@@ -115,6 +117,7 @@ STEP_CANDIDATE_COLUMNS = [
     "role",
     "ec_number",
     "accession",
+    "transmembrane",
     "entry_name",
     "protein_name",
     "organism_name",
@@ -187,6 +190,7 @@ STEP_CANDIDATE_COLUMNS = [
 
 PROTEIN_CANDIDATE_COLUMNS = [
     "accession",
+    "transmembrane",
     "entry_name",
     "protein_name",
     "organism_name",
@@ -259,6 +263,7 @@ class ProteinCandidate:
     score: float
     reasons: list[str]
     sequence: str = ""
+    transmembrane: dict[str, Any] = field(default_factory=unknown_annotation)
     taxonomic_lineage: list[str] = field(default_factory=list)
     taxonomic_lineage_ids: list[int] = field(default_factory=list)
     taxonomic_shared_taxon_id: int | None = None
@@ -1037,7 +1042,6 @@ def hard_filter_candidate(
     if has_transmembrane(entry):
         if not allow_transmembrane:
             return False, ["filtered: transmembrane region present and allow_transmembrane=False"], warnings
-        warnings.append("transmembrane region present")
     if has_signal_peptide(entry):
         warnings.append("signal peptide present")
     if has_transit_peptide(entry):
@@ -1064,7 +1068,6 @@ def hard_filter_candidate_without_ec(
     if has_transmembrane(entry):
         if not allow_transmembrane:
             return False, ["filtered: transmembrane region present and allow_transmembrane=False"], warnings
-        warnings.append("transmembrane region present")
     if has_signal_peptide(entry):
         warnings.append("signal peptide present")
     if has_transit_peptide(entry):
@@ -1127,7 +1130,11 @@ def _score_evidence(entry: dict[str, Any]) -> tuple[float, list[str], list[str]]
     return _clamp(score), reasons, warnings
 
 
-def _score_expression(entry: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+def _score_expression(
+    entry: dict[str, Any], *, transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
+) -> tuple[float, list[str], list[str]]:
+    validate_options(True, transmembrane_penalty, no_transmembrane_bonus)
     reasons = []
     warnings = []
     score = 60.0
@@ -1149,12 +1156,13 @@ def _score_expression(entry: dict[str, Any]) -> tuple[float, list[str], list[str
     else:
         score -= 8
         warnings.append("protein length outside common range")
-    if has_transmembrane(entry):
-        score -= 35
-        warnings.append("transmembrane region increases expression risk")
-    else:
-        score += 10
-        reasons.append("expression: no transmembrane region detected")
+    membrane = extract_annotation(entry)
+    if membrane["status"] == "annotated":
+        score -= transmembrane_penalty
+        reasons.append(f"expression: transmembrane annotation adjustment=-{transmembrane_penalty}")
+    elif membrane["status"] == "not_annotated":
+        score += no_transmembrane_bonus
+        reasons.append(f"expression: no transmembrane annotation adjustment=+{no_transmembrane_bonus}")
     if has_signal_peptide(entry):
         score -= 8
     if has_transit_peptide(entry):
@@ -1190,12 +1198,17 @@ def score_candidate(
     chassis_profile: ChassisTaxonomyProfile,
     *,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> tuple[float, list[str], list[str], dict[str, float], TaxonomyFit]:
     active_weights = normalize_scoring_weights(scoring_weights)
     target_ec = normalize_ec_number(target_ec)
     function_score, function_reasons, function_warnings = _score_function(entry, target_ec)
     evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
-    expression_score, expression_reasons, expression_warnings = _score_expression(entry)
+    expression_score, expression_reasons, expression_warnings = _score_expression(
+        entry, transmembrane_penalty=transmembrane_penalty,
+        no_transmembrane_bonus=no_transmembrane_bonus,
+    )
     host_score, host_reasons, taxonomy_fit = _score_host(entry, chassis_profile)
     total = (
         function_score * active_weights["function"]
@@ -1263,6 +1276,7 @@ def _candidate_from_entry(
         score=score,
         reasons=reasons,
         sequence=get_sequence_value(entry),
+        transmembrane=extract_annotation(entry),
         gene_names=extract_gene_names(entry),
         catalytic_activities=extract_catalytic_activities(entry),
         catalytic_activity_records=extract_catalytic_activity_records(entry),
@@ -1296,7 +1310,11 @@ def candidate_from_reaction_entry(
     function_evidence_reason: str = "",
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
+    filter_audit: list[dict[str, Any]] | None = None,
 ) -> ProteinCandidate | None:
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     get_host_preset(chassis_key)
     profile = taxonomy_profile or resolve_chassis_taxonomy(
@@ -1308,6 +1326,9 @@ def candidate_from_reaction_entry(
         allow_transmembrane=allow_transmembrane,
     )
     if not passed:
+        if filter_audit is not None and any("transmembrane" in reason for reason in filter_reasons):
+            filter_audit.append({"accession": entry.get("primaryAccession", ""),
+                                 "source": retrieval_strategy, "reasons": filter_reasons})
         return None
     entry_ecs = extract_ec_numbers(entry)
     scoring_ec = entry_ecs[0] if entry_ecs else ""
@@ -1317,10 +1338,15 @@ def candidate_from_reaction_entry(
             target_ec=scoring_ec,
             chassis_profile=profile,
             scoring_weights=active_weights,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
         )
     else:
         evidence_score, evidence_reasons, evidence_warnings = _score_evidence(entry)
-        expression_score, expression_reasons, expression_warnings = _score_expression(entry)
+        expression_score, expression_reasons, expression_warnings = _score_expression(
+            entry, transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
+        )
         host_score, host_reasons, taxonomy_fit = _score_host(entry, profile)
         function_score = 100.0
         score_breakdown = {
@@ -1368,7 +1394,11 @@ def recommend_uniprot_proteins(
     session: requests.Session | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
+    filter_audit: list[dict[str, Any]] | None = None,
 ) -> list[ProteinCandidate]:
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     ec_number = normalize_ec_number(ec_number)
     get_host_preset(chassis_key)
@@ -1398,12 +1428,17 @@ def recommend_uniprot_proteins(
             allow_transmembrane=allow_transmembrane,
         )
         if not passed:
+            if filter_audit is not None and any("transmembrane" in reason for reason in filter_reasons):
+                filter_audit.append({"accession": entry.get("primaryAccession", ""),
+                                     "source": "ec_exact", "ec_number": ec_number, "reasons": filter_reasons})
             continue
         score, reasons, warnings, score_breakdown, taxonomy_fit = score_candidate(
             entry=entry,
             target_ec=ec_number,
             chassis_profile=chassis_profile,
             scoring_weights=active_weights,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
         )
         candidates.append(_candidate_from_entry(
             entry=entry,
@@ -1432,6 +1467,7 @@ def _step_candidate_row(
         "role": "main",
         "ec_number": ec_number,
         "accession": candidate.accession,
+        "transmembrane": _json(candidate.transmembrane),
         "entry_name": candidate.entry_name,
         "protein_name": candidate.protein_name,
         "organism_name": candidate.organism_name,

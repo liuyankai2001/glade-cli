@@ -11,6 +11,7 @@ from typing import Any
 
 from src.config.config import INPUTS_DIR
 from src.main_protein_selection.common import get_solution_steps
+from src.main_protein_selection.transmembrane import extract_annotation
 from src.main_protein_selection.lifecycle import serialized_main_enzyme_run
 from src.protein_to_cds.artifacts import ArtifactTransaction, write_bytes_atomic
 from src.write_manifest.main_enzyme_format import resolve_sequence_file, sequence_file_value
@@ -105,7 +106,8 @@ def _add(*, manifest_path, output_dir, reaction, path, genome_path, target_compo
         if not changed:
             return response
         if previous is None:
-            target["proteins"].append({"accession": accession, "sequence_file": canonical, "selection_source": "manual"})
+            target["proteins"].append({"accession": accession, "sequence_file": canonical, "selection_source": "manual",
+                                       "transmembrane": extract_annotation(metadata.get("uniprot_entry"))})
         else:
             previous["selection_source"] = "manual"
         selection["review_required_step_indexes"] = sorted(set(selection["review_required_step_indexes"]) | set(route[reaction]))

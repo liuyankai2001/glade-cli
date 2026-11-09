@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from .transmembrane import POLICY_VERSION, config_options, validate_options
+
 from src.main_protein_selection.lifecycle import serialized_main_enzyme_run
 from src.main_protein_selection.common import (
     PROTEIN_CANDIDATE_COLUMNS,
@@ -273,6 +275,8 @@ def select_main_enzymes(
     retropath_rules_path: str | Path | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
     genome_path: str | Path | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> dict:
     """
     为已选 solution 的异源步骤选择主反应酶候选。
@@ -280,6 +284,7 @@ def select_main_enzymes(
     保留人工已选反应整组，重新检索其余异源步骤并发布候选与证据。
     """
 
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     try:
         if top_n < 1:
@@ -349,6 +354,7 @@ def select_main_enzymes(
         query_errors: dict[str, str] = {}
         ko_query_errors: dict[str, str] = {}
         candidates_by_ec = {}
+        transmembrane_filter_audit: list[dict[str, Any]] = []
         candidates_by_step: dict[int, list] = {
             int(requirement.get("step_index") or 0): []
             for requirement in requirements
@@ -365,6 +371,9 @@ def select_main_enzymes(
                     top_n=top_n,
                     max_results=max_results,
                     allow_transmembrane=allow_transmembrane,
+                    transmembrane_penalty=transmembrane_penalty,
+                    no_transmembrane_bonus=no_transmembrane_bonus,
+                    filter_audit=transmembrane_filter_audit,
                     session=session,
                     taxonomy_profile=taxonomy_profile,
                     scoring_weights=active_weights,
@@ -430,6 +439,9 @@ def select_main_enzymes(
                     max_results=max_results,
                     top_n=top_n,
                     allow_transmembrane=allow_transmembrane,
+                    transmembrane_penalty=transmembrane_penalty,
+                    no_transmembrane_bonus=no_transmembrane_bonus,
+                    filter_audit=transmembrane_filter_audit,
                     session=session,
                     taxonomy_profile=taxonomy_profile,
                     scoring_weights=active_weights,
@@ -480,6 +492,8 @@ def select_main_enzymes(
                                 top_n=top_n,
                                 max_results=max_results,
                                 allow_transmembrane=allow_transmembrane,
+                                transmembrane_penalty=transmembrane_penalty,
+                                no_transmembrane_bonus=no_transmembrane_bonus,
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
                                 taxonomy_profile=taxonomy_profile,
@@ -659,6 +673,8 @@ def select_main_enzymes(
                                 chassis_key,
                                 top_n=top_n,
                                 allow_transmembrane=allow_transmembrane,
+                                transmembrane_penalty=transmembrane_penalty,
+                                no_transmembrane_bonus=no_transmembrane_bonus,
                                 session=session,
                                 entry_cache=uniprot_entry_cache,
                                 taxonomy_profile=taxonomy_profile,
@@ -760,6 +776,8 @@ def select_main_enzymes(
                 top_n=top_n,
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
+                transmembrane_penalty=transmembrane_penalty,
+                no_transmembrane_bonus=no_transmembrane_bonus,
                 session=session,
                 scoring_weights=active_weights,
             )
@@ -1068,11 +1086,15 @@ def select_main_enzymes(
             taxonomy_scoring_policy_version=TAXONOMY_SCORING_POLICY_VERSION,
             scoring_weights=active_weights,
             parameters=MainEnzymeSelectionParameters(
+                transmembrane_policy_version=POLICY_VERSION,
                 top_n=top_n,
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
+                transmembrane_penalty=transmembrane_penalty,
+                no_transmembrane_bonus=no_transmembrane_bonus,
                 fetch_proteins=fetch_proteins,
             ),
+            transmembrane_filter_audit=transmembrane_filter_audit,
             candidates_by_step=candidates_by_step,
             uncovered_step_indexes=result["uncovered_step_indexes"],
             direction_rejected_step_indexes=result[
@@ -1187,6 +1209,8 @@ def _main_enzyme_cli_summary(
 def run_main_protein_selection(config: Any, **selection_options: Any) -> dict:
     """Run main-enzyme selection using this project's ``RunConfig`` paths."""
 
+    for key, value in config_options(config).items():
+        selection_options.setdefault(key, value)
     if hasattr(config, "top_n"):
         selection_options.setdefault("top_n", config.top_n)
     selection_options.setdefault("genome_path", getattr(config, "genome_file", None))

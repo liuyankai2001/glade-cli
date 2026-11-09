@@ -56,6 +56,11 @@ class RunConfig:
         self.unpre_re_reaction: int = 1
         self.gap_output_path = self.project_output_path / f'kegg_gap_{self.target_name}'
 
+        # 跨膜候选准入及表达评分。分值必须是非负整数，0 表示不调整。
+        self.candidate_protein_allow_transmembrane: bool = True
+        self.candidate_protein_transmembrane_penalty: int = 0
+        self.candidate_protein_no_transmembrane_bonus: int = 0
+
         # 主酶候选蛋白综合评分权重。四项必须完整、非负且总和为 1。
         self.candidate_protein_scoring_weights: dict[str, float] = {
             "function": 0.40,

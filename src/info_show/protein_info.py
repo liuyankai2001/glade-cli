@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from src.main_protein_selection.transmembrane import annotation, display as membrane_display
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -87,6 +88,7 @@ def _merge_main_proteins(
         current["assigned_step_indexes"].update(
             _step_list(item.get("assigned_step_indexes"))
         )
+        current["transmembrane"] = annotation(item.get("transmembrane"))
         current["reviewed"] = item.get("reviewed")
         current["source_type"] = item.get("source_type", "uniprot")
         current["cofactors"] = _string_list(item.get("cofactors"))
@@ -174,6 +176,7 @@ def _compact_record(config: Any, record: Mapping[str, Any]) -> dict[str, Any]:
     cds = _cds_summary(record)
     return {
         "蛋白ID": record["accession"],
+        "跨膜信息": membrane_display(record.get("transmembrane")),
         "类型": "主酶",
         "角色": ["主酶"],
         "蛋白名称": record["protein_name"] or "未知",

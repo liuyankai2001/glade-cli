@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from .transmembrane import POLICY_VERSION, config_options, validate_options
 from rdkit import Chem
 
 from src.main_protein_selection.reaction_aware_retrieval import (
@@ -93,6 +95,7 @@ ENZYME_CANDIDATE_COLUMNS = (
     "hypothesis_id",
     "protein_candidate_rank",
     "accession",
+    "transmembrane",
     "entry_name",
     "protein_name",
     "organism_name",
@@ -768,6 +771,7 @@ def _candidate_record(
 ) -> dict[str, Any]:
     return {
         "accession": candidate.accession.upper(),
+        "transmembrane": json.dumps(candidate.transmembrane, ensure_ascii=False, sort_keys=True),
         "entry_name": candidate.entry_name,
         "protein_name": candidate.protein_name,
         "organism_name": candidate.organism_name,
@@ -987,6 +991,8 @@ def _source_uniprot_candidates(
     entry_cache: dict[str, dict[str, Any] | None],
     accession_errors: Mapping[str, str] | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]]]:
     candidates: list[ProteinCandidate] = []
     evidence: list[dict[str, Any]] = []
@@ -1014,6 +1020,7 @@ def _source_uniprot_candidates(
             continue
         try:
             entry = entry_cache.get(normalized)
+            filter_audit: list[dict[str, Any]] = []
             candidate = (
                 candidate_from_reaction_entry(
                     entry,
@@ -1022,6 +1029,9 @@ def _source_uniprot_candidates(
                     retrieval_query_id=query_id,
                     matched_rhea_ids=[],
                     allow_transmembrane=allow_transmembrane,
+                    transmembrane_penalty=transmembrane_penalty,
+                    no_transmembrane_bonus=no_transmembrane_bonus,
+                    filter_audit=filter_audit,
                     function_evidence_reason=(
                         "function: UniProt accession attached to the RR02 "
                         "source template"
@@ -1037,6 +1047,7 @@ def _source_uniprot_candidates(
                 record["status"] = "ok"
             else:
                 record["status"] = "no_hit"
+                record["filter_audit"] = filter_audit
         except Exception as exc:
             record["status"] = "source_unavailable"
             record["error"] = str(exc)
@@ -1059,6 +1070,8 @@ def _search_requirement(
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     source_accession_errors: Mapping[str, str] | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> _SearchOutcome:
     taxonomy_profile = taxonomy_profile or resolve_chassis_taxonomy(
         chassis_key,
@@ -1082,6 +1095,8 @@ def _search_requirement(
         requirement,
         chassis_key=chassis_key,
         allow_transmembrane=allow_transmembrane,
+        transmembrane_penalty=transmembrane_penalty,
+        no_transmembrane_bonus=no_transmembrane_bonus,
         session=session,
         taxonomy_profile=taxonomy_profile,
         entry_cache=entry_cache,
@@ -1106,6 +1121,9 @@ def _search_requirement(
                 top_n=max(top_n * 3, 20),
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
+                transmembrane_penalty=transmembrane_penalty,
+                no_transmembrane_bonus=no_transmembrane_bonus,
+                filter_audit=evidence,
                 session=session,
                 taxonomy_profile=taxonomy_profile,
                 scoring_weights=scoring_weights,
@@ -1166,6 +1184,9 @@ def _search_requirement(
             max_results=max_results,
             top_n=max(top_n * 3, 20),
             allow_transmembrane=allow_transmembrane,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
+            filter_audit=evidence,
             session=session,
             taxonomy_profile=taxonomy_profile,
             scoring_weights=scoring_weights,
@@ -1250,6 +1271,8 @@ def _search_requirement(
                         chassis_key,
                         top_n=selenzyme_target_count(top_n),
                         allow_transmembrane=allow_transmembrane,
+                        transmembrane_penalty=transmembrane_penalty,
+                        no_transmembrane_bonus=no_transmembrane_bonus,
                         session=session,
                         entry_cache=entry_cache,
                         taxonomy_profile=taxonomy_profile,
@@ -1520,6 +1543,7 @@ def _standard_candidate_row(
         "ec_number": next(iter(_split(row.get("ec_numbers"))), ""),
         "ec_numbers": row.get("ec_numbers", ""),
         "accession": row.get("accession", ""),
+        "transmembrane": row.get("transmembrane", ""),
         "entry_name": row.get("entry_name", ""),
         "protein_name": row.get("protein_name", ""),
         "organism_name": row.get("organism_name", ""),
@@ -1646,9 +1670,12 @@ def retrieve_manifest_retropath_candidates(
     allow_transmembrane: bool,
     session: requests.Session,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> dict[str, Any]:
     """Retrieve predicted-step candidates and project standard candidate rows."""
 
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     rules_path = Path(config.retropath_rules_path).expanduser().resolve()
     rules = _load_rules(rules_path)
@@ -1705,6 +1732,8 @@ def retrieve_manifest_retropath_candidates(
                 top_n=top_n,
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
+                transmembrane_penalty=transmembrane_penalty,
+                no_transmembrane_bonus=no_transmembrane_bonus,
                 session=session,
                 rhea_client=rhea_client,
                 selenzyme_client=selenzyme_client,
@@ -1860,9 +1889,12 @@ def select_retropath_enzymes(
     allow_transmembrane: bool = False,
     session: requests.Session | None = None,
     selenzyme_client: SelenzymeClient | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> dict[str, Any]:
     """Generate P9 candidates without promoting a predicted route."""
 
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
     inputs = _load_p9_inputs(config)
@@ -1921,6 +1953,8 @@ def select_retropath_enzymes(
                 top_n=top_n,
                 max_results=max_results,
                 allow_transmembrane=allow_transmembrane,
+                transmembrane_penalty=transmembrane_penalty,
+                no_transmembrane_bonus=no_transmembrane_bonus,
                 session=http,
                 rhea_client=rhea_client,
                 selenzyme_client=selenzyme_client,
@@ -2057,6 +2091,9 @@ def select_retropath_enzymes(
             "top_n": top_n,
             "max_results": max_results,
             "allow_transmembrane": allow_transmembrane,
+            "transmembrane_penalty": transmembrane_penalty,
+            "no_transmembrane_bonus": no_transmembrane_bonus,
+            "transmembrane_policy_version": POLICY_VERSION,
             "chassis_key": chassis_key,
         },
         "inputs": {
@@ -2101,6 +2138,7 @@ def run_retropath_enzyme_selection(config: Any) -> dict[str, Any]:
     result = select_retropath_enzymes(
         config,
         top_n=int(getattr(config, "top_n", 5)),
+        **config_options(config),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result

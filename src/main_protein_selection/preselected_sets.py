@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from .transmembrane import annotation
 
 from .models import MainEnzymeSelectionResult, PreselectedReaction
 from .preselected_set_models import PreselectedEnzymeSetsResult, metadata_metrics
@@ -48,7 +49,8 @@ def validate_preselected_snapshot(source, manifest, genome_path):
                 raise ValueError(f"已选蛋白序列快照已变化：{protein['accession']}")
             if protein["accession"] in records and records[protein["accession"]]["sequence"] != sequence:
                 raise ValueError("同编号固定蛋白序列冲突")
-            records.setdefault(protein["accession"], {**metadata, "sequence": sequence})
+            records.setdefault(protein["accession"], {**metadata, "sequence": sequence,
+                                                      "transmembrane": annotation(protein.get("transmembrane"))})
     return records
 
 
@@ -123,6 +125,7 @@ def build_preselected_sets_from_rows(*, solution_id, expansion_depth, chassis_ke
             record = preselected_proteins[accession]
             protein = proteins.setdefault(accession, {"accession": accession, "assigned_step_indexes": [], "capable_step_indexes": []})
             protein.update({key: record[key] for key in ("protein_name", "organism_name", "reviewed", "cofactors")})
+            protein["transmembrane"] = annotation(record.get("transmembrane"))
             protein["assigned_step_indexes"] = sorted(set(protein["assigned_step_indexes"]) | indexes)
             protein["capable_step_indexes"] = sorted(set(protein["capable_step_indexes"]) | indexes)
         selected["proteins"] = [proteins[accession] for accession in sorted(proteins)]

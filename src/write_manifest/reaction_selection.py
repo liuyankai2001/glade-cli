@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .main_enzyme_format import resolve_sequence_file
+from src.main_protein_selection.transmembrane import annotation
 
 FIELDS = ("selected_solution_id", "reaction_assignments", "review_required_step_indexes")
 PROTEIN_FIELDS = ("accession", "sequence_file", "selection_source")
@@ -24,7 +25,9 @@ def compact_reaction_selection(selection: Mapping[str, Any]) -> dict[str, Any]:
             "selected_solution_id": selection["selected_solution_id"],
             "reaction_assignments": {
                 reaction: {"step_indexes": list(item["step_indexes"]), "proteins": [
-                    {key: protein[key] for key in PROTEIN_FIELDS} for protein in item["proteins"]]}
+                    {**{key: protein[key] for key in PROTEIN_FIELDS},
+                     **({"transmembrane": annotation(protein["transmembrane"])} if "transmembrane" in protein else {})}
+                    for protein in item["proteins"]]}
                 for reaction, item in selection["reaction_assignments"].items()},
             "review_required_step_indexes": list(selection["review_required_step_indexes"]),
         }
@@ -42,6 +45,8 @@ def route_reactions(steps: list[dict]) -> dict[str, list[int]]:
 def from_step_selection(selection: Mapping[str, Any], steps: list[dict], *, paths=None) -> dict[str, Any]:
     """Project both supported step formats; old selections were automatic."""
     reactions = route_reactions(steps)
+    membrane_by_accession = {protein["accession"]: annotation(protein.get("transmembrane"))
+                             for protein in selection.get("proteins", [])}
     result = {"selected_solution_id": selection["selected_solution_id"], "reaction_assignments": {},
               "review_required_step_indexes": sorted(set(selection.get("review_required_step_indexes", [
                   step for item in selection.get("unresolved_reviews", []) for step in item["step_indexes"]])))}
@@ -53,7 +58,8 @@ def from_step_selection(selection: Mapping[str, Any], steps: list[dict], *, path
         if not any(protein["accession"] == accession for protein in group["proteins"]):
             group["proteins"].append({"accession": accession,
                 "sequence_file": assignment.get("sequence_file") or (paths or {}).get(accession, ""),
-                "selection_source": "automatic"})
+                "selection_source": "automatic",
+                "transmembrane": annotation(assignment.get("transmembrane") or membrane_by_accession.get(accession))})
     return result
 
 
@@ -83,6 +89,8 @@ def _validate_structure(selection: Mapping[str, Any], manifest: Mapping[str, Any
                     or any(not isinstance(protein.get(key), str) or not protein[key].strip() for key in PROTEIN_FIELDS)
                     or protein["selection_source"] not in {"automatic", "manual"}):
                 raise ValueError("反应中的蛋白记录格式无效")
+            if "transmembrane" in protein:
+                annotation(protein["transmembrane"])
             from src.protein_selection.local_sequences import sequence_identity
             if sequence_identity(resolve_sequence_file(protein["sequence_file"])) != protein["accession"]:
                 raise ValueError("选中蛋白序列文件名与编号不一致")
@@ -221,6 +229,7 @@ def restore_reaction_selection(manifest: dict[str, Any], manifest_path: Path) ->
             accession = selected["accession"]
             record = proteins.setdefault(accession, {"accession": accession,
                 "assigned_step_indexes": [], "sequence_file": str(resolve_sequence_file(selected["sequence_file"]))})
+            record["transmembrane"] = annotation(selected.get("transmembrane"))
             record["assigned_step_indexes"] = sorted(set(record["assigned_step_indexes"]) | set(group["step_indexes"]))
             selection["step_assignments"].extend({"step_index": index, "reaction_id": reaction, **selected}
                                                  for index in group["step_indexes"])

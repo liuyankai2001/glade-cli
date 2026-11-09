@@ -12,6 +12,8 @@ from typing import Any
 
 import requests
 
+from .transmembrane import validate_options
+
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
     normalize_scoring_weights,
@@ -196,9 +198,12 @@ def retrieve_ko_candidates(
     entry_cache: dict[str, dict[str, Any] | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]], list[str], dict[str, str]]:
     """Resolve an exact KEGG KO mapping to filtered UniProt candidates."""
 
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     entry_cache = entry_cache if entry_cache is not None else {}
     ko_id = str(query_result.get("ko_id") or "").strip().upper()
@@ -250,12 +255,16 @@ def retrieve_ko_candidates(
                 "status": "uniprot_unresolved",
             })
             continue
+        filter_audit: list[dict[str, Any]] = []
         candidate = candidate_from_reaction_entry(
             entry,
             chassis_key,
             retrieval_strategy="kegg_ko_exact",
             retrieval_query_id=str(query_result.get("query_id") or ""),
             allow_transmembrane=allow_transmembrane,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
+            filter_audit=filter_audit,
             function_evidence_reason=f"function: exact KEGG KO match {ko_id}",
             taxonomy_profile=taxonomy_profile,
             scoring_weights=active_weights,
@@ -266,6 +275,8 @@ def retrieve_ko_candidates(
                 "accession": accession,
                 "kegg_gene_ids": genes_by_accession.get(accession, []),
                 "status": "sequence_filter_rejected",
+                "rejection_reasons": (filter_audit[0]["reasons"] if filter_audit
+                                      else ["uniprot_sequence_safety_filter_failed"]),
             })
             continue
         candidate.matched_ko_ids = [ko_id]

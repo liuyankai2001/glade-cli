@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from src.main_protein_selection.transmembrane import display as membrane_display
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,7 @@ def get_main_enzyme_candidates_info(config: Any) -> dict[str, Any]:
                 {
                     "排名": candidate.candidate_rank,
                     "UniProt": candidate.accession,
+                    "跨膜信息": membrane_display(candidate.transmembrane),
                     "蛋白名称": candidate.protein_name,
                     "来源物种": candidate.organism_name,
                     "分类匹配层级": candidate.taxonomic_shared_rank,
@@ -419,6 +421,7 @@ def get_main_enzyme_candidate_info(config: Any) -> dict[str, Any]:
         "候选排名": candidate_rank,
         "基本信息": {
             "UniProt": candidate.accession,
+                    "跨膜信息": membrane_display(candidate.transmembrane),
             "Entry名称": detail.get("entry_name"),
             "蛋白名称": candidate.protein_name,
             "基因名称": _split_values(detail.get("gene_names")),

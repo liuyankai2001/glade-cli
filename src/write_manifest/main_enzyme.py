@@ -266,6 +266,7 @@ def _manifest_payload(
             "organism_name": protein.organism_name,
             "reviewed": protein.reviewed,
             "cofactors": protein.cofactors,
+            "transmembrane": protein.transmembrane,
             "capable_step_indexes": protein.capable_step_indexes,
             "assigned_step_indexes": protein.assigned_step_indexes,
         }

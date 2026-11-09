@@ -638,6 +638,7 @@ def merge_step_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ]
         merged.append({
             "accession": accession,
+            "transmembrane": first.get("transmembrane", ""),
             "entry_name": first.get("entry_name", ""),
             "protein_name": first.get("protein_name", ""),
             "organism_name": first.get("organism_name", ""),

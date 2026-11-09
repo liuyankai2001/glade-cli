@@ -13,6 +13,8 @@ from typing import Any
 
 import requests
 
+from .transmembrane import validate_options
+
 from src.main_protein_selection.settings import (
     SELENZYME_HTTP_CONFIG,
     get_selenzyme_rest_url,
@@ -455,9 +457,12 @@ def retrieve_selenzyme_candidates(
     entry_cache: dict[str, dict[str, Any] | None] | None = None,
     taxonomy_profile: ChassisTaxonomyProfile | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
+    transmembrane_penalty: int = 35,
+    no_transmembrane_bonus: int = 10,
 ) -> tuple[list[ProteinCandidate], list[dict[str, Any]], list[str], dict[str, str]]:
     """Resolve ranked Selenzyme accessions to filtered UniProt candidates."""
 
+    validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
     entry_cache = entry_cache if entry_cache is not None else {}
     candidates: list[ProteinCandidate] = []
@@ -595,6 +600,8 @@ def retrieve_selenzyme_candidates(
             retrieval_query_id=str(query_result.get("query_id") or ""),
             matched_rhea_ids=[],
             allow_transmembrane=allow_transmembrane,
+            transmembrane_penalty=transmembrane_penalty,
+            no_transmembrane_bonus=no_transmembrane_bonus,
             function_evidence_reason=(
                 "function: SelenzymeRF EC association; locked substrate "
                 "specificity unverified"

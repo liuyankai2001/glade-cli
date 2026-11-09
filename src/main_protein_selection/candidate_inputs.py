@@ -5,6 +5,7 @@ import csv
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from .transmembrane import annotation
 
 from .models import MainEnzymeSelectionResult
 from .preselected_sets import validate_preselected_snapshot
@@ -35,10 +36,12 @@ def read_candidate_inputs(selection_path: Path, csv_path: Path, manifest: dict, 
 
     def identity(row):
         return (int(row["step_index"]), row["reaction_id"], row["accession"], int(row["candidate_rank"]),
-                analyze_protein_sequence(row["sequence"]).normalized_sequence)
+                analyze_protein_sequence(row["sequence"]).normalized_sequence,
+                json.dumps(annotation(row.get("transmembrane")), sort_keys=True))
 
     expected = {(c.step_index, c.reaction_id, c.accession, c.candidate_rank,
-                 analyze_protein_sequence(c.sequence).normalized_sequence)
+                 analyze_protein_sequence(c.sequence).normalized_sequence,
+                 json.dumps(c.transmembrane, sort_keys=True))
                 for candidates in source.candidates_by_step.values() for c in candidates}
     if (len(rows) != len(expected) or {identity(row) for row in rows} != expected
             or any(row.get("selection_status", "selected") != "selected" for row in rows)):
