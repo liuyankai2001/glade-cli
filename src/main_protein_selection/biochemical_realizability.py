@@ -172,24 +172,14 @@ def evaluate_candidate_reaction_fit(
             "evidence": [rule["evidence"] for rule in matched_rules],
         }
 
-    if (
+    selenzyme_ec_conflict = bool(
         status == "complete"
         and (exact_selenzyme_match or ec_selenzyme_match or risk_selenzyme_match)
         and candidate_declared_ecs
         and requirement_declared_ecs
         and not (candidate_declared_ecs & requirement_declared_ecs)
         and not (ec_selenzyme_match and shared_reaction_ec_overlap)
-    ):
-        return {
-            "status": REACTION_FIT_REJECTED,
-            "score": 0.0,
-            "rule_ids": ["selenzyme_candidate_ec_contradicts_requirement"],
-            "evidence": [
-                "Selenzyme candidate has an official EC annotation incompatible with the locked complete EC",
-                f"candidate ECs: {';'.join(sorted(candidate_declared_ecs))}",
-                f"required ECs: {';'.join(sorted(requirement_declared_ecs))}",
-            ],
-        }
+    )
 
     direction_verdict = str(candidate.get("direction_verdict") or "").strip().lower()
     direction_confidence = str(candidate.get("direction_confidence") or "").strip().lower()
@@ -208,7 +198,20 @@ def evaluate_candidate_reaction_fit(
         result: dict[str, Any],
         *,
         supported_rule: str,
+        selenzyme_fallback: bool = False,
     ) -> dict[str, Any]:
+        if selenzyme_fallback and selenzyme_ec_conflict:
+            result = {
+                **result,
+                "status": REACTION_FIT_VERIFIED_WITH_RISK,
+                "rule_ids": [*result.get("rule_ids", []), "selenzyme_ec_annotation_conflict"],
+                "evidence": [
+                    *result.get("evidence", []),
+                    "Selenzyme fallback retained for review despite a UniProt EC conflict",
+                    f"candidate ECs: {';'.join(sorted(candidate_declared_ecs))}",
+                    f"required ECs: {';'.join(sorted(requirement_declared_ecs))}",
+                ],
+            }
         if direction_verdict == DIRECTION_UNKNOWN:
             return {
                 **result,
@@ -286,7 +289,7 @@ def evaluate_candidate_reaction_fit(
             "evidence": [
                 "Candidate has a unit-similarity SelenzymeRF match to the locked KEGG reaction",
             ],
-        }, supported_rule="selenzyme_candidate_direction_supported")
+        }, supported_rule="selenzyme_candidate_direction_supported", selenzyme_fallback=True)
 
     if ec_selenzyme_match:
         current_uniprot_ec_confirmed = bool(
@@ -299,18 +302,12 @@ def evaluate_candidate_reaction_fit(
         elif not candidate_declared_ecs:
             ec_relation = "unannotated_current_uniprot_ec"
         else:
-            return {
-                "status": REACTION_FIT_REJECTED,
-                "score": 0.0,
-                "rule_ids": ["selenzyme_candidate_ec_contradicts_requirement"],
-                "evidence": [
-                    "Candidate EC has no exact or shared-reaction relationship with the locked EC"
-                ],
-            }
+            ec_relation = "contradicted_ec"
         score = {
             "exact_current_uniprot_ec": 69.0,
             "shared_reaction_ec_overlap": 60.0,
             "unannotated_current_uniprot_ec": 55.0,
+            "contradicted_ec": 55.0,
         }[ec_relation]
         relation_evidence = {
             "exact_current_uniprot_ec": (
@@ -321,6 +318,9 @@ def evaluate_candidate_reaction_fit(
             ),
             "unannotated_current_uniprot_ec": (
                 "Current UniProt annotation has no EC number confirming the Selenzyme association"
+            ),
+            "contradicted_ec": (
+                "Current UniProt EC disagrees with the EC associated with the candidate by Selenzyme"
             ),
         }[ec_relation]
         return direction_checked({
@@ -335,7 +335,7 @@ def evaluate_candidate_reaction_fit(
                 "The EC query uses a representative EC reaction and does not establish the locked substrate/product specificity",
                 relation_evidence,
             ],
-        }, supported_rule="selenzyme_ec_candidate_direction_supported")
+        }, supported_rule="selenzyme_ec_candidate_direction_supported", selenzyme_fallback=True)
 
     if risk_selenzyme_match:
         try:
@@ -359,7 +359,7 @@ def evaluate_candidate_reaction_fit(
                 "Candidate is accepted by the SelenzymeRF risk-fallback policy",
                 f"combined reaction similarity: {similarity:.10g}",
             ],
-        }, supported_rule="selenzyme_candidate_direction_supported")
+        }, supported_rule="selenzyme_candidate_direction_supported", selenzyme_fallback=True)
 
     return {
         "status": REACTION_FIT_MANUAL_REVIEW,

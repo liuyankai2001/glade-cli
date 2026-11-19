@@ -44,6 +44,10 @@ class SelenzymeSourceUnavailable(RuntimeError):
     """Raised when a required Selenzyme query cannot use network or cache."""
 
 
+class SelenzymeEmptyResponse(SelenzymeSourceUnavailable):
+    """The service responded successfully with null data for one query."""
+
+
 def _safe_token(value: str) -> str:
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
 
@@ -290,12 +294,15 @@ class SelenzymeClient:
                 envelope = response.json()
                 if not isinstance(envelope, dict):
                     raise ValueError("Selenzyme response root is not an object")
-                if envelope.get("data") is None:
-                    raise ValueError("Selenzyme response data is null")
+                if "data" not in envelope:
+                    raise ValueError("Selenzyme response is missing the data field")
+                data = envelope["data"]
+                if data is None:
+                    raise SelenzymeEmptyResponse("Selenzyme response data is null")
                 rows = [
                     _normalize_row(row, index)
                     for index, row in enumerate(
-                        _decode_selenzyme_rows(envelope.get("data")),
+                        _decode_selenzyme_rows(data),
                         start=1,
                     )
                 ]
@@ -321,14 +328,19 @@ class SelenzymeClient:
                 }
                 _json_atomic(cache_path, result)
                 return result
-            except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+            except (requests.RequestException, ValueError, SelenzymeEmptyResponse) as exc:
                 last_error = exc
                 if attempt + 1 < SELENZYME_HTTP_CONFIG.retries:
                     time.sleep(SELENZYME_HTTP_CONFIG.sleep_seconds * (2**attempt))
-        raise SelenzymeSourceUnavailable(
+        error_type = (
+            SelenzymeEmptyResponse
+            if isinstance(last_error, SelenzymeEmptyResponse)
+            else SelenzymeSourceUnavailable
+        )
+        raise error_type(
             f"Selenzyme query failed for {query_type}/{query_token}: "
             f"{last_error or 'unknown error'}"
-        )
+        ) from last_error
 
     def _query_identifier(
         self,
@@ -626,26 +638,20 @@ def retrieve_selenzyme_candidates(
         candidate.retrieval_query_id = str(query_result.get("query_id") or "")
         candidate_ecs = set(candidate.ec_numbers)
         reported_ecs = _ec_numbers(row.get("ec_number"))
-        ec_relation = (
-            classify_selenzyme_ec_relation(
+        ec_relation = ""
+        if is_ec_query:
+            ec_relation = classify_selenzyme_ec_relation(
                 required_ecs=required_ecs,
                 candidate_ecs=candidate_ecs,
                 reported_ecs=reported_ecs,
             )
-            if is_ec_query
-            else ""
-        )
-        if is_ec_query:
+        elif required_ecs and candidate_ecs and not (required_ecs & candidate_ecs):
+            ec_relation = EC_RELATION_CONTRADICTED
+        if ec_relation:
             row["ec_relation"] = ec_relation
             row["candidate_ec_numbers"] = sorted(candidate_ecs)
             row["required_ec_numbers"] = sorted(required_ecs)
             row["reported_ec_numbers"] = sorted(reported_ecs)
-        if is_ec_query and ec_relation == EC_RELATION_CONTRADICTED:
-            row["rejection_reasons"] = [
-                "selenzyme_candidate_ec_contradicts_requirement"
-            ]
-            audit_rows.append(row)
-            continue
         candidate.reaction_confidence = (
             "selenzyme_ec_risk"
             if is_ec_query
@@ -684,6 +690,9 @@ def retrieve_selenzyme_candidates(
                 EC_RELATION_UNANNOTATED: (
                     "SelenzymeRF EC association is not confirmed by the current "
                     "UniProt EC annotation"
+                ),
+                EC_RELATION_CONTRADICTED: (
+                    "Current UniProt EC disagrees with the SelenzymeRF EC association"
                 ),
             }[ec_relation]
             current_activity = (
@@ -732,6 +741,16 @@ def retrieve_selenzyme_candidates(
                     "require human review",
                 ]
             ))
+        if ec_relation == EC_RELATION_CONTRADICTED:
+            if not is_ec_query:
+                candidate.selenzyme_risk_status = ";".join(filter(None, (
+                    candidate.selenzyme_risk_status, EC_RELATION_CONTRADICTED,
+                )))
+            candidate.warnings = list(dict.fromkeys(candidate.warnings + [
+                "SelenzymeRF fallback retained for review despite a UniProt EC conflict "
+                f"(required ECs: {', '.join(sorted(required_ecs))}; "
+                f"candidate ECs: {', '.join(sorted(candidate_ecs))})"
+            ]))
         row["gate_status"] = "passed"
         row["rejection_reasons"] = []
         row["warnings"] = candidate.warnings
@@ -750,6 +769,7 @@ __all__ = [
     "EC_RELATION_UNANNOTATED",
     "EXACT_SIMILARITY_TOLERANCE",
     "SelenzymeClient",
+    "SelenzymeEmptyResponse",
     "SelenzymeSourceUnavailable",
     "_decode_selenzyme_rows",
     "chassis_host_taxon_id",

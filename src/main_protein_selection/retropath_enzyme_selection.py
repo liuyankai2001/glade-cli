@@ -877,7 +877,11 @@ def _candidate_conflicts(
         return "candidate direction contradicts the biosynthetic route"
     required_ecs = set(requirement.source_ec_numbers)
     candidate_ecs = set(_split(candidate.get("ec_numbers")))
-    if required_ecs and candidate_ecs and not (required_ecs & candidate_ecs):
+    selenzyme_fallback = any(
+        strategy.startswith("selenzyme_")
+        for strategy in _split(candidate.get("retrieval_strategies"))
+    )
+    if not selenzyme_fallback and required_ecs and candidate_ecs and not (required_ecs & candidate_ecs):
         return "candidate EC contradicts the RR02 source-template EC"
     similarity = _as_float(candidate.get("reaction_similarity"))
     if str(candidate.get("evidence_tier") or "") in {

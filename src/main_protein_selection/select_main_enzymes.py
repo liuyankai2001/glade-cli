@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -66,6 +66,7 @@ from src.main_protein_selection.host_registry import get_host_preset
 from src.main_protein_selection.selenzyme_retrieval import (
     COMPLETE_EC_PATTERN,
     SelenzymeClient,
+    SelenzymeEmptyResponse,
     SelenzymeSourceUnavailable,
     chassis_host_taxon_id,
     retrieve_selenzyme_candidates,
@@ -169,6 +170,7 @@ def _route_repair_requests_v2(
     candidate_rows: list[dict],
     solution_id: int,
     source_unavailable: bool = False,
+    unavailable_step_indexes: Collection[int] = (),
 ) -> list[dict]:
     """生成可供通路自动回选消费的稳定修复请求模式。"""
 
@@ -197,6 +199,7 @@ def _route_repair_requests_v2(
             })
         if step_index in covered_steps:
             continue
+        step_source_unavailable = source_unavailable or step_index in unavailable_step_indexes
         step_rows = [
             row for row in candidate_rows
             if int(row.get("step_index") or 0) == step_index
@@ -217,7 +220,7 @@ def _route_repair_requests_v2(
         )
         reason_code = (
             "protein_evidence_source_unavailable"
-            if source_unavailable
+            if step_source_unavailable
             else "no_constructable_protein_sequence"
             if sequence_blocked
             else "protein_direction_unsupported"
@@ -229,17 +232,17 @@ def _route_repair_requests_v2(
             "step_index": step_index,
             "reaction_id": reaction_id,
             "reason_code": reason_code,
-            "retryable": bool(source_unavailable),
+            "retryable": step_source_unavailable,
             "suggested_action": (
                 "retry after the protein evidence source recovers"
-                if source_unavailable
+                if step_source_unavailable
                 else "retrieve a complete standard-amino-acid protein sequence"
                 if sequence_blocked
                 else "reject this solution and evaluate the next flux-pass route"
             ),
             "status": (
                 "source_blocked"
-                if source_unavailable
+                if step_source_unavailable
                 else "protein_reselection_required"
                 if sequence_blocked
                 else "route_reselection_required"
@@ -389,7 +392,7 @@ def select_main_enzymes(
         ko_results_by_id: dict[str, dict] = {}
         selenzyme_evidence: list[dict] = []
         selenzyme_query_ids: list[str] = []
-        selenzyme_results_by_query: dict[tuple[str, str], dict] = {}
+        selenzyme_results_by_query: dict[tuple[str, str], dict | SelenzymeEmptyResponse] = {}
         uniprot_entry_cache: dict[str, dict | None] = {}
         selenzyme_source_unavailable = False
         selenzyme_circuit_error = ""
@@ -601,44 +604,35 @@ def select_main_enzymes(
                         "circuit_open": False,
                     })
                     continue
-                if selenzyme_source_unavailable:
-                    for spec in query_specs:
+                kegg_exact_selectable = False
+                for spec in query_specs:
+                    query_key = (spec["query_database"], spec["query_value"])
+                    query_id = f"selenzyme_{query_key[0]}_{query_key[1]}"
+                    query_evidence = {
+                        "step_index": step_index,
+                        "reaction_id": reaction_id,
+                        "ec_number": spec["ec_number"],
+                        "ec_status": annotation_status,
+                        "query_type": spec["query_type"],
+                        "query_database": spec["query_database"],
+                        "query_value": spec["query_value"],
+                        "query_id": query_id,
+                        "rows": [],
+                        "error": "",
+                        "circuit_open": False,
+                    }
+                    if selenzyme_source_unavailable:
                         selenzyme_evidence.append({
-                            "step_index": step_index,
-                            "reaction_id": reaction_id,
-                            "ec_number": spec["ec_number"],
-                            "ec_status": annotation_status,
-                            "query_type": spec["query_type"],
-                            "query_database": spec["query_database"],
-                            "query_value": spec["query_value"],
+                            **query_evidence,
                             "source_status": "source_unavailable",
-                            "query_id": (
-                                f"selenzyme_{spec['query_database']}_"
-                                f"{spec['query_value']}"
-                            ),
-                            "rows": [],
                             "error": selenzyme_circuit_error,
                             "circuit_open": True,
                         })
-                    continue
-                for spec in query_specs:
-                    if selenzyme_source_unavailable:
+                        continue
+                    if spec["query_database"] == "ec" and kegg_exact_selectable:
                         selenzyme_evidence.append({
-                            "step_index": step_index,
-                            "reaction_id": reaction_id,
-                            "ec_number": spec["ec_number"],
-                            "ec_status": annotation_status,
-                            "query_type": spec["query_type"],
-                            "query_database": spec["query_database"],
-                            "query_value": spec["query_value"],
-                            "source_status": "source_unavailable",
-                            "query_id": (
-                                f"selenzyme_{spec['query_database']}_"
-                                f"{spec['query_value']}"
-                            ),
-                            "rows": [],
-                            "error": selenzyme_circuit_error,
-                            "circuit_open": True,
+                            **query_evidence,
+                            "source_status": "skipped_exact_kegg",
                         })
                         continue
                     try:
@@ -647,10 +641,6 @@ def select_main_enzymes(
                                 selenzyme_circuit_error
                                 or "Selenzyme client is unavailable"
                             )
-                        query_key = (
-                            spec["query_database"],
-                            spec["query_value"],
-                        )
                         if query_key not in selenzyme_results_by_query:
                             if spec["query_database"] == "ec":
                                 query_result = selenzyme_client.query_ec_number(
@@ -666,6 +656,8 @@ def select_main_enzymes(
                                 )
                             selenzyme_results_by_query[query_key] = query_result
                         query_result = selenzyme_results_by_query[query_key]
+                        if isinstance(query_result, SelenzymeEmptyResponse):
+                            raise query_result
                         reaction_candidates, audit_rows, query_ids, errors = (
                             retrieve_selenzyme_candidates(
                                 requirement,
@@ -682,49 +674,50 @@ def select_main_enzymes(
                             )
                         )
                         candidates_by_step[step_index].extend(reaction_candidates)
+                        if spec["query_database"] == "kegg":
+                            exact_candidates = [
+                                candidate for candidate in reaction_candidates
+                                if candidate.retrieval_strategy == "selenzyme_kegg_exact"
+                            ]
+                            if exact_candidates:
+                                exact_rows = candidate_rows_for_requirements(
+                                    [requirement], {}, {step_index: exact_candidates}
+                                )
+                                kegg_exact_selectable = any(
+                                    _candidate_is_selectable(row) for row in exact_rows
+                                )
                         selenzyme_query_ids.append(
                             str(query_result.get("query_id") or "")
                         )
                         selenzyme_query_ids.extend(query_ids)
                         query_errors.update(errors)
                         selenzyme_evidence.append({
-                            "step_index": step_index,
-                            "reaction_id": reaction_id,
-                            "ec_number": spec["ec_number"],
+                            **query_evidence,
                             "direction": str(requirement.get("direction") or ""),
-                            "ec_status": annotation_status,
-                            "query_type": spec["query_type"],
-                            "query_database": spec["query_database"],
-                            "query_value": spec["query_value"],
                             "source_status": str(query_result.get("status") or ""),
                             "query_id": str(query_result.get("query_id") or ""),
                             "app": str(query_result.get("app") or ""),
                             "version": str(query_result.get("version") or ""),
                             "cache_hit": bool(query_result.get("cache_hit")),
                             "rows": audit_rows,
-                            "error": "",
-                            "circuit_open": False,
+                        })
+                    except SelenzymeEmptyResponse as exc:
+                        cache_hit = query_key in selenzyme_results_by_query
+                        selenzyme_results_by_query[query_key] = exc
+                        selenzyme_evidence.append({
+                            **query_evidence,
+                            "source_status": "empty_response",
+                            "error": str(exc),
+                            "cache_hit": cache_hit,
                         })
                     except SelenzymeSourceUnavailable as exc:
                         selenzyme_source_unavailable = True
                         selenzyme_circuit_error = str(exc)
-                        query_id = (
-                            f"selenzyme_{spec['query_database']}_"
-                            f"{spec['query_value']}"
-                        )
                         query_errors[query_id] = str(exc)
                         selenzyme_evidence.append({
-                            "step_index": step_index,
-                            "reaction_id": reaction_id,
-                            "ec_number": spec["ec_number"],
+                            **query_evidence,
                             "direction": str(requirement.get("direction") or ""),
-                            "ec_status": annotation_status,
-                            "query_type": spec["query_type"],
-                            "query_database": spec["query_database"],
-                            "query_value": spec["query_value"],
                             "source_status": "source_unavailable",
-                            "query_id": query_id,
-                            "rows": [],
                             "error": str(exc),
                             "circuit_open": True,
                         })
@@ -816,11 +809,20 @@ def select_main_enzymes(
             str(row.get("accession") or ""),
         ))
         merged_rows = merge_step_candidates(selected_step_rows)
+        covered_steps = {
+            int(row.get("step_index") or 0) for row in selected_step_rows
+        } | preselected_steps
+        uncovered_empty_response_steps: set[int] = set()
+        for entry in selenzyme_evidence:
+            if entry["source_status"] == "empty_response" and entry["step_index"] not in covered_steps:
+                uncovered_empty_response_steps.add(entry["step_index"])
+                query_errors[entry["query_id"]] = entry["error"]
         route_repair_requests = _route_repair_requests_v2(
             requirements,
             kegg_step_rows,
             solution_id,
             source_unavailable=selenzyme_source_unavailable,
+            unavailable_step_indexes=uncovered_empty_response_steps,
         )
         selected_retropath_steps = {
             int(row.get("step_index") or 0)
@@ -942,9 +944,6 @@ def select_main_enzymes(
             "requests": route_repair_requests,
         })
 
-        covered_steps = {
-            int(row.get("step_index") or 0) for row in selected_step_rows
-        } | preselected_steps
         expected_steps = {
             int(requirement.get("step_index") or 0)
             for requirement in all_requirements
@@ -961,7 +960,11 @@ def select_main_enzymes(
                 for item in retropath_requirements
             }
         )
-        any_source_unavailable = selenzyme_source_unavailable or retropath_unavailable
+        any_source_unavailable = (
+            selenzyme_source_unavailable
+            or bool(uncovered_empty_response_steps)
+            or retropath_unavailable
+        )
         result = {
             "ok": not any_source_unavailable,
             "status": (
