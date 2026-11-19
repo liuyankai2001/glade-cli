@@ -6,6 +6,7 @@ from src.main_protein_selection.reaction_direction_verifier import (
     DIRECTION_CONTRADICTED,
     DIRECTION_SUPPORTED,
     DIRECTION_UNKNOWN,
+    normalize_rhea_ids,
 )
 
 
@@ -85,11 +86,12 @@ def evaluate_candidate_reaction_fit(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     status = ec_status(requirement)
-    candidate_rhea = set(_normalized_ecs(candidate.get("matched_rhea_ids")))
-    requirement_rhea = set(_normalized_ecs(requirement.get("rhea_ids")))
-    requirement_rhea.update(_normalized_ecs(requirement.get("rhea_master_ids")))
-    requirement_rhea.update(_normalized_ecs(requirement.get("required_rhea_direction_ids")))
-    requirement_rhea.update(_normalized_ecs(requirement.get("rhea_bidirectional_ids")))
+    candidate_rhea = set(normalize_rhea_ids(candidate.get("matched_rhea_ids")))
+    requirement_rhea = {
+        rhea_id
+        for field in ("rhea_ids", "rhea_master_ids", "required_rhea_direction_ids", "rhea_bidirectional_ids")
+        for rhea_id in normalize_rhea_ids(requirement.get(field))
+    }
     exact_rhea_match = bool(candidate_rhea & requirement_rhea)
     candidate_ko = set(_normalized_ecs(candidate.get("matched_ko_ids")))
     requirement_ko = set(_normalized_ecs(requirement.get("ko_ids")))

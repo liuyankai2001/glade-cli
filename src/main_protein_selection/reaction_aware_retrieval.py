@@ -13,6 +13,7 @@ import requests
 
 from .transmembrane import validate_options
 
+from src.main_protein_selection.reaction_direction_verifier import normalize_rhea_ids
 from src.main_protein_selection.taxonomy_compatibility import (
     ChassisTaxonomyProfile,
     normalize_scoring_weights,
@@ -246,10 +247,9 @@ def _rhea_candidate_entries(
     groups: list[list[dict[str, Any]]] = []
     query_ids: list[str] = []
     errors: dict[str, str] = {}
-    for raw_id in rhea_ids:
-        normalized = str(raw_id).upper().removeprefix("RHEA:")
-        query_id = f"uniprot_rhea_{normalized}"
-        query = f'cc_catalytic_activity:"rhea:{normalized}"'
+    for rhea_id in rhea_ids:
+        query_id = f"uniprot_rhea_{rhea_id}"
+        query = f'cc_catalytic_activity:"rhea:{rhea_id}"'
         query_ids.append(query_id)
         try:
             reviewed = search_uniprot_by_query(
@@ -286,24 +286,16 @@ def retrieve_rhea_candidates_for_requirement(
 ) -> tuple[list[ProteinCandidate], list[str], dict[str, str]]:
     validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
-    rhea_ids = [
-        str(value)
-        for value in (
-            requirement.get("rhea_retrieval_ids")
-            or requirement.get("rhea_ids", [])
-        )
-        if str(value)
-    ]
+    rhea_ids = normalize_rhea_ids(
+        requirement.get("rhea_retrieval_ids") or requirement.get("rhea_ids")
+    )
     if not rhea_ids:
         return [], [], {}
     entries, query_ids, errors = _rhea_candidate_entries(rhea_ids, session, max_results)
     candidates: list[ProteinCandidate] = []
     for entry in entries:
-        candidate_rhea_ids = {
-            str(value).upper()
-            for value in extract_rhea_ids(entry)
-        }
-        matched = [rhea_id for rhea_id in rhea_ids if rhea_id.upper() in candidate_rhea_ids]
+        candidate_rhea_ids = set(normalize_rhea_ids(extract_rhea_ids(entry)))
+        matched = [rhea_id for rhea_id in rhea_ids if rhea_id in candidate_rhea_ids]
         if not matched:
             continue
         candidate = candidate_from_reaction_entry(
