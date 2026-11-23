@@ -1715,75 +1715,75 @@ def retrieve_manifest_retropath_candidates(
     except Exception as exc:
         client_error = str(exc)
         selenzyme_client = None
-    rhea_client = RheaClient(session=session, cache_root=cache_root / "rhea")
-    entry_cache: dict[str, dict[str, Any] | None] = {}
-    source_accession_errors = _prefetch_source_uniprot_entries(
-        search_requirements,
-        session=session,
-        entry_cache=entry_cache,
-    )
-    search_cache: dict[str, _SearchOutcome] = {}
-    selected: list[dict[str, Any]] = []
-    audit: list[dict[str, Any]] = []
-    evidence: list[dict[str, Any]] = []
-    source_unavailable = False
-    for search_requirement in search_requirements:
-        key = _search_key(search_requirement)
-        if key not in search_cache:
-            search_cache[key] = _search_requirement(
-                search_requirement,
-                chassis_key=chassis_key,
-                top_n=top_n,
-                max_results=max_results,
-                allow_transmembrane=allow_transmembrane,
-                transmembrane_penalty=transmembrane_penalty,
-                no_transmembrane_bonus=no_transmembrane_bonus,
-                session=session,
-                rhea_client=rhea_client,
-                selenzyme_client=selenzyme_client,
-                selenzyme_circuit_error=client_error,
-                entry_cache=entry_cache,
-                taxonomy_profile=taxonomy_profile,
-                source_accession_errors=source_accession_errors,
-                scoring_weights=active_weights,
+    with RheaClient(cache_root=cache_root / "rhea") as rhea_client:
+        entry_cache: dict[str, dict[str, Any] | None] = {}
+        source_accession_errors = _prefetch_source_uniprot_entries(
+            search_requirements,
+            session=session,
+            entry_cache=entry_cache,
+        )
+        search_cache: dict[str, _SearchOutcome] = {}
+        selected: list[dict[str, Any]] = []
+        audit: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = []
+        source_unavailable = False
+        for search_requirement in search_requirements:
+            key = _search_key(search_requirement)
+            if key not in search_cache:
+                search_cache[key] = _search_requirement(
+                    search_requirement,
+                    chassis_key=chassis_key,
+                    top_n=top_n,
+                    max_results=max_results,
+                    allow_transmembrane=allow_transmembrane,
+                    transmembrane_penalty=transmembrane_penalty,
+                    no_transmembrane_bonus=no_transmembrane_bonus,
+                    session=session,
+                    rhea_client=rhea_client,
+                    selenzyme_client=selenzyme_client,
+                    selenzyme_circuit_error=client_error,
+                    entry_cache=entry_cache,
+                    taxonomy_profile=taxonomy_profile,
+                    source_accession_errors=source_accession_errors,
+                    scoring_weights=active_weights,
+                )
+            outcome = search_cache[key]
+            source_unavailable |= outcome.source_unavailable
+            if outcome.source_unavailable and any(
+                row.get("status") == "source_unavailable"
+                and str(row.get("query_type") or "").startswith("selenzyme")
+                for row in outcome.evidence
+            ):
+                selenzyme_client = None
+            base_requirement = by_step[search_requirement.step_index]
+            selected.extend(
+                _standard_candidate_row(base_requirement, search_requirement, row)
+                for row in outcome.candidates
             )
-        outcome = search_cache[key]
-        source_unavailable |= outcome.source_unavailable
-        if outcome.source_unavailable and any(
-            row.get("status") == "source_unavailable"
-            and str(row.get("query_type") or "").startswith("selenzyme")
-            for row in outcome.evidence
-        ):
-            selenzyme_client = None
-        base_requirement = by_step[search_requirement.step_index]
-        selected.extend(
-            _standard_candidate_row(base_requirement, search_requirement, row)
-            for row in outcome.candidates
-        )
-        audit.extend(
-            _standard_candidate_row(base_requirement, search_requirement, row)
-            for row in outcome.audit
-        )
-        evidence.extend(
-            {"search_key": key, "step_index": search_requirement.step_index, **row}
-            for row in outcome.evidence
-        )
-    # A predicted step can have several alternative source rules. Each rule's
-    # shortlist is locally ranked; concatenating them duplicates proteins and
-    # ranks, violating the canonical per-step shortlist contract.
-    selected = _merge_manifest_step_candidates(selected, top_n=top_n)
-    audit.sort(key=lambda row: (
-        int(row.get("step_index") or 0),
-        int(row.get("evaluation_rank") or 0),
-        str(row.get("accession") or ""),
-    ))
-    return {
-        "selected_rows": selected,
-        "audit_rows": audit,
-        "requirements": [item.to_dict() for item in search_requirements],
-        "evidence": evidence,
-        "source_unavailable": source_unavailable,
-    }
+            audit.extend(
+                _standard_candidate_row(base_requirement, search_requirement, row)
+                for row in outcome.audit
+            )
+            evidence.extend(
+                {"search_key": key, "step_index": search_requirement.step_index, **row}
+                for row in outcome.evidence
+            )
+        # A predicted step can have several alternative source rules. Each rule's
+        # shortlist is locally ranked; concatenating them duplicates proteins and
+        # ranks, violating the canonical per-step shortlist contract.
+        selected = _merge_manifest_step_candidates(selected, top_n=top_n)
+        audit.sort(key=lambda row: (
+            int(row.get("step_index") or 0),
+            int(row.get("evaluation_rank") or 0),
+            str(row.get("accession") or ""),
+        ))
+        return {
+            "selected_rows": selected,
+            "audit_rows": audit,
+            "requirements": [item.to_dict() for item in search_requirements],
+            "evidence": evidence,
+            "source_unavailable": source_unavailable,
+        }
 
 
 def _combination_summaries(
@@ -1933,209 +1933,209 @@ def select_retropath_enzymes(
         except Exception as exc:
             client_error = str(exc)
             selenzyme_client = None
-    rhea_client = RheaClient(session=http, cache_root=cache_root / "rhea")
-    entry_cache: dict[str, dict[str, Any] | None] = {}
-    source_accession_errors = _prefetch_source_uniprot_entries(
-        requirements,
-        session=http,
-        entry_cache=entry_cache,
-    )
-    search_cache: dict[str, _SearchOutcome] = {}
-    selected_rows: list[dict[str, Any]] = []
-    audit_rows: list[dict[str, Any]] = []
-    query_evidence: list[dict[str, Any]] = []
-    unavailable_keys: set[str] = set()
-
-    for requirement in requirements:
-        if not requirement.enzyme_required:
-            continue
-        key = _search_key(requirement)
-        if key not in search_cache:
-            outcome = _search_requirement(
-                requirement,
-                chassis_key=chassis_key,
-                top_n=top_n,
-                max_results=max_results,
-                allow_transmembrane=allow_transmembrane,
-                transmembrane_penalty=transmembrane_penalty,
-                no_transmembrane_bonus=no_transmembrane_bonus,
-                session=http,
-                rhea_client=rhea_client,
-                selenzyme_client=selenzyme_client,
-                selenzyme_circuit_error=client_error,
-                entry_cache=entry_cache,
-                taxonomy_profile=taxonomy_profile,
-                source_accession_errors=source_accession_errors,
-            )
-            search_cache[key] = outcome
-            if outcome.source_unavailable:
-                unavailable_keys.add(key)
-                if any(
-                    row.get("status") == "source_unavailable"
-                    and str(row.get("query_type") or "").startswith("selenzyme")
-                    for row in outcome.evidence
-                ):
-                    client_error = next(
-                        (
-                            str(row.get("error") or "")
-                            for row in outcome.evidence
-                            if row.get("status") == "source_unavailable"
-                            and str(row.get("query_type") or "").startswith("selenzyme")
-                        ),
-                        client_error,
-                    )
-                    selenzyme_client = None
-        outcome = search_cache[key]
-        selected_rows.extend(
-            _bind_candidate(requirement, row) for row in outcome.candidates
+    with RheaClient(cache_root=cache_root / "rhea") as rhea_client:
+        entry_cache: dict[str, dict[str, Any] | None] = {}
+        source_accession_errors = _prefetch_source_uniprot_entries(
+            requirements,
+            session=http,
+            entry_cache=entry_cache,
         )
-        audit_rows.extend(_bind_candidate(requirement, row) for row in outcome.audit)
-        if not any(item.get("search_key") == key for item in query_evidence):
-            query_evidence.extend(
-                {"search_key": key, **row} for row in outcome.evidence
+        search_cache: dict[str, _SearchOutcome] = {}
+        selected_rows: list[dict[str, Any]] = []
+        audit_rows: list[dict[str, Any]] = []
+        query_evidence: list[dict[str, Any]] = []
+        unavailable_keys: set[str] = set()
+
+        for requirement in requirements:
+            if not requirement.enzyme_required:
+                continue
+            key = _search_key(requirement)
+            if key not in search_cache:
+                outcome = _search_requirement(
+                    requirement,
+                    chassis_key=chassis_key,
+                    top_n=top_n,
+                    max_results=max_results,
+                    allow_transmembrane=allow_transmembrane,
+                    transmembrane_penalty=transmembrane_penalty,
+                    no_transmembrane_bonus=no_transmembrane_bonus,
+                    session=http,
+                    rhea_client=rhea_client,
+                    selenzyme_client=selenzyme_client,
+                    selenzyme_circuit_error=client_error,
+                    entry_cache=entry_cache,
+                    taxonomy_profile=taxonomy_profile,
+                    source_accession_errors=source_accession_errors,
+                )
+                search_cache[key] = outcome
+                if outcome.source_unavailable:
+                    unavailable_keys.add(key)
+                    if any(
+                        row.get("status") == "source_unavailable"
+                        and str(row.get("query_type") or "").startswith("selenzyme")
+                        for row in outcome.evidence
+                    ):
+                        client_error = next(
+                            (
+                                str(row.get("error") or "")
+                                for row in outcome.evidence
+                                if row.get("status") == "source_unavailable"
+                                and str(row.get("query_type") or "").startswith("selenzyme")
+                            ),
+                            client_error,
+                        )
+                        selenzyme_client = None
+            outcome = search_cache[key]
+            selected_rows.extend(
+                _bind_candidate(requirement, row) for row in outcome.candidates
             )
+            audit_rows.extend(_bind_candidate(requirement, row) for row in outcome.audit)
+            if not any(item.get("search_key") == key for item in query_evidence):
+                query_evidence.extend(
+                    {"search_key": key, **row} for row in outcome.evidence
+                )
 
-    combinations = _combination_summaries(
-        requirements,
-        selected_rows,
-        unavailable_keys,
-    )
-    combination_ranks = {
-        row["combination_id"]: row["combination_rank"] for row in combinations
-    }
-    for row in [*selected_rows, *audit_rows]:
-        row["combination_rank"] = combination_ranks.get(row["combination_id"], "")
-    selected_rows.sort(key=lambda row: (
-        _as_int(row.get("combination_rank"), "combination_rank", minimum=1),
-        _as_int(row.get("step_index"), "step_index", minimum=1),
-        _as_int(row.get("protein_candidate_rank"), "protein_candidate_rank", minimum=1),
-    ))
-    audit_rows.sort(key=lambda row: (
-        _as_int(row.get("combination_rank"), "combination_rank", minimum=1),
-        _as_int(row.get("step_index"), "step_index", minimum=1),
-        str(row.get("accession") or ""),
-        str(row.get("selection_status") or ""),
-    ))
-    if any(row["status"] == "ready_for_review" for row in combinations):
-        overall_status = "ready_for_review"
-    elif any(row["status"] == "source_unavailable" for row in combinations):
-        overall_status = "source_unavailable"
-    else:
-        overall_status = "partial_no_candidate"
+        combinations = _combination_summaries(
+            requirements,
+            selected_rows,
+            unavailable_keys,
+        )
+        combination_ranks = {
+            row["combination_id"]: row["combination_rank"] for row in combinations
+        }
+        for row in [*selected_rows, *audit_rows]:
+            row["combination_rank"] = combination_ranks.get(row["combination_id"], "")
+        selected_rows.sort(key=lambda row: (
+            _as_int(row.get("combination_rank"), "combination_rank", minimum=1),
+            _as_int(row.get("step_index"), "step_index", minimum=1),
+            _as_int(row.get("protein_candidate_rank"), "protein_candidate_rank", minimum=1),
+        ))
+        audit_rows.sort(key=lambda row: (
+            _as_int(row.get("combination_rank"), "combination_rank", minimum=1),
+            _as_int(row.get("step_index"), "step_index", minimum=1),
+            str(row.get("accession") or ""),
+            str(row.get("selection_status") or ""),
+        ))
+        if any(row["status"] == "ready_for_review" for row in combinations):
+            overall_status = "ready_for_review"
+        elif any(row["status"] == "source_unavailable" for row in combinations):
+            overall_status = "source_unavailable"
+        else:
+            overall_status = "partial_no_candidate"
 
-    output_dir = (
-        inputs.candidate_inputs.retropath_dir
-        / ENZYME_SELECTION_DIR_NAME
-        / f"candidate_{inputs.candidate_rank}"
-    )
-    requirements_path = output_dir / ENZYME_REQUIREMENTS_FILE_NAME
-    candidate_path = output_dir / STEP_ENZYME_CANDIDATES_FILE_NAME
-    audit_path = output_dir / STEP_ENZYME_AUDIT_FILE_NAME
-    evidence_path = output_dir / SELENZYME_EVIDENCE_FILE_NAME
-    selection_path = output_dir / ENZYME_SELECTION_FILE_NAME
+        output_dir = (
+            inputs.candidate_inputs.retropath_dir
+            / ENZYME_SELECTION_DIR_NAME
+            / f"candidate_{inputs.candidate_rank}"
+        )
+        requirements_path = output_dir / ENZYME_REQUIREMENTS_FILE_NAME
+        candidate_path = output_dir / STEP_ENZYME_CANDIDATES_FILE_NAME
+        audit_path = output_dir / STEP_ENZYME_AUDIT_FILE_NAME
+        evidence_path = output_dir / SELENZYME_EVIDENCE_FILE_NAME
+        selection_path = output_dir / ENZYME_SELECTION_FILE_NAME
 
-    requirements_payload = {
-        "schema_version": RETROPATH_ENZYME_REQUIREMENTS_SCHEMA,
-        "candidate_rank": inputs.candidate_rank,
-        "candidate_id": inputs.candidate_id,
-        "requirements": [item.to_dict() for item in requirements],
-    }
-    evidence_payload = {
-        "schema_version": RETROPATH_SELENZYME_EVIDENCE_SCHEMA,
-        "policy": {
-            "structural_matches_require_manual_review": True,
-            "positive_similarity_required": True,
-            "arbitrary_similarity_threshold": None,
-            "query_precedence": [
-                "full_reaction_smiles",
-                "core_reaction_smiles",
-                "rule_smarts",
-            ],
-        },
-        "queries": query_evidence,
-    }
-    written_artifacts = {
-        ENZYME_REQUIREMENTS_FILE_NAME: _atomic_write_json(
-            requirements_path,
-            requirements_payload,
-        ),
-        STEP_ENZYME_CANDIDATES_FILE_NAME: _atomic_write_text(
-            candidate_path,
-            _render_csv(ENZYME_CANDIDATE_COLUMNS, selected_rows),
-        ),
-        STEP_ENZYME_AUDIT_FILE_NAME: _atomic_write_text(
-            audit_path,
-            _render_csv(ENZYME_CANDIDATE_COLUMNS, audit_rows),
-        ),
-        SELENZYME_EVIDENCE_FILE_NAME: _atomic_write_json(
-            evidence_path,
-            evidence_payload,
-        ),
-    }
-    artifact_paths = {
-        ENZYME_REQUIREMENTS_FILE_NAME: requirements_path,
-        STEP_ENZYME_CANDIDATES_FILE_NAME: candidate_path,
-        STEP_ENZYME_AUDIT_FILE_NAME: audit_path,
-        SELENZYME_EVIDENCE_FILE_NAME: evidence_path,
-    }
-    selection: dict[str, Any] = {
-        "schema_version": RETROPATH_ENZYME_SELECTION_SCHEMA,
-        "created_at": datetime.now(UTC).isoformat(),
-        "target_compound": inputs.candidate_inputs.target_compound,
-        "expansion_depth": inputs.candidate_inputs.depth,
-        "candidate_rank": inputs.candidate_rank,
-        "candidate_id": inputs.candidate_id,
-        "status": overall_status,
-        "recommended_combination_id": (
-            combinations[0]["combination_id"] if combinations else ""
-        ),
-        "combination_count": len(combinations),
-        "combinations": combinations,
-        "parameters": {
-            "top_n": top_n,
-            "max_results": max_results,
-            "allow_transmembrane": allow_transmembrane,
-            "transmembrane_penalty": transmembrane_penalty,
-            "no_transmembrane_bonus": no_transmembrane_bonus,
-            "transmembrane_policy_version": POLICY_VERSION,
-            "chassis_key": chassis_key,
-        },
-        "inputs": {
-            "pipeline_result": {
-                "path": str(inputs.candidate_inputs.pipeline_path),
+        requirements_payload = {
+            "schema_version": RETROPATH_ENZYME_REQUIREMENTS_SCHEMA,
+            "candidate_rank": inputs.candidate_rank,
+            "candidate_id": inputs.candidate_id,
+            "requirements": [item.to_dict() for item in requirements],
+        }
+        evidence_payload = {
+            "schema_version": RETROPATH_SELENZYME_EVIDENCE_SCHEMA,
+            "policy": {
+                "structural_matches_require_manual_review": True,
+                "positive_similarity_required": True,
+                "arbitrary_similarity_threshold": None,
+                "query_precedence": [
+                    "full_reaction_smiles",
+                    "core_reaction_smiles",
+                    "rule_smarts",
+                ],
             },
-            "p8_validation_manifest": {
-                "path": str(inputs.p8_manifest_path),
+            "queries": query_evidence,
+        }
+        written_artifacts = {
+            ENZYME_REQUIREMENTS_FILE_NAME: _atomic_write_json(
+                requirements_path,
+                requirements_payload,
+            ),
+            STEP_ENZYME_CANDIDATES_FILE_NAME: _atomic_write_text(
+                candidate_path,
+                _render_csv(ENZYME_CANDIDATE_COLUMNS, selected_rows),
+            ),
+            STEP_ENZYME_AUDIT_FILE_NAME: _atomic_write_text(
+                audit_path,
+                _render_csv(ENZYME_CANDIDATE_COLUMNS, audit_rows),
+            ),
+            SELENZYME_EVIDENCE_FILE_NAME: _atomic_write_json(
+                evidence_path,
+                evidence_payload,
+            ),
+        }
+        artifact_paths = {
+            ENZYME_REQUIREMENTS_FILE_NAME: requirements_path,
+            STEP_ENZYME_CANDIDATES_FILE_NAME: candidate_path,
+            STEP_ENZYME_AUDIT_FILE_NAME: audit_path,
+            SELENZYME_EVIDENCE_FILE_NAME: evidence_path,
+        }
+        selection: dict[str, Any] = {
+            "schema_version": RETROPATH_ENZYME_SELECTION_SCHEMA,
+            "created_at": datetime.now(UTC).isoformat(),
+            "target_compound": inputs.candidate_inputs.target_compound,
+            "expansion_depth": inputs.candidate_inputs.depth,
+            "candidate_rank": inputs.candidate_rank,
+            "candidate_id": inputs.candidate_id,
+            "status": overall_status,
+            "recommended_combination_id": (
+                combinations[0]["combination_id"] if combinations else ""
+            ),
+            "combination_count": len(combinations),
+            "combinations": combinations,
+            "parameters": {
+                "top_n": top_n,
+                "max_results": max_results,
+                "allow_transmembrane": allow_transmembrane,
+                "transmembrane_penalty": transmembrane_penalty,
+                "no_transmembrane_bonus": no_transmembrane_bonus,
+                "transmembrane_policy_version": POLICY_VERSION,
+                "chassis_key": chassis_key,
             },
-            "rr02_path": str(rules_path),
-            "mnxref_index_path": mnxref_manifest["index_path"],
-        },
-        "artifacts": {
-            name: {
-                "path": str(artifact_paths[name].resolve()),
-            }
-            for name in written_artifacts
-        },
-        "review_required": True,
-        "formal_promotion_allowed": False,
-    }
-    _atomic_write_json(selection_path, selection)
-    return {
-        "ok": overall_status == "ready_for_review",
-        "status": overall_status,
-        "search_engine": "retropath",
-        "target_compound": inputs.candidate_inputs.target_compound,
-        "expansion_depth": inputs.candidate_inputs.depth,
-        "candidate_rank": inputs.candidate_rank,
-        "candidate_id": inputs.candidate_id,
-        "recommended_combination_id": selection["recommended_combination_id"],
-        "combination_count": len(combinations),
-        "step_candidate_count": len(selected_rows),
-        "output_dir": str(output_dir.resolve()),
-        "selection_manifest": str(selection_path.resolve()),
-        "review_required": True,
-        "formal_promotion_allowed": False,
-    }
+            "inputs": {
+                "pipeline_result": {
+                    "path": str(inputs.candidate_inputs.pipeline_path),
+                },
+                "p8_validation_manifest": {
+                    "path": str(inputs.p8_manifest_path),
+                },
+                "rr02_path": str(rules_path),
+                "mnxref_index_path": mnxref_manifest["index_path"],
+            },
+            "artifacts": {
+                name: {
+                    "path": str(artifact_paths[name].resolve()),
+                }
+                for name in written_artifacts
+            },
+            "review_required": True,
+            "formal_promotion_allowed": False,
+        }
+        _atomic_write_json(selection_path, selection)
+        return {
+            "ok": overall_status == "ready_for_review",
+            "status": overall_status,
+            "search_engine": "retropath",
+            "target_compound": inputs.candidate_inputs.target_compound,
+            "expansion_depth": inputs.candidate_inputs.depth,
+            "candidate_rank": inputs.candidate_rank,
+            "candidate_id": inputs.candidate_id,
+            "recommended_combination_id": selection["recommended_combination_id"],
+            "combination_count": len(combinations),
+            "step_candidate_count": len(selected_rows),
+            "output_dir": str(output_dir.resolve()),
+            "selection_manifest": str(selection_path.resolve()),
+            "review_required": True,
+            "formal_promotion_allowed": False,
+        }
 
 
 def run_retropath_enzyme_selection(config: Any) -> dict[str, Any]:

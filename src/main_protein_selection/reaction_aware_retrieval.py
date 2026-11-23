@@ -4,12 +4,14 @@ import csv
 import hashlib
 import io
 import json
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import requests
+from .rhea_http import new_rhea_session, request_response, reject_html
 
 from .transmembrane import validate_options
 
@@ -59,17 +61,51 @@ def _user_agent() -> str:
     return f"GLADE/2.2 ({contact})" if contact else "GLADE/2.2"
 
 
+def _parse_rhea_tsv(text: str) -> list[dict[str, Any]]:
+    reject_html(text)
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")), delimiter="\t")
+    required = {"Reaction identifier", "Equation", "EC number", "Cross-reference (KEGG)", "Enzymes"}
+    if not reader.fieldnames or not required.issubset(reader.fieldnames) or len(reader.fieldnames) != len(set(reader.fieldnames)):
+        raise ValueError("Rhea TSV is missing required columns")
+    records = []
+    for row in reader:
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError("Rhea TSV row has an invalid number of fields")
+        identifier = row["Reaction identifier"].strip()
+        if not re.fullmatch(r"(?:RHEA:)?\d+", identifier) or not row["Equation"].strip():
+            raise ValueError("Invalid Rhea reaction row")
+        enzyme_count = int(row["Enzymes"].strip() or "0")
+        if enzyme_count < 0:
+            raise ValueError("Invalid Rhea enzyme count")
+        records.append({"rhea_id": identifier, "equation": row["Equation"].strip(),
+            "ec_numbers": [v.strip().removeprefix("EC:") for v in row["EC number"].split(";") if v.strip()],
+            "kegg_reactions": [v.strip().removeprefix("KEGG:") for v in row["Cross-reference (KEGG)"].split(";") if v.strip()],
+            "uniprot_count": enzyme_count})
+    return records
+
+
 class RheaClient:
     def __init__(
         self,
         session: requests.Session | None = None,
         cache_root: Path | None = None,
     ) -> None:
-        self.session = session or requests.Session()
-        self.session.headers.setdefault("User-Agent", _user_agent())
         if cache_root is None:
             raise ValueError("cache_root is required")
+        self._owns_session = session is None
+        self.session = session if session is not None else new_rhea_session()
         self.cache_root = Path(cache_root)
+
+    def close(self):
+        if self._owns_session:
+            self.session.close()
+            self._owns_session = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def reactions_for_kegg(self, reaction_id: str) -> dict[str, Any]:
         return self.reactions_for_kegg_many([reaction_id]).get(
@@ -92,12 +128,24 @@ class RheaClient:
             query_id = f"rhea_kegg_{normalized}"
             cache_path = self.cache_root / f"{_safe_token(query_id)}.json"
             if cache_path.exists():
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(cached, dict):
+                try:
+                    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if not isinstance(cached, dict) or cached.get("status") != "ok" or cached.get("reaction_id") != normalized:
+                        raise ValueError("Rhea cache identity/status mismatch")
+                    if cached.get("query_id") != query_id or cached.get("query_type") != "rhea_by_kegg_reaction":
+                        raise ValueError("Rhea cache query mismatch")
+                    request = cached.get("request", {})
+                    if request.get("url", "").rstrip("/") != RHEA_REST_URL.rstrip("/") or not re.search(rf"\b{normalized}\b", request.get("params", {}).get("query", "")):
+                        raise ValueError("Rhea cache request mismatch")
+                    records = _parse_rhea_tsv(cached["raw_tsv"])
+                    cached["records"] = [r for r in records if normalized in r["kegg_reactions"]]
                     cached.pop("response_sha256", None)
                     cached["cache_hit"] = True
                     results[normalized] = cached
                     continue
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    # Keep the old file until a valid refresh can replace it.
+                    pass
             missing.append(normalized)
         if not missing:
             return results
@@ -111,22 +159,12 @@ class RheaClient:
             "format": "tsv",
             "limit": 100,
         }
-        last_error: Exception | None = None
-        response: requests.Response | None = None
-        for attempt in range(RHEA_RETRIES):
-            try:
-                response = self.session.get(
-                    RHEA_REST_URL,
-                    params=params,
-                    timeout=RHEA_TIMEOUT_SECONDS,
-                )
-                response.raise_for_status()
-                break
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt + 1 < RHEA_RETRIES:
-                    time.sleep(RHEA_HTTP_CONFIG.sleep_seconds * (2**attempt))
-        if response is None:
+        try:
+            response = request_response(self.session, RHEA_REST_URL, params=params,
+                                        timeout=RHEA_TIMEOUT_SECONDS, retries=RHEA_RETRIES)
+            raw_text = response.text
+            records = _parse_rhea_tsv(raw_text)
+        except (requests.RequestException, ValueError, TypeError) as exc:
             for normalized in missing:
                 results[normalized] = {
                     "query_id": f"rhea_kegg_{normalized}",
@@ -135,33 +173,11 @@ class RheaClient:
                     "reaction_id": normalized,
                     "status": "source_unavailable",
                     "records": [],
-                    "error": str(last_error or "Rhea request failed"),
+                    "error": str(exc),
                     "cache_hit": False,
                 }
             return results
 
-        raw_text = response.text
-        records: list[dict[str, Any]] = []
-        reader = csv.DictReader(io.StringIO(raw_text), delimiter="\t")
-        for row in reader:
-            raw_rhea_id = str(row.get("Reaction identifier") or "").strip()
-            if not raw_rhea_id:
-                continue
-            records.append({
-                "rhea_id": raw_rhea_id,
-                "equation": str(row.get("Equation") or "").strip(),
-                "ec_numbers": [
-                    item.strip().removeprefix("EC:")
-                    for item in str(row.get("EC number") or "").split(";")
-                    if item.strip()
-                ],
-                "kegg_reactions": [
-                    item.strip().removeprefix("KEGG:")
-                    for item in str(row.get("Cross-reference (KEGG)") or "").split(";")
-                    if item.strip()
-                ],
-                "uniprot_count": int(str(row.get("Enzymes") or "0").strip() or 0),
-            })
         for normalized in missing:
             matched_records = [
                 record

@@ -19,6 +19,7 @@ from typing import Any
 import requests
 
 from src.main_protein_selection.settings import KEGG_HTTP_CONFIG, RHEA_HTTP_CONFIG
+from .rhea_http import new_rhea_session, request_response, reject_html
 
 
 DIRECTION_SUPPORTED = "supported"
@@ -86,13 +87,56 @@ class DirectionEvidenceClient:
         self,
         session: requests.Session | None = None,
         cache_root: Path | None = None,
+        *,
+        rhea_session: requests.Session | None = None,
     ) -> None:
-        self.session = session or requests.Session()
-        self.session.headers.setdefault("User-Agent", "GLADE/2.3")
         if cache_root is None:
             raise ValueError("cache_root is required")
+        self._owns_session = session is None
+        self._owns_rhea_session = rhea_session is None
+        self.session = session if session is not None else requests.Session()
+        self.rhea_session = rhea_session if rhea_session is not None else new_rhea_session()
         self.cache_root = Path(cache_root)
         self.source_records: dict[str, dict[str, Any]] = {}
+
+    def close(self):
+        if self._owns_rhea_session:
+            self.rhea_session.close()
+            self._owns_rhea_session = False
+        if self._owns_session:
+            self.session.close()
+            self._owns_session = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    @staticmethod
+    def _validate_rhea_text(key, text):
+        reject_html(text)
+        if key.startswith("rhea-sides-"):
+            payload = json.loads(text)
+            if not isinstance(payload, dict) or not isinstance(payload.get("results", {}).get("bindings"), list):
+                raise ValueError("Invalid Rhea SPARQL result")
+            for binding in payload["results"]["bindings"]:
+                if not isinstance(binding, dict):
+                    raise ValueError("Invalid Rhea SPARQL binding")
+                side = binding.get("side", {})
+                chebi = binding.get("chebi", {})
+                if not isinstance(side, dict) or not isinstance(chebi, dict) or not re.fullmatch(
+                    r"https?://rdf\.rhea-db\.org/\d+_[LR]", str(side.get("value", ""))
+                ) or not re.search(r"CHEBI[:_]\d+$", str(chebi.get("value", ""))):
+                    raise ValueError("Invalid Rhea SPARQL side/ChEBI binding")
+        else:
+            required = {"RHEA_ID_MASTER", "RHEA_ID_LR", "RHEA_ID_RL", "RHEA_ID_BI"} if key == "rhea-directions" else {"CHEBI", "CHEBI_PH7_3"}
+            reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")), delimiter="\t")
+            if not reader.fieldnames or not required.issubset(reader.fieldnames):
+                raise ValueError("Invalid Rhea official TSV header")
+            for row in reader:
+                if None in row or any(row.get(k) is None for k in required):
+                    raise ValueError("Invalid Rhea official TSV row")
 
     def resolved_cache_root(self) -> Path:
         return self.cache_root
@@ -108,38 +152,34 @@ class DirectionEvidenceClient:
     ) -> str:
         root = self.resolved_cache_root()
         cache_path = root / f"{key}.txt"
+        is_rhea = url in {RHEA_DIRECTIONS_URL, RHEA_CHEBI_PH_URL, RHEA_SPARQL_URL}
         if cache_path.exists():
-            text = cache_path.read_text("utf-8")
-            self.source_records[key] = {
-                "url": url,
-                "cache_hit": True,
-            }
-            return text
-        last_error: Exception | None = None
-        for attempt in range(max(1, retries)):
             try:
-                response = self.session.get(url, params=params, timeout=timeout)
-                response.raise_for_status()
-                text = response.text
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(text, encoding="utf-8")
+                text = cache_path.read_text("utf-8")
+                if is_rhea:
+                    self._validate_rhea_text(key, text)
                 self.source_records[key] = {
                     "url": url,
-                    "params": params or {},
-                        "cache_hit": False,
+                    "cache_hit": True,
                 }
                 return text
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt + 1 < retries:
-                    time.sleep(min(2.0, 0.2 * (2**attempt)))
-        self.source_records[key] = {
-            "url": url,
-            "params": params or {},
-            "status": "source_unavailable",
-            "error": str(last_error or "request failed"),
-        }
-        raise RuntimeError(f"official direction source unavailable: {url}: {last_error}")
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        try:
+            response = request_response(self.rhea_session if is_rhea else self.session, url,
+                                        params=params, timeout=timeout, retries=retries,
+                                        stop_on_client_error=is_rhea)
+            text = response.text
+            if is_rhea:
+                self._validate_rhea_text(key, text)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(text, encoding="utf-8")
+            self.source_records[key] = {"url": url, "params": params or {}, "cache_hit": False}
+            return text
+        except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+            self.source_records[key] = {"url": url, "params": params or {},
+                                        "status": "source_unavailable", "error": str(exc)}
+            raise RuntimeError(f"official direction source unavailable: {url}: {exc}") from exc
 
     def direction_quartets(self) -> dict[str, dict[str, str]]:
         text = self._cached_text(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -289,6 +290,7 @@ def select_main_enzymes(
 
     validate_options(allow_transmembrane, transmembrane_penalty, no_transmembrane_bonus)
     active_weights = normalize_scoring_weights(scoring_weights)
+    resources = ExitStack()
     try:
         if top_n < 1:
             raise ValueError("top_n must be at least 1")
@@ -347,7 +349,7 @@ def select_main_enzymes(
             if ec_status(requirement) == "complete"
             for ec_number in requirement.get("ec_numbers", [])
         ))
-        session = requests.Session()
+        session = resources.enter_context(requests.Session())
         taxonomy_profile = resolve_chassis_taxonomy(
             chassis_key,
             session=session,
@@ -399,18 +401,20 @@ def select_main_enzymes(
         selenzyme_client: SelenzymeClient | None = None
         fallback_requirements: list[dict] = []
         direction_context: list[dict] = []
-        direction_client = DirectionEvidenceClient(
+        direction_client = resources.enter_context(DirectionEvidenceClient(
             session=session,
             cache_root=cache_path / "direction",
-        )
+        ))
         if fetch_proteins and requirements:
             reaction_evidence = reaction_evidence_for_requirements(
                 requirements,
-                client=RheaClient(
-                    session=session,
+                client=resources.enter_context(RheaClient(
                     cache_root=cache_path / "rhea",
-                ),
+                )),
             )
+            for item in reaction_evidence:
+                if item.get("source_status") == "source_unavailable":
+                    query_errors[item["query_id"]] = item.get("error") or "Rhea source unavailable"
             if any(
                 requirement.get("rhea_ids") or requirement.get("rhea_master_ids")
                 for requirement in requirements
@@ -419,6 +423,9 @@ def select_main_enzymes(
                     requirements,
                     direction_client,
                 )
+                for item in direction_context:
+                    if item.get("status") == "source_unavailable":
+                        query_errors[f"rhea_direction_step_{item['step_index']}"] = item.get("error") or "Rhea direction source unavailable"
             else:
                 for requirement in requirements:
                     requirement["direction_evidence_status"] = "unknown_no_rhea_mapping"
@@ -1135,6 +1142,8 @@ def select_main_enzymes(
         return result
     except Exception:
         raise
+    finally:
+        resources.close()
 
 
 def _main_enzyme_cli_summary(
