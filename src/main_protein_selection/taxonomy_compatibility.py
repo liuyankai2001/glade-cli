@@ -12,7 +12,7 @@ from .host_registry import get_host_preset, get_taxonomy_snapshot
 
 
 TAXONOMY_PROFILE_SCHEMA = "taxonomy_profile.v1"
-TAXONOMY_SCORING_POLICY_VERSION = "taxonomy_lca_rank.v1"
+TAXONOMY_SCORING_POLICY_VERSION = "taxonomy_lca_rank.v2"
 UNIPROT_TAXONOMY_URL = "https://rest.uniprot.org/taxonomy"
 
 SCORING_WEIGHTS = {
@@ -370,16 +370,12 @@ def score_taxonomic_fit(
         )
 
     candidate_nodes = _candidate_nodes(entry)
-    if not candidate_nodes:
-        return TaxonomyFit(
-            status="unknown",
-            score=UNKNOWN_TAXONOMY_SCORE,
-            candidate_taxon_id=candidate_taxon_id,
-            evidence_source=f"{profile.source}+candidate_lineage_missing",
-        )
     candidate_ids = {
         node.taxon_id for node in candidate_nodes if node.taxon_id is not None
     }
+    if candidate_taxon_id is not None:
+        # UniProt lineage can contain only ancestors, excluding the organism itself.
+        candidate_ids.add(candidate_taxon_id)
     candidate_names = {
         _normal_name(node.scientific_name) for node in candidate_nodes
     }
@@ -398,6 +394,13 @@ def score_taxonomic_fit(
                 shared_index = index
                 break
     if shared_index is None:
+        if not candidate_nodes:
+            return TaxonomyFit(
+                status="unknown",
+                score=UNKNOWN_TAXONOMY_SCORE,
+                candidate_taxon_id=candidate_taxon_id,
+                evidence_source=f"{profile.source}+candidate_lineage_missing",
+            )
         return TaxonomyFit(
             status="cross_domain",
             score=ROOT_ONLY_SCORE,
