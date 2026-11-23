@@ -165,6 +165,14 @@ def main_enzyme_set_paths(output_dir: str | Path) -> dict[str, Path]:
     }
 
 
+def _canonical_reaction_id(value: Any) -> str:
+    reaction_id = _text(value).upper()
+    if re.fullmatch(r"RP2(?:STEP|STOICH):[0-9A-F]{64}", reaction_id):
+        prefix, digest = reaction_id.split(":", 1)
+        return f"{prefix}:{digest.lower()}"
+    return reaction_id
+
+
 def _canonical_required_steps(
     required_steps: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -193,7 +201,7 @@ def _canonical_required_steps(
         canonical.append(
             {
                 "step_index": step_index,
-                "reaction_id": _text(raw.get("reaction_id")).upper(),
+                "reaction_id": _canonical_reaction_id(raw.get("reaction_id")),
                 "reaction_name": _text(raw.get("reaction_name")),
                 "produced_compound_id": _text(
                     raw.get("produced_compound_id")
@@ -481,7 +489,7 @@ def _canonical_candidate_projection(row: Mapping[str, Any]) -> dict[str, Any]:
 
     return {
         "step_index": _int(row.get("step_index")),
-        "reaction_id": _text(row.get("reaction_id")).upper(),
+        "reaction_id": _canonical_reaction_id(row.get("reaction_id")),
         "candidate_rank": _int(row.get("candidate_rank")),
         "selection_status": _text(row.get("selection_status")).lower(),
         "candidate_role": _text(
